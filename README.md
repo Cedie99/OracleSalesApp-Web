@@ -66,6 +66,23 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `npm run build` | Build for production |
 | `npm start` | Run the production build |
 | `npm run lint` | Run ESLint |
+| `npm run mobile:status` | Sync latest mobile app source into `MOBILE_STATUS.md` |
+
+---
+
+## Mobile App Coordination
+
+This web admin shares the same Supabase project with the companion mobile app ([OracleSalesApp-Mobile](https://github.com/VinceCarter12/OracleSalesApp-Mobile)). Both apps read and write the same tables, so changes to the database schema or shared data contracts can affect both sides.
+
+`MOBILE_STATUS.md` in this repo contains the latest commits and full source code fetched from the mobile repo's `main` branch. Use it to understand what tables, columns, and data the mobile app depends on before making changes.
+
+> **Before doing any of the following, run `npm run mobile:status` and review `MOBILE_STATUS.md` first:**
+> - Adding, renaming, or removing Supabase tables or columns
+> - Changing RLS policies
+> - Modifying shared types or enums (e.g., customer types, meeting outcomes)
+> - Any work that touches data the mobile app reads or writes
+
+The file is updated on demand — it only reflects the mobile repo's state as of the last time the script was run. Commit the updated `MOBILE_STATUS.md` after running the script so the rest of the team stays in sync.
 
 ---
 
