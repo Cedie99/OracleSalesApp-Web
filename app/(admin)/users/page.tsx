@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -12,12 +12,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Search, UserPlus, Users, ShieldCheck, Briefcase, User,
-  MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet,
+  MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { mockProfiles } from '@/lib/mock/data'
+import { createClient } from '@/lib/supabase/client'
+import { createUser, updateUser, toggleUserStatus } from './actions'
 import type { UserRole } from '@/types'
 
 const ROLE_STYLE: Record<UserRole, string> = {
@@ -44,16 +45,13 @@ const ROLE_ICON: Record<UserRole, React.ElementType> = {
   collector: Wallet,
 }
 
-const MOCK_EMAILS: Record<string, string> = {
-  'agent-1': 'cyril.santos@oracle.com',
-  'agent-2': 'jun.reyes@oracle.com',
-  'agent-3': 'maria.delacruz@oracle.com',
-  'mgr-1': 'eric.mendoza@oracle.com',
-  'mgr-2': 'mike.lim@oracle.com',
-  'admin-1': 'admin@oracle.com',
+const ROLE_DESCRIPTION: Record<UserRole, string> = {
+  admin: 'Full system access — can manage users, clients, and all data.',
+  sales_manager: 'Oversees a team, approves client changes, and views all team sales.',
+  sales_specialist: 'Front-line sales agent that logs meetings, clients, and clock records.',
+  rsr: 'Route Sales Representative — visits stores daily and logs field activity.',
+  collector: 'Handles payment collection from assigned stores with cash/check proof.',
 }
-
-type UserStatus = 'active' | 'inactive'
 
 interface UserRow {
   id: string
@@ -62,15 +60,9 @@ interface UserRow {
   email: string
   role: UserRole
   team_id: string | null
-  status: UserStatus
+  is_active: boolean
   created_at: string
 }
-
-const initialUsers: UserRow[] = mockProfiles.map(p => ({
-  ...p,
-  email: MOCK_EMAILS[p.id] ?? `${p.full_name.toLowerCase().replace(/\s+/g, '.')}@oracle.com`,
-  status: 'active' as UserStatus,
-}))
 
 interface UserFormData {
   full_name: string
@@ -89,7 +81,10 @@ const EMPTY_FORM: UserFormData = {
 }
 
 export default function UsersPage() {
-  const [users, setUsers] = useState<UserRow[]>(initialUsers)
+  const [users, setUsers] = useState<UserRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState('')
+
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState<string>('all')
 
@@ -99,6 +94,31 @@ export default function UsersPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
+
+  const loadUsers = useCallback(async () => {
+    setLoading(true)
+    setFetchError('')
+    const supabase = createClient()
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, user_id, full_name, email, role, team_id, is_active, created_at')
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      setFetchError(error.message)
+    } else {
+      setUsers(
+        (data ?? []).map(p => ({
+          ...p,
+          email: p.email ?? '',
+          is_active: p.is_active ?? true,
+        }))
+      )
+    }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { loadUsers() }, [loadUsers])
 
   const filtered = users.filter(u => {
     const matchSearch =
@@ -115,7 +135,7 @@ export default function UsersPage() {
     sales_specialist: users.filter(u => u.role === 'sales_specialist').length,
     rsr: users.filter(u => u.role === 'rsr').length,
     collector: users.filter(u => u.role === 'collector').length,
-    active: users.filter(u => u.status === 'active').length,
+    active: users.filter(u => u.is_active).length,
   }
 
   function openCreate() {
@@ -144,8 +164,6 @@ export default function UsersPage() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return 'Enter a valid email address.'
     if (isCreate && !form.password) return 'Password is required.'
     if (isCreate && form.password.length < 8) return 'Password must be at least 8 characters.'
-    if (isCreate && users.some(u => u.email.toLowerCase() === form.email.toLowerCase()))
-      return 'A user with that email already exists.'
     return ''
   }
 
@@ -153,20 +171,17 @@ export default function UsersPage() {
     const err = validateForm(true)
     if (err) { setFormError(err); return }
     setSaving(true)
-    await new Promise(r => setTimeout(r, 600))
-    const newUser: UserRow = {
-      id: `user-${Date.now()}`,
-      user_id: `uid-${Date.now()}`,
+    const { error } = await createUser({
       full_name: form.full_name.trim(),
       email: form.email.trim().toLowerCase(),
+      password: form.password,
       role: form.role,
       team_id: form.team_id || null,
-      status: 'active',
-      created_at: new Date().toISOString(),
-    }
-    setUsers(prev => [newUser, ...prev])
+    })
     setSaving(false)
+    if (error) { setFormError(error); return }
     setCreateOpen(false)
+    loadUsers()
   }
 
   async function handleEdit() {
@@ -174,20 +189,21 @@ export default function UsersPage() {
     const err = validateForm(false)
     if (err) { setFormError(err); return }
     setSaving(true)
-    await new Promise(r => setTimeout(r, 600))
-    setUsers(prev => prev.map(u =>
-      u.id === editTarget.id
-        ? { ...u, full_name: form.full_name.trim(), email: form.email.trim().toLowerCase(), role: form.role, team_id: form.team_id || null }
-        : u
-    ))
+    const { error } = await updateUser(editTarget.id, {
+      full_name: form.full_name.trim(),
+      email: form.email.trim().toLowerCase(),
+      role: form.role,
+      team_id: form.team_id || null,
+    })
     setSaving(false)
+    if (error) { setFormError(error); return }
     setEditTarget(null)
+    loadUsers()
   }
 
-  function toggleStatus(userId: string) {
-    setUsers(prev => prev.map(u =>
-      u.id === userId ? { ...u, status: u.status === 'active' ? 'inactive' : 'active' } : u
-    ))
+  async function handleToggleStatus(user: UserRow) {
+    const { error } = await toggleUserStatus(user.id, !user.is_active)
+    if (!error) loadUsers()
   }
 
   return (
@@ -195,6 +211,13 @@ export default function UsersPage() {
       <Header title="User Management" subtitle={`${counts.active} active · ${counts.total} total users`} />
 
       <div className="flex-1 p-6 space-y-6">
+
+        {fetchError && (
+          <Alert variant="destructive">
+            <AlertDescription>{fetchError}</AlertDescription>
+          </Alert>
+        )}
+
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
           {([
@@ -207,7 +230,7 @@ export default function UsersPage() {
           ] as const).map(({ label, value, icon: Icon, color }) => (
             <Card key={label} className="bg-card border-border">
               <CardContent className="p-4 flex items-center gap-3">
-                <div className={`w-9 h-9 rounded-lg bg-muted flex items-center justify-center shrink-0`}>
+                <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
                   <Icon className={`w-4 h-4 ${color}`} />
                 </div>
                 <div>
@@ -243,6 +266,10 @@ export default function UsersPage() {
               <SelectItem value="collector">Collector</SelectItem>
             </SelectContent>
           </Select>
+          <Button variant="outline" size="sm" className="h-9 gap-2" onClick={loadUsers} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
           <Button onClick={openCreate} size="sm" className="h-9 gap-2">
             <UserPlus className="w-4 h-4" />
             Create User
@@ -265,7 +292,27 @@ export default function UsersPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {filtered.map(user => {
+                  {loading ? (
+                    Array.from({ length: 4 }).map((_, i) => (
+                      <tr key={i} className="animate-pulse">
+                        <td className="px-5 py-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-full bg-muted" />
+                            <div className="space-y-1.5">
+                              <div className="h-3 w-32 bg-muted rounded" />
+                              <div className="h-2.5 w-24 bg-muted rounded" />
+                            </div>
+                          </div>
+                        </td>
+                        {[...Array(4)].map((_, j) => (
+                          <td key={j} className="px-5 py-3">
+                            <div className="h-3 w-16 bg-muted rounded" />
+                          </td>
+                        ))}
+                        <td className="px-5 py-3" />
+                      </tr>
+                    ))
+                  ) : filtered.map(user => {
                     const RoleIcon = ROLE_ICON[user.role]
                     return (
                       <tr key={user.id} className="hover:bg-muted/20 transition-colors">
@@ -278,7 +325,7 @@ export default function UsersPage() {
                             </div>
                             <div>
                               <p className="font-medium text-foreground leading-tight">{user.full_name}</p>
-                              <p className="text-xs text-muted-foreground">{user.email}</p>
+                              <p className="text-xs text-muted-foreground">{user.email || '—'}</p>
                             </div>
                           </div>
                         </td>
@@ -289,9 +336,7 @@ export default function UsersPage() {
                           </Badge>
                         </td>
                         <td className="px-5 py-3 hidden md:table-cell">
-                          <span className="text-xs text-muted-foreground">
-                            {user.team_id ? user.team_id : '—'}
-                          </span>
+                          <span className="text-xs text-muted-foreground">{user.team_id ?? '—'}</span>
                         </td>
                         <td className="px-5 py-3 hidden lg:table-cell">
                           <span className="text-xs text-muted-foreground">
@@ -301,12 +346,12 @@ export default function UsersPage() {
                         <td className="px-5 py-3">
                           <Badge
                             variant="outline"
-                            className={user.status === 'active'
+                            className={user.is_active
                               ? 'text-[11px] px-2 h-5 bg-primary/10 text-primary border-primary/30'
                               : 'text-[11px] px-2 h-5 bg-muted text-muted-foreground border-border'
                             }
                           >
-                            {user.status === 'active' ? 'Active' : 'Inactive'}
+                            {user.is_active ? 'Active' : 'Inactive'}
                           </Badge>
                         </td>
                         <td className="px-5 py-3 text-right">
@@ -320,11 +365,11 @@ export default function UsersPage() {
                                 Edit
                               </DropdownMenuItem>
                               <DropdownMenuItem
-                                onClick={() => toggleStatus(user.id)}
-                                className={`gap-2 ${user.status === 'active' ? 'text-destructive focus:text-destructive' : ''}`}
+                                onClick={() => handleToggleStatus(user)}
+                                className={`gap-2 ${user.is_active ? 'text-destructive focus:text-destructive' : ''}`}
                               >
                                 <Ban className="w-3.5 h-3.5" />
-                                {user.status === 'active' ? 'Deactivate' : 'Reactivate'}
+                                {user.is_active ? 'Deactivate' : 'Reactivate'}
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -335,7 +380,7 @@ export default function UsersPage() {
                 </tbody>
               </table>
 
-              {filtered.length === 0 && (
+              {!loading && filtered.length === 0 && (
                 <div className="text-center py-16 text-muted-foreground">
                   <Users className="w-8 h-8 mx-auto mb-2 opacity-40" />
                   <p className="text-sm">No users found</p>
@@ -352,13 +397,7 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Create New User</DialogTitle>
           </DialogHeader>
-          <UserForm
-            form={form}
-            setForm={setForm}
-            showPassword={showPassword}
-            setShowPassword={setShowPassword}
-            isCreate
-          />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -379,13 +418,7 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
-          <UserForm
-            form={form}
-            setForm={setForm}
-            showPassword={showPassword}
-            setShowPassword={setShowPassword}
-            isCreate={false}
-          />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -476,13 +509,7 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate }: Us
             <SelectItem value="collector">Collector</SelectItem>
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">
-          {form.role === 'admin' && 'Full system access — can manage users, clients, and all data.'}
-          {form.role === 'sales_manager' && 'Oversees a team, approves client changes, and views all team sales.'}
-          {form.role === 'sales_specialist' && 'Front-line sales agent that logs meetings, clients, and clock records.'}
-          {form.role === 'rsr' && 'Route Sales Representative — visits stores daily and logs field activity.'}
-          {form.role === 'collector' && 'Handles payment collection from assigned stores with cash/check proof.'}
-        </p>
+        <p className="text-xs text-muted-foreground">{ROLE_DESCRIPTION[form.role]}</p>
       </div>
 
       <div className="space-y-1.5">
