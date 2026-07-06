@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -95,7 +95,7 @@ export default function UsersPage() {
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const loadUsers = useCallback(async () => {
+  async function loadUsers() {
     setLoading(true)
     setFetchError('')
     const supabase = createClient()
@@ -116,9 +116,12 @@ export default function UsersPage() {
       )
     }
     setLoading(false)
-  }, [])
+  }
 
-  useEffect(() => { loadUsers() }, [loadUsers])
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadUsers()
+  }, [])
 
   const filtered = users.filter(u => {
     const matchSearch =
