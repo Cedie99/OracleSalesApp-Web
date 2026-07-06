@@ -7,6 +7,9 @@ export const mockProfiles: Profile[] = [
   { id: 'mgr-1', user_id: 'u4', full_name: 'Sir Eric Mendoza', role: 'sales_manager', team_id: 'team-1', created_at: '2024-01-05T08:00:00Z' },
   { id: 'mgr-2', user_id: 'u5', full_name: 'Sir Mike Lim', role: 'sales_manager', team_id: 'team-2', created_at: '2024-01-05T08:00:00Z' },
   { id: 'admin-1', user_id: 'u6', full_name: 'Admin User', role: 'admin', team_id: null, created_at: '2024-01-01T08:00:00Z' },
+  { id: 'rsr-1', user_id: 'u7', full_name: 'Reggie Pascual', role: 'rsr', team_id: 'team-1', created_at: '2024-02-10T08:00:00Z' },
+  { id: 'rsr-2', user_id: 'u8', full_name: 'JP Villanueva', role: 'rsr', team_id: 'team-2', created_at: '2024-02-15T08:00:00Z' },
+  { id: 'col-1', user_id: 'u9', full_name: 'Billy Gabi', role: 'collector', team_id: null, created_at: '2024-03-01T08:00:00Z' },
 ]
 
 export const mockClients: Client[] = [

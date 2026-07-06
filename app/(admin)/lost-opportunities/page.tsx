@@ -20,7 +20,7 @@ export default function LostOpportunitiesPage() {
           <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
           <div className="text-xs text-muted-foreground">
             <p className="font-medium text-foreground mb-0.5">Lost Opportunity Rules</p>
-            When a meeting is marked "Lost Opportunity," the client is automatically removed from the agent's list and archived here.
+            When a meeting is marked &ldquo;Lost Opportunity,&rdquo; the client is automatically removed from the agent&apos;s list and archived here.
             After <span className="text-foreground font-medium">14 days</span>, the client becomes available for reassignment to a different agent.
             The original agent cannot re-approach.
           </div>
@@ -62,7 +62,7 @@ export default function LostOpportunitiesPage() {
                     </div>
                     {lostMeeting?.remarks && (
                       <div className="mt-2 bg-muted/30 rounded-lg p-2.5">
-                        <p className="text-muted-foreground italic">"{lostMeeting.remarks}"</p>
+                        <p className="text-muted-foreground italic">&ldquo;{lostMeeting.remarks}&rdquo;</p>
                       </div>
                     )}
                   </div>

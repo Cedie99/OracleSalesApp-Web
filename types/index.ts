@@ -1,4 +1,4 @@
-export type UserRole = 'admin' | 'sales_manager' | 'sales_specialist'
+export type UserRole = 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector'
 export type CustomerType = 'existing' | 'new' | 'prospect'
 export type SalesChannel = 'distributor' | 'dealer' | 'end_user' | 'private_label'
 export type ClientStatus = 'active' | 'lost' | 'deleted'
@@ -14,8 +14,10 @@ export interface Profile {
   id: string
   user_id: string
   full_name: string
+  email?: string
   role: UserRole
   team_id: string | null
+  is_active?: boolean
   created_at: string
 }
 

@@ -14,7 +14,7 @@ CREATE TABLE profiles (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE UNIQUE NOT NULL,
   full_name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin', 'sales_manager', 'sales_specialist')),
+  role TEXT NOT NULL CHECK (role IN ('admin', 'sales_manager', 'sales_specialist', 'rsr', 'collector')),
   team_id UUID REFERENCES teams(id),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );

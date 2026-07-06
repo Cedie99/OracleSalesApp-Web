@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, Users, CalendarCheck, ClipboardCheck,
-  AlertTriangle, Clock, FileBarChart2, LogOut,
+  AlertTriangle, Clock, FileBarChart2, LogOut, UserCog,
 } from 'lucide-react'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge'
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/users', label: 'User Management', icon: UserCog },
   { href: '/clients', label: 'Clients', icon: Users },
   { href: '/meetings', label: 'Meetings', icon: CalendarCheck },
   { href: '/approvals', label: 'Approvals', icon: ClipboardCheck },
