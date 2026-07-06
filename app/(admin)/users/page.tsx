@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Search, UserPlus, Users, ShieldCheck, Briefcase, User,
-  MoreHorizontal, Pencil, Ban, Eye, EyeOff,
+  MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet,
 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -24,18 +24,24 @@ const ROLE_STYLE: Record<UserRole, string> = {
   admin: 'bg-primary/15 text-primary border-primary/30',
   sales_manager: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
   sales_specialist: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+  rsr: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
+  collector: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
 }
 
 const ROLE_LABEL: Record<UserRole, string> = {
   admin: 'Admin',
   sales_manager: 'Sales Manager',
   sales_specialist: 'Sales Specialist',
+  rsr: 'RSR',
+  collector: 'Collector',
 }
 
 const ROLE_ICON: Record<UserRole, React.ElementType> = {
   admin: ShieldCheck,
   sales_manager: Briefcase,
   sales_specialist: User,
+  rsr: Store,
+  collector: Wallet,
 }
 
 const MOCK_EMAILS: Record<string, string> = {
@@ -107,6 +113,8 @@ export default function UsersPage() {
     admin: users.filter(u => u.role === 'admin').length,
     sales_manager: users.filter(u => u.role === 'sales_manager').length,
     sales_specialist: users.filter(u => u.role === 'sales_specialist').length,
+    rsr: users.filter(u => u.role === 'rsr').length,
+    collector: users.filter(u => u.role === 'collector').length,
     active: users.filter(u => u.status === 'active').length,
   }
 
@@ -188,12 +196,14 @@ export default function UsersPage() {
 
       <div className="flex-1 p-6 space-y-6">
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
           {([
             { label: 'Total Users', value: counts.total, icon: Users, color: 'text-foreground' },
             { label: 'Admins', value: counts.admin, icon: ShieldCheck, color: 'text-primary' },
             { label: 'Sales Managers', value: counts.sales_manager, icon: Briefcase, color: 'text-blue-400' },
             { label: 'Sales Specialists', value: counts.sales_specialist, icon: User, color: 'text-yellow-400' },
+            { label: 'RSR', value: counts.rsr, icon: Store, color: 'text-orange-400' },
+            { label: 'Collectors', value: counts.collector, icon: Wallet, color: 'text-purple-400' },
           ] as const).map(({ label, value, icon: Icon, color }) => (
             <Card key={label} className="bg-card border-border">
               <CardContent className="p-4 flex items-center gap-3">
@@ -221,7 +231,7 @@ export default function UsersPage() {
             />
           </div>
           <Select value={roleFilter} onValueChange={v => setRoleFilter(v ?? 'all')}>
-            <SelectTrigger className="w-40 h-9 bg-card border-border">
+            <SelectTrigger className="w-44 h-9 bg-card border-border">
               <SelectValue placeholder="All Roles" />
             </SelectTrigger>
             <SelectContent>
@@ -229,6 +239,8 @@ export default function UsersPage() {
               <SelectItem value="admin">Admin</SelectItem>
               <SelectItem value="sales_manager">Sales Manager</SelectItem>
               <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
+              <SelectItem value="rsr">RSR</SelectItem>
+              <SelectItem value="collector">Collector</SelectItem>
             </SelectContent>
           </Select>
           <Button onClick={openCreate} size="sm" className="h-9 gap-2">
@@ -460,12 +472,16 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate }: Us
             <SelectItem value="admin">Admin</SelectItem>
             <SelectItem value="sales_manager">Sales Manager</SelectItem>
             <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
+            <SelectItem value="rsr">RSR</SelectItem>
+            <SelectItem value="collector">Collector</SelectItem>
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">
           {form.role === 'admin' && 'Full system access — can manage users, clients, and all data.'}
           {form.role === 'sales_manager' && 'Oversees a team, approves client changes, and views all team sales.'}
           {form.role === 'sales_specialist' && 'Front-line sales agent that logs meetings, clients, and clock records.'}
+          {form.role === 'rsr' && 'Route Sales Representative — visits stores daily and logs field activity.'}
+          {form.role === 'collector' && 'Handles payment collection from assigned stores with cash/check proof.'}
         </p>
       </div>
 
