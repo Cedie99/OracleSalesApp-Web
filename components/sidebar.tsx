@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, Users, CalendarCheck, ClipboardCheck,
-  AlertTriangle, Clock, FileBarChart2, LogOut, UserCog,
+  AlertTriangle, Clock, FileBarChart2, LogOut, UserCog, Map,
 } from 'lucide-react'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
@@ -21,6 +21,7 @@ const navItems = [
   { href: '/approvals', label: 'Approvals', icon: ClipboardCheck },
   { href: '/lost-opportunities', label: 'Lost Opportunities', icon: AlertTriangle },
   { href: '/clock-records', label: 'Clock Records', icon: Clock },
+  { href: '/maps', label: 'Maps', icon: Map },
   { href: '/reports', label: 'Reports', icon: FileBarChart2 },
 ]
 
