@@ -1,15 +1,18 @@
 'use client'
 
+import { useMemo, useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { mockDashboardMetrics, mockMeetings, mockEditRequests } from '@/lib/mock/data'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { mockDashboardMetrics, mockMeetings, mockEditRequests, mockProfiles } from '@/lib/mock/data'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from 'recharts'
 import {
   CalendarCheck, TrendingUp, Target, Trophy,
-  Users, CheckCircle2, Clock
+  Users, CheckCircle2, Clock, Building2, BarChart3
 } from 'lucide-react'
 import { format } from 'date-fns'
 
@@ -27,10 +30,67 @@ const OUTCOME_LABEL: Record<string, string> = {
   lost_opportunity: 'Lost',
 }
 
+const VIEW_OPTIONS = [
+  { id: 'super_admin', label: 'Super Admin — All Teams & Agencies', teamId: null as string | null },
+  { id: 'mgr-1', label: 'Manager View — Sir Eric Mendoza (Team 1)', teamId: 'team-1' },
+  { id: 'mgr-2', label: 'Manager View — Sir Mike Lim (Team 2)', teamId: 'team-2' },
+] as const
+
+const FIELD_AGENT_ROLES = ['sales_specialist', 'rsr'] as const
+
 export default function DashboardPage() {
   const m = mockDashboardMetrics
   const pending = mockEditRequests.filter(r => r.status === 'pending').length
-  const recentMeetings = mockMeetings.slice(0, 5)
+
+  const [viewAs, setViewAs] = useState<string>('super_admin')
+  const [perfAgentFilter, setPerfAgentFilter] = useState<string>('all')
+  const [dateFrom, setDateFrom] = useState<string>('')
+  const [dateTo, setDateTo] = useState<string>('')
+
+  const currentView = VIEW_OPTIONS.find(v => v.id === viewAs) ?? VIEW_OPTIONS[0]
+
+  const scopedAgents = useMemo(
+    () =>
+      mockProfiles.filter(
+        p =>
+          (FIELD_AGENT_ROLES as readonly string[]).includes(p.role) &&
+          (currentView.teamId === null || p.team_id === currentView.teamId)
+      ),
+    [currentView]
+  )
+
+  const scopedMeetings = useMemo(
+    () =>
+      mockMeetings.filter(mtg => {
+        const inTeam = currentView.teamId === null || mtg.agent?.team_id === currentView.teamId
+        const inAgent = perfAgentFilter === 'all' || mtg.agent_id === perfAgentFilter
+        const d = new Date(mtg.meeting_date)
+        const afterFrom = !dateFrom || d >= new Date(dateFrom)
+        const beforeTo = !dateTo || d <= new Date(`${dateTo}T23:59:59`)
+        return inTeam && inAgent && afterFrom && beforeTo
+      }),
+    [currentView, perfAgentFilter, dateFrom, dateTo]
+  )
+
+  const agentPerformance = useMemo(
+    () =>
+      scopedAgents
+        .map(agent => {
+          const meetings = scopedMeetings.filter(mtg => mtg.agent_id === agent.id)
+          const successful = meetings.filter(mtg => mtg.outcome === 'successful').length
+          const followUp = meetings.filter(mtg => mtg.outcome === 'follow_up').length
+          const noDecision = meetings.filter(mtg => mtg.outcome === 'no_decision').length
+          const lost = meetings.filter(mtg => mtg.outcome === 'lost_opportunity').length
+          const rate = meetings.length > 0 ? Math.round((successful / meetings.length) * 100) : 0
+          return { agent, total: meetings.length, successful, followUp, noDecision, lost, rate }
+        })
+        .sort((a, b) => b.total - a.total),
+    [scopedAgents, scopedMeetings]
+  )
+
+  const recentMeetings = mockMeetings
+    .filter(mtg => currentView.teamId === null || mtg.agent?.team_id === currentView.teamId)
+    .slice(0, 5)
 
   const metricCards = [
     {
@@ -68,6 +128,27 @@ export default function DashboardPage() {
       />
 
       <div className="flex-1 p-6 space-y-6">
+        {/* Role-scoped view switcher */}
+        <div className="flex items-center gap-3">
+          <Building2 className="w-4 h-4 text-muted-foreground shrink-0" />
+          <p className="text-sm text-muted-foreground shrink-0">Viewing as:</p>
+          <Select value={viewAs} onValueChange={v => setViewAs(v ?? 'super_admin')}>
+            <SelectTrigger className="w-72 h-9 bg-card border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {VIEW_OPTIONS.map(opt => (
+                <SelectItem key={opt.id} value={opt.id}>{opt.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {currentView.teamId && (
+            <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/30">
+              Scoped to {currentView.teamId}
+            </Badge>
+          )}
+        </div>
+
         {/* Metric cards */}
         <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
           {metricCards.map(({ title, value, icon: Icon, sub, color }) => (
@@ -153,6 +234,97 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Agent Performance */}
+        <Card className="bg-card border-border">
+          <CardHeader className="pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-primary" />
+                <CardTitle className="text-sm font-semibold text-foreground">Agent Performance</CardTitle>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Select value={perfAgentFilter} onValueChange={v => setPerfAgentFilter(v ?? 'all')}>
+                  <SelectTrigger className="w-44 h-8 bg-card border-border text-xs">
+                    <SelectValue placeholder="All Agents" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Agents</SelectItem>
+                    {scopedAgents.map(a => (
+                      <SelectItem key={a.id} value={a.id}>{a.full_name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={e => setDateFrom(e.target.value)}
+                  className="w-36 h-8 bg-card border-border text-xs"
+                />
+                <span className="text-xs text-muted-foreground">to</span>
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={e => setDateTo(e.target.value)}
+                  className="w-36 h-8 bg-card border-border text-xs"
+                />
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-xs text-muted-foreground">
+                    <th className="text-left px-5 py-2.5 font-medium">Agent</th>
+                    <th className="text-left px-5 py-2.5 font-medium hidden md:table-cell">Team</th>
+                    <th className="text-right px-5 py-2.5 font-medium">Total</th>
+                    <th className="text-right px-5 py-2.5 font-medium hidden lg:table-cell">Successful</th>
+                    <th className="text-right px-5 py-2.5 font-medium hidden lg:table-cell">Follow-up</th>
+                    <th className="text-right px-5 py-2.5 font-medium hidden xl:table-cell">No Decision</th>
+                    <th className="text-right px-5 py-2.5 font-medium hidden xl:table-cell">Lost</th>
+                    <th className="text-left px-5 py-2.5 font-medium w-40">Success Rate</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {agentPerformance.map(({ agent, total, successful, followUp, noDecision, lost, rate }) => (
+                    <tr key={agent.id} className="hover:bg-muted/20 transition-colors">
+                      <td className="px-5 py-3">
+                        <p className="font-medium text-foreground leading-tight">{agent.full_name}</p>
+                        <p className="text-xs text-muted-foreground capitalize">{agent.role.replace('_', ' ')}</p>
+                      </td>
+                      <td className="px-5 py-3 hidden md:table-cell text-xs text-muted-foreground">
+                        {agent.team_id ?? '—'}
+                      </td>
+                      <td className="px-5 py-3 text-right font-medium text-foreground">{total}</td>
+                      <td className="px-5 py-3 text-right hidden lg:table-cell text-muted-foreground">{successful}</td>
+                      <td className="px-5 py-3 text-right hidden lg:table-cell text-muted-foreground">{followUp}</td>
+                      <td className="px-5 py-3 text-right hidden xl:table-cell text-muted-foreground">{noDecision}</td>
+                      <td className="px-5 py-3 text-right hidden xl:table-cell text-muted-foreground">{lost}</td>
+                      <td className="px-5 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="h-1.5 flex-1 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-primary rounded-full transition-all"
+                              style={{ width: `${rate}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-foreground font-medium w-9 text-right">{rate}%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {agentPerformance.length === 0 && (
+                <div className="text-center py-12 text-muted-foreground text-sm">
+                  No agents in this scope
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Recent meetings */}
         <Card className="bg-card border-border">

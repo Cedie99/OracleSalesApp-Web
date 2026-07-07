@@ -35,6 +35,8 @@ export interface Client {
   contact_position: string | null
   contact_number: string
   office_address: string
+  office_lat?: number
+  office_lng?: number
   customer_type: CustomerType
   sales_channel: SalesChannel
   assigned_agent_id: string

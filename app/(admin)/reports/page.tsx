@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import { mockMeetings, mockClients, mockClockRecords, mockProfiles } from '@/lib/mock/data'
 import { FileBarChart2, Download, FileSpreadsheet, Users, CalendarCheck, Clock } from 'lucide-react'
 import { format } from 'date-fns'
@@ -18,12 +19,22 @@ const OUTCOME_LABEL: Record<string, string> = {
 
 const agents = mockProfiles.filter(p => p.role === 'sales_specialist' || p.role === 'sales_manager')
 
+function inRange(dateStr: string, from: string, to: string): boolean {
+  const d = new Date(dateStr)
+  if (from && d < new Date(from)) return false
+  if (to && d > new Date(`${to}T23:59:59`)) return false
+  return true
+}
+
 export default function ReportsPage() {
   const [agentFilter, setAgentFilter] = useState<string>('all')
+  const [dateFrom, setDateFrom] = useState<string>('')
+  const [dateTo, setDateTo] = useState<string>('')
 
   function downloadMeetingsReport() {
     const data = mockMeetings
       .filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
+      .filter(m => inRange(m.meeting_date, dateFrom, dateTo))
       .map(m => ({
         'Date': format(new Date(m.meeting_date), 'MMM d, yyyy h:mm a'),
         'Client': m.client?.company_name ?? '',
@@ -48,6 +59,7 @@ export default function ReportsPage() {
   function downloadClientsReport() {
     const data = mockClients
       .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter)
+      .filter(c => inRange(c.created_at, dateFrom, dateTo))
       .map(c => ({
         'Company Name': c.company_name,
         'Contact Person': c.contact_person,
@@ -70,6 +82,7 @@ export default function ReportsPage() {
   function downloadClockReport() {
     const data = mockClockRecords
       .filter(r => agentFilter === 'all' || r.agent_id === agentFilter)
+      .filter(r => inRange(r.timestamp, dateFrom, dateTo))
       .map(r => ({
         'Agent': r.agent?.full_name ?? '',
         'Type': r.type === 'office' ? 'Office' : 'Event',
@@ -86,9 +99,15 @@ export default function ReportsPage() {
     XLSX.writeFile(wb, `clock-report-${format(new Date(), 'yyyy-MM-dd')}.xlsx`)
   }
 
-  const filteredMeetings = mockMeetings.filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
-  const filteredClients = mockClients.filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter)
-  const filteredClock = mockClockRecords.filter(r => agentFilter === 'all' || r.agent_id === agentFilter)
+  const filteredMeetings = mockMeetings
+    .filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
+    .filter(m => inRange(m.meeting_date, dateFrom, dateTo))
+  const filteredClients = mockClients
+    .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter)
+    .filter(c => inRange(c.created_at, dateFrom, dateTo))
+  const filteredClock = mockClockRecords
+    .filter(r => agentFilter === 'all' || r.agent_id === agentFilter)
+    .filter(r => inRange(r.timestamp, dateFrom, dateTo))
 
   const reportTypes = [
     {
@@ -138,7 +157,7 @@ export default function ReportsPage() {
 
       <div className="flex-1 p-6 space-y-5">
         {/* Filter bar */}
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <FileBarChart2 className="w-4 h-4 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">Filter by agent:</p>
           <Select value={agentFilter} onValueChange={v => setAgentFilter(v ?? 'all')}>
@@ -152,9 +171,41 @@ export default function ReportsPage() {
               ))}
             </SelectContent>
           </Select>
+
+          <p className="text-sm text-muted-foreground">Date range:</p>
+          <Input
+            type="date"
+            value={dateFrom}
+            onChange={e => setDateFrom(e.target.value)}
+            className="w-40 h-9 bg-card border-border"
+          />
+          <span className="text-sm text-muted-foreground">to</span>
+          <Input
+            type="date"
+            value={dateTo}
+            onChange={e => setDateTo(e.target.value)}
+            className="w-40 h-9 bg-card border-border"
+          />
+
+          {(agentFilter !== 'all' || dateFrom || dateTo) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-9 text-xs text-muted-foreground"
+              onClick={() => { setAgentFilter('all'); setDateFrom(''); setDateTo('') }}
+            >
+              Clear filters
+            </Button>
+          )}
+
           {agentFilter !== 'all' && (
             <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/30">
-              Filtered: {agents.find(a => a.id === agentFilter)?.full_name}
+              Agent: {agents.find(a => a.id === agentFilter)?.full_name}
+            </Badge>
+          )}
+          {(dateFrom || dateTo) && (
+            <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/30">
+              {dateFrom || '…'} → {dateTo || '…'}
             </Badge>
           )}
         </div>
