@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Popup, ZoomControl, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Client } from '@/types'
@@ -54,14 +54,23 @@ export default function ClientMap({ clients, selectedId, onSelect, mapType }: Cl
       center={[14.55, 121.0]}
       zoom={10}
       scrollWheelZoom
+      zoomControl={false}
       style={{ height: '100%', width: '100%' }}
     >
+      <ZoomControl position="bottomright" />
       <TileLayer
         key={mapType}
         attribution={tile.attribution}
         url={tile.url}
         maxZoom={tile.maxZoom}
       />
+      {mapType === 'satellite' && (
+        <TileLayer
+          url={TILE_LAYERS.satellite.labelsUrl}
+          attribution={TILE_LAYERS.satellite.attribution}
+          maxZoom={TILE_LAYERS.satellite.maxZoom}
+        />
+      )}
       {plottable.map(client => {
         const status = getMapStatus(client)
         return (
