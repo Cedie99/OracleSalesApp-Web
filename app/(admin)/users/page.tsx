@@ -12,45 +12,47 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Search, UserPlus, Users, ShieldCheck, Briefcase, User,
-  MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
+  MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw, Route,
 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { createClient } from '@/lib/supabase/client'
 import { createUser, updateUser, toggleUserStatus } from './actions'
+import { ROLE_LABEL } from '@/lib/permissions'
+import { teamIdsForRole } from '@/lib/teams'
 import type { UserRole } from '@/types'
 
 const ROLE_STYLE: Record<UserRole, string> = {
   admin: 'bg-primary/15 text-primary border-primary/30',
   sales_manager: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
   sales_specialist: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+  rsr_manager: 'bg-teal-500/15 text-teal-400 border-teal-500/30',
   rsr: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
   collector: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
-}
-
-const ROLE_LABEL: Record<UserRole, string> = {
-  admin: 'Admin',
-  sales_manager: 'Sales Manager',
-  sales_specialist: 'Sales Specialist',
-  rsr: 'RSR',
-  collector: 'Collector',
 }
 
 const ROLE_ICON: Record<UserRole, React.ElementType> = {
   admin: ShieldCheck,
   sales_manager: Briefcase,
   sales_specialist: User,
+  rsr_manager: Route,
   rsr: Store,
   collector: Wallet,
 }
 
 const ROLE_DESCRIPTION: Record<UserRole, string> = {
   admin: 'Full system access — can manage users, clients, and all data.',
-  sales_manager: 'Oversees a team, approves client changes, and views all team sales.',
+  sales_manager: 'Oversees a team of sales specialists, approves client changes, and views all team sales.',
   sales_specialist: 'Front-line sales agent that logs meetings, clients, and clock records.',
+  rsr_manager: 'Oversees a team of RSRs and their daily route activity.',
   rsr: 'Route Sales Representative — visits stores daily and logs field activity.',
   collector: 'Handles payment collection from assigned stores with cash/check proof.',
+}
+
+interface TeamRow {
+  id: string
+  name: string
 }
 
 interface UserRow {
@@ -87,6 +89,7 @@ export default function UsersPage() {
 
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState<string>('all')
+  const [teams, setTeams] = useState<TeamRow[]>([])
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<UserRow | null>(null)
@@ -118,10 +121,20 @@ export default function UsersPage() {
     setLoading(false)
   }
 
+  async function loadTeams() {
+    const supabase = createClient()
+    const { data, error } = await supabase.from('teams').select('id, name').order('name')
+    if (error) console.error('Failed to load teams:', error.message)
+    setTeams(data ?? [])
+  }
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadUsers()
+    loadTeams()
   }, [])
+
+  const teamName = (teamId: string | null) => teams.find(t => t.id === teamId)?.name ?? '—'
 
   const filtered = users.filter(u => {
     const matchSearch =
@@ -136,6 +149,7 @@ export default function UsersPage() {
     admin: users.filter(u => u.role === 'admin').length,
     sales_manager: users.filter(u => u.role === 'sales_manager').length,
     sales_specialist: users.filter(u => u.role === 'sales_specialist').length,
+    rsr_manager: users.filter(u => u.role === 'rsr_manager').length,
     rsr: users.filter(u => u.role === 'rsr').length,
     collector: users.filter(u => u.role === 'collector').length,
     active: users.filter(u => u.is_active).length,
@@ -222,16 +236,17 @@ export default function UsersPage() {
         )}
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
           {([
             { label: 'Total Users', value: counts.total, icon: Users, color: 'text-foreground' },
             { label: 'Admins', value: counts.admin, icon: ShieldCheck, color: 'text-primary' },
             { label: 'Sales Managers', value: counts.sales_manager, icon: Briefcase, color: 'text-blue-400' },
             { label: 'Sales Specialists', value: counts.sales_specialist, icon: User, color: 'text-yellow-400' },
+            { label: 'RSR Managers', value: counts.rsr_manager, icon: Route, color: 'text-teal-400' },
             { label: 'RSR', value: counts.rsr, icon: Store, color: 'text-orange-400' },
             { label: 'Collectors', value: counts.collector, icon: Wallet, color: 'text-purple-400' },
           ] as const).map(({ label, value, icon: Icon, color }) => (
-            <Card key={label} className="bg-card border-border">
+            <Card key={label} className="bg-card border-border last:col-span-2 sm:last:col-span-1">
               <CardContent className="p-4 flex items-center gap-3">
                 <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
                   <Icon className={`w-4 h-4 ${color}`} />
@@ -265,6 +280,7 @@ export default function UsersPage() {
               <SelectItem value="admin">Admin</SelectItem>
               <SelectItem value="sales_manager">Sales Manager</SelectItem>
               <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
+              <SelectItem value="rsr_manager">RSR Manager</SelectItem>
               <SelectItem value="rsr">RSR</SelectItem>
               <SelectItem value="collector">Collector</SelectItem>
             </SelectContent>
@@ -339,7 +355,7 @@ export default function UsersPage() {
                           </Badge>
                         </td>
                         <td className="px-5 py-3 hidden md:table-cell">
-                          <span className="text-xs text-muted-foreground">{user.team_id ?? '—'}</span>
+                          <span className="text-xs text-muted-foreground">{teamName(user.team_id)}</span>
                         </td>
                         <td className="px-5 py-3 hidden lg:table-cell">
                           <span className="text-xs text-muted-foreground">
@@ -400,7 +416,7 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Create New User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -421,7 +437,7 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -445,12 +461,24 @@ interface UserFormProps {
   showPassword: boolean
   setShowPassword: (v: boolean) => void
   isCreate: boolean
+  teams: TeamRow[]
 }
 
-function UserForm({ form, setForm, showPassword, setShowPassword, isCreate }: UserFormProps) {
+function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, teams }: UserFormProps) {
   function set(field: keyof UserFormData, value: string) {
     setForm(prev => ({ ...prev, [field]: value }))
   }
+
+  function setRole(role: UserRole) {
+    const validTeamIds = teamIdsForRole(role)
+    setForm(prev => ({
+      ...prev,
+      role,
+      team_id: validTeamIds.includes(prev.team_id) ? prev.team_id : '',
+    }))
+  }
+
+  const availableTeams = teams.filter(t => teamIdsForRole(form.role).includes(t.id))
 
   return (
     <div className="space-y-4 py-2">
@@ -500,7 +528,7 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate }: Us
 
       <div className="space-y-1.5">
         <Label>Role</Label>
-        <Select value={form.role} onValueChange={v => set('role', v ?? 'sales_specialist')}>
+        <Select value={form.role} onValueChange={v => setRole((v as UserRole | null) ?? 'sales_specialist')}>
           <SelectTrigger>
             <SelectValue />
           </SelectTrigger>
@@ -508,6 +536,7 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate }: Us
             <SelectItem value="admin">Admin</SelectItem>
             <SelectItem value="sales_manager">Sales Manager</SelectItem>
             <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
+            <SelectItem value="rsr_manager">RSR Manager</SelectItem>
             <SelectItem value="rsr">RSR</SelectItem>
             <SelectItem value="collector">Collector</SelectItem>
           </SelectContent>
@@ -516,13 +545,22 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate }: Us
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="team_id">Team ID <span className="text-muted-foreground">(optional)</span></Label>
-        <Input
-          id="team_id"
-          placeholder="e.g. team-1"
-          value={form.team_id}
-          onChange={e => set('team_id', e.target.value)}
-        />
+        <Label>Team <span className="text-muted-foreground">(optional)</span></Label>
+        <Select
+          value={form.team_id || 'none'}
+          onValueChange={v => set('team_id', v === 'none' ? '' : (v ?? ''))}
+          disabled={availableTeams.length === 0}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder={availableTeams.length === 0 ? 'This role has no teams' : 'No team'} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">No team</SelectItem>
+            {availableTeams.map(t => (
+              <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
     </div>
   )
