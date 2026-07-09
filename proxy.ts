@@ -1,5 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { canAccessPath } from '@/lib/permissions'
+import type { UserRole } from '@/types'
 
 export async function proxy(request: NextRequest) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -31,8 +33,10 @@ export async function proxy(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
-  const isAuthPage = request.nextUrl.pathname.startsWith('/login')
-  const isProtected = !isAuthPage && request.nextUrl.pathname !== '/'
+  const pathname = request.nextUrl.pathname
+  const isAuthPage = pathname.startsWith('/login')
+  const isUnauthorizedPage = pathname.startsWith('/unauthorized')
+  const isProtected = !isAuthPage && !isUnauthorizedPage && pathname !== '/'
 
   if (!user && isProtected) {
     return NextResponse.redirect(new URL('/login', request.url))
@@ -40,6 +44,18 @@ export async function proxy(request: NextRequest) {
 
   if (user && isAuthPage) {
     return NextResponse.redirect(new URL('/dashboard', request.url))
+  }
+
+  if (user && isProtected) {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!canAccessPath(profile?.role as UserRole | undefined, pathname)) {
+      return NextResponse.redirect(new URL('/unauthorized', request.url))
+    }
   }
 
   return supabaseResponse
