@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,8 +8,9 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { mockClients, mockMeetings } from '@/lib/mock/data'
+import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { getMapStatus, isAvailableForReassignment, STATUS_META, TILE_LAYERS, type MapStatus, type MapTileType } from '@/components/maps/map-constants'
-import { Search, Building2, Phone, User, History, ShieldCheck, MapPin, Layers, LockOpen } from 'lucide-react'
+import { Search, Building2, Phone, User, History, ShieldCheck, MapPin, Layers, LockOpen, ChevronDown, Check } from 'lucide-react'
 import { format } from 'date-fns'
 
 const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
@@ -34,22 +35,60 @@ const TILE_KEYS = Object.keys(TILE_LAYERS) as MapTileType[]
 export default function MapsPage() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | MapStatus>('all')
-  const [mapType, setMapType] = useState<MapTileType>('light')
+  const [agentFilter, setAgentFilter] = useState<'all' | 'unassigned' | string>('all')
+  const [mapType, setMapType] = useState<MapTileType>('satellite')
+  const [mapTypeMenuOpen, setMapTypeMenuOpen] = useState(false)
+  const mapTypeMenuRef = useRef<HTMLDivElement>(null)
   const [selectedId, setSelectedId] = useState<string | null>(mockClients[0]?.id ?? null)
+  const { profile } = useCurrentProfile()
+  const isAdmin = profile?.role === 'admin'
+
+  useEffect(() => {
+    if (!mapTypeMenuOpen) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (mapTypeMenuRef.current && !mapTypeMenuRef.current.contains(e.target as Node)) {
+        setMapTypeMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [mapTypeMenuOpen])
+
+  const scopedClients = isAdmin
+    ? mockClients
+    : mockClients.filter(c => c.agent?.team_id === profile?.team_id)
+
+  const agentOptions = useMemo(() => {
+    const byId = new Map<string, string>()
+    let hasUnassigned = false
+    scopedClients.forEach(c => {
+      if (c.agent) byId.set(c.agent.id, c.agent.full_name)
+      else hasUnassigned = true
+    })
+    return {
+      hasUnassigned,
+      agents: Array.from(byId, ([id, full_name]) => ({ id, full_name })).sort((a, b) =>
+        a.full_name.localeCompare(b.full_name)
+      ),
+    }
+  }, [scopedClients])
 
   const filtered = useMemo(() => {
-    return mockClients.filter(c => {
+    return scopedClients.filter(c => {
       const status = getMapStatus(c)
       const matchStatus = statusFilter === 'all' || status === statusFilter
+      const matchAgent =
+        agentFilter === 'all' ||
+        (agentFilter === 'unassigned' ? !c.agent : c.agent?.id === agentFilter)
       const q = search.toLowerCase()
       const matchSearch =
         c.company_name.toLowerCase().includes(q) ||
         c.office_address.toLowerCase().includes(q)
-      return matchStatus && matchSearch
+      return matchStatus && matchAgent && matchSearch
     })
-  }, [search, statusFilter])
+  }, [scopedClients, search, statusFilter, agentFilter])
 
-  const selected = mockClients.find(c => c.id === selectedId) ?? null
+  const selected = scopedClients.find(c => c.id === selectedId) ?? null
   const selectedHistory = selected
     ? mockMeetings
         .filter(m => m.client_id === selected.id)
@@ -57,13 +96,13 @@ export default function MapsPage() {
     : []
 
   const counts = STATUS_KEYS.reduce((acc, key) => {
-    acc[key] = mockClients.filter(c => getMapStatus(c) === key).length
+    acc[key] = scopedClients.filter(c => getMapStatus(c) === key).length
     return acc
   }, {} as Record<MapStatus, number>)
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <Header title="Maps" subtitle={`${filtered.length} of ${mockClients.length} accounts plotted`} />
+      <Header title="Maps" subtitle={`${filtered.length} of ${scopedClients.length} accounts plotted`} />
 
       <div className="flex-1 flex min-h-0">
         {/* Left panel: search/filter + account list */}
@@ -78,17 +117,33 @@ export default function MapsPage() {
                 className="pl-9 h-9 bg-card border-border"
               />
             </div>
-            <Select value={statusFilter} onValueChange={v => setStatusFilter((v as MapStatus | null) ?? 'all')}>
-              <SelectTrigger className="w-full h-9 bg-card border-border">
-                <SelectValue placeholder="All Statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
-                {STATUS_KEYS.map(key => (
-                  <SelectItem key={key} value={key}>{STATUS_META[key].label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="grid grid-cols-2 gap-2">
+              <Select value={statusFilter} onValueChange={v => setStatusFilter((v as MapStatus | null) ?? 'all')}>
+                <SelectTrigger className="w-full h-9 bg-card border-border">
+                  <SelectValue placeholder="All Statuses" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Statuses</SelectItem>
+                  {STATUS_KEYS.map(key => (
+                    <SelectItem key={key} value={key}>{STATUS_META[key].label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={agentFilter} onValueChange={v => setAgentFilter(v ?? 'all')}>
+                <SelectTrigger className="w-full h-9 bg-card border-border">
+                  <SelectValue placeholder="All Agents" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Agents</SelectItem>
+                  {agentOptions.agents.map(agent => (
+                    <SelectItem key={agent.id} value={agent.id}>{agent.full_name}</SelectItem>
+                  ))}
+                  {agentOptions.hasUnassigned && (
+                    <SelectItem value="unassigned">Unassigned</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto divide-y divide-border min-h-0">
@@ -135,31 +190,68 @@ export default function MapsPage() {
           <ClientMap clients={filtered} selectedId={selectedId} onSelect={setSelectedId} mapType={mapType} />
 
           {/* Map type switcher */}
-          <Card className="absolute top-4 right-4 bg-card/95 border-border backdrop-blur-sm z-[1000] pt-0 gap-0">
-            <CardContent className="p-2">
-              <div className="flex items-center gap-1.5 px-1.5 pt-0.5 pb-1.5">
-                <Layers className="w-3 h-3 text-muted-foreground" />
-                <span className="text-[11px] font-semibold text-foreground">Map Type</span>
-              </div>
-              <div className="flex flex-col gap-0.5">
-                {TILE_KEYS.map(key => (
-                  <button
-                    key={key}
-                    onClick={() => setMapType(key)}
-                    className={`text-left px-2.5 py-1 rounded-md text-xs transition-colors ${
-                      mapType === key
-                        ? 'bg-primary/15 text-primary font-medium'
-                        : 'text-muted-foreground hover:bg-muted/50'
-                    }`}
-                  >
-                    {TILE_LAYERS[key].label}
-                  </button>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          <div ref={mapTypeMenuRef} className="absolute bottom-4 left-4 z-[1000]">
+            <button
+              type="button"
+              onClick={() => setMapTypeMenuOpen(o => !o)}
+              aria-expanded={mapTypeMenuOpen}
+              className="flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full bg-card/95 border border-border backdrop-blur-sm shadow-sm text-xs font-medium text-foreground hover:bg-muted/50 transition-colors"
+            >
+              <Layers className="w-3.5 h-3.5 text-muted-foreground" />
+              {TILE_LAYERS[mapType].label}
+              <ChevronDown className={`w-3 h-3 text-muted-foreground transition-transform ${mapTypeMenuOpen ? '' : 'rotate-180'}`} />
+            </button>
 
-          <Card className="absolute bottom-4 left-4 bg-card/95 border-border backdrop-blur-sm z-[1000] pt-0 gap-0">
+            {mapTypeMenuOpen && (
+              <Card className="absolute bottom-full left-0 mb-2 w-[15.5rem] bg-card/95 border-border backdrop-blur-sm py-0 gap-0">
+                <CardContent className="p-2">
+                  <div className="flex items-center gap-1.5 px-1 pt-0.5 pb-1.5">
+                    <Layers className="w-3 h-3 text-muted-foreground" />
+                    <span className="text-[11px] font-semibold text-foreground">Map Type</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {TILE_KEYS.map(key => {
+                      const active = mapType === key
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => {
+                            setMapType(key)
+                            setMapTypeMenuOpen(false)
+                          }}
+                          className="flex flex-col items-stretch gap-1 p-1 rounded-lg hover:bg-muted/50 transition-colors"
+                        >
+                          <div
+                            className={`relative w-full aspect-square rounded-md overflow-hidden ring-2 ${
+                              active ? 'ring-primary' : 'ring-transparent'
+                            }`}
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={TILE_LAYERS[key].preview}
+                              alt=""
+                              className="w-full h-full object-cover"
+                            />
+                            {active && (
+                              <div className="absolute top-1 right-1 bg-primary rounded-full p-0.5">
+                                <Check className="w-2 h-2 text-primary-foreground" />
+                              </div>
+                            )}
+                          </div>
+                          <span className={`text-[11px] text-center ${active ? 'text-primary font-medium' : 'text-muted-foreground'}`}>
+                            {TILE_LAYERS[key].label}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          <Card className="absolute top-4 right-4 bg-card/95 border-border backdrop-blur-sm z-[1000] pt-0 gap-0">
             <CardContent className="p-3 space-y-1.5">
               <p className="text-[11px] font-semibold text-foreground mb-1">Legend</p>
               {STATUS_KEYS.map(key => (

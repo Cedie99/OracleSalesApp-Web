@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { mockMeetings, mockClients, mockClockRecords, mockProfiles } from '@/lib/mock/data'
+import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { FileBarChart2, Download, FileSpreadsheet, Users, CalendarCheck, Clock } from 'lucide-react'
 import { format } from 'date-fns'
 import * as XLSX from 'xlsx'
@@ -16,8 +17,6 @@ const OUTCOME_LABEL: Record<string, string> = {
   successful: 'Successful', follow_up: 'Follow-up Required',
   no_decision: 'No Decision', lost_opportunity: 'Lost Opportunity',
 }
-
-const agents = mockProfiles.filter(p => p.role === 'sales_specialist' || p.role === 'sales_manager')
 
 function inRange(dateStr: string, from: string, to: string): boolean {
   const d = new Date(dateStr)
@@ -30,9 +29,19 @@ export default function ReportsPage() {
   const [agentFilter, setAgentFilter] = useState<string>('all')
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
+  const { profile } = useCurrentProfile()
+  const isAdmin = profile?.role === 'admin'
+
+  const agents = mockProfiles.filter(p =>
+    (p.role === 'sales_specialist' || p.role === 'sales_manager' || p.role === 'rsr' || p.role === 'rsr_manager') &&
+    (isAdmin || p.team_id === profile?.team_id)
+  )
+  const scopedMeetingsBase = isAdmin ? mockMeetings : mockMeetings.filter(m => m.agent?.team_id === profile?.team_id)
+  const scopedClientsBase = isAdmin ? mockClients : mockClients.filter(c => c.agent?.team_id === profile?.team_id)
+  const scopedClockBase = isAdmin ? mockClockRecords : mockClockRecords.filter(r => r.agent?.team_id === profile?.team_id)
 
   function downloadMeetingsReport() {
-    const data = mockMeetings
+    const data = scopedMeetingsBase
       .filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
       .filter(m => inRange(m.meeting_date, dateFrom, dateTo))
       .map(m => ({
@@ -57,7 +66,7 @@ export default function ReportsPage() {
   }
 
   function downloadClientsReport() {
-    const data = mockClients
+    const data = scopedClientsBase
       .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter)
       .filter(c => inRange(c.created_at, dateFrom, dateTo))
       .map(c => ({
@@ -80,7 +89,7 @@ export default function ReportsPage() {
   }
 
   function downloadClockReport() {
-    const data = mockClockRecords
+    const data = scopedClockBase
       .filter(r => agentFilter === 'all' || r.agent_id === agentFilter)
       .filter(r => inRange(r.timestamp, dateFrom, dateTo))
       .map(r => ({
@@ -99,13 +108,13 @@ export default function ReportsPage() {
     XLSX.writeFile(wb, `clock-report-${format(new Date(), 'yyyy-MM-dd')}.xlsx`)
   }
 
-  const filteredMeetings = mockMeetings
+  const filteredMeetings = scopedMeetingsBase
     .filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
     .filter(m => inRange(m.meeting_date, dateFrom, dateTo))
-  const filteredClients = mockClients
+  const filteredClients = scopedClientsBase
     .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter)
     .filter(c => inRange(c.created_at, dateFrom, dateTo))
-  const filteredClock = mockClockRecords
+  const filteredClock = scopedClockBase
     .filter(r => agentFilter === 'all' || r.agent_id === agentFilter)
     .filter(r => inRange(r.timestamp, dateFrom, dateTo))
 

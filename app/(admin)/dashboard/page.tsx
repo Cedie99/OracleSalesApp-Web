@@ -6,15 +6,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { mockDashboardMetrics, mockMeetings, mockEditRequests, mockProfiles } from '@/lib/mock/data'
+import { mockMeetings, mockEditRequests, mockProfiles } from '@/lib/mock/data'
+import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
+import { TEAM_1_ID, TEAM_2_ID, TEAM_RSR_1_ID, TEAM_RSR_2_ID } from '@/lib/teams'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from 'recharts'
 import {
   CalendarCheck, TrendingUp, Target, Trophy,
-  Users, CheckCircle2, Clock, Building2, BarChart3
+  Users, CheckCircle2, Clock, BarChart3
 } from 'lucide-react'
-import { format } from 'date-fns'
+import { format, isSameMonth, startOfMonth, subMonths } from 'date-fns'
+import type { CustomerType } from '@/types'
 
 const OUTCOME_COLOR: Record<string, string> = {
   successful: 'bg-primary/15 text-primary border-primary/30',
@@ -31,23 +34,35 @@ const OUTCOME_LABEL: Record<string, string> = {
 }
 
 const VIEW_OPTIONS = [
-  { id: 'super_admin', label: 'Super Admin — All Teams & Agencies', teamId: null as string | null },
-  { id: 'mgr-1', label: 'Manager View — Sir Eric Mendoza (Team 1)', teamId: 'team-1' },
-  { id: 'mgr-2', label: 'Manager View — Sir Mike Lim (Team 2)', teamId: 'team-2' },
+  { id: 'super_admin', label: 'Super Admin — All Teams & Agencies', shortLabel: 'Super Admin', teamId: null as string | null },
+  { id: 'mgr-1', label: 'Manager View — Sales Team 1', shortLabel: 'Sales Team 1', teamId: TEAM_1_ID },
+  { id: 'mgr-2', label: 'Manager View — Sales Team 2', shortLabel: 'Sales Team 2', teamId: TEAM_2_ID },
+  { id: 'rsr-mgr-1', label: 'RSR Manager View — RSR Team 1', shortLabel: 'RSR Team 1', teamId: TEAM_RSR_1_ID },
+  { id: 'rsr-mgr-2', label: 'RSR Manager View — RSR Team 2', shortLabel: 'RSR Team 2', teamId: TEAM_RSR_2_ID },
 ] as const
 
 const FIELD_AGENT_ROLES = ['sales_specialist', 'rsr'] as const
 
 export default function DashboardPage() {
-  const m = mockDashboardMetrics
-  const pending = mockEditRequests.filter(r => r.status === 'pending').length
+  const { profile } = useCurrentProfile()
+  const isAdmin = profile?.role === 'admin'
 
   const [viewAs, setViewAs] = useState<string>('super_admin')
   const [perfAgentFilter, setPerfAgentFilter] = useState<string>('all')
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
 
-  const currentView = VIEW_OPTIONS.find(v => v.id === viewAs) ?? VIEW_OPTIONS[0]
+  // Managers are locked to their own team; admins can switch freely.
+  const managerView = !isAdmin
+    ? VIEW_OPTIONS.find(v => v.teamId === profile?.team_id) ?? null
+    : null
+  const currentView = useMemo(
+    () =>
+      isAdmin
+        ? VIEW_OPTIONS.find(v => v.id === viewAs) ?? VIEW_OPTIONS[0]
+        : managerView ?? { id: 'no-team', label: 'No team assigned', teamId: '__none__' },
+    [isAdmin, viewAs, managerView]
+  )
 
   const scopedAgents = useMemo(
     () =>
@@ -59,17 +74,24 @@ export default function DashboardPage() {
     [currentView]
   )
 
+  // All meetings within the current team scope (not affected by the Agent
+  // Performance table's own agent/date filters below) — drives the metric
+  // cards, monthly trend, success rate, and outcome counts.
+  const teamMeetings = useMemo(
+    () => mockMeetings.filter(mtg => currentView.teamId === null || mtg.agent?.team_id === currentView.teamId),
+    [currentView]
+  )
+
   const scopedMeetings = useMemo(
     () =>
-      mockMeetings.filter(mtg => {
-        const inTeam = currentView.teamId === null || mtg.agent?.team_id === currentView.teamId
+      teamMeetings.filter(mtg => {
         const inAgent = perfAgentFilter === 'all' || mtg.agent_id === perfAgentFilter
         const d = new Date(mtg.meeting_date)
         const afterFrom = !dateFrom || d >= new Date(dateFrom)
         const beforeTo = !dateTo || d <= new Date(`${dateTo}T23:59:59`)
-        return inTeam && inAgent && afterFrom && beforeTo
+        return inAgent && afterFrom && beforeTo
       }),
-    [currentView, perfAgentFilter, dateFrom, dateTo]
+    [teamMeetings, perfAgentFilter, dateFrom, dateTo]
   )
 
   const agentPerformance = useMemo(
@@ -88,30 +110,93 @@ export default function DashboardPage() {
     [scopedAgents, scopedMeetings]
   )
 
-  const recentMeetings = mockMeetings
-    .filter(mtg => currentView.teamId === null || mtg.agent?.team_id === currentView.teamId)
-    .slice(0, 5)
+  const recentMeetings = useMemo(
+    () =>
+      [...teamMeetings]
+        .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
+        .slice(0, 5),
+    [teamMeetings]
+  )
+
+  const pending = useMemo(
+    () =>
+      mockEditRequests.filter(
+        r => r.status === 'pending' && (currentView.teamId === null || r.requester?.team_id === currentView.teamId)
+      ).length,
+    [currentView]
+  )
+
+  // Just this calendar month, within the team scope — drives the metric
+  // cards, success rate, and outcome counts (all "current month" stats).
+  const monthMeetings = useMemo(
+    () => teamMeetings.filter(mtg => isSameMonth(new Date(mtg.meeting_date), new Date())),
+    [teamMeetings]
+  )
+
+  const meetingsByType = useMemo(() => {
+    const counts: Record<CustomerType, number> = { existing: 0, new: 0, prospect: 0 }
+    monthMeetings.forEach(mtg => {
+      const type = mtg.client?.customer_type
+      if (type) counts[type] += 1
+    })
+    return counts
+  }, [monthMeetings])
+
+  const successfulByType = useMemo(() => {
+    const counts: Record<CustomerType, number> = { existing: 0, new: 0, prospect: 0 }
+    monthMeetings.forEach(mtg => {
+      const type = mtg.client?.customer_type
+      if (mtg.outcome === 'successful' && type) counts[type] += 1
+    })
+    return counts
+  }, [monthMeetings])
+
+  const closedDeals = useMemo(
+    () => monthMeetings.filter(mtg => mtg.outcome === 'successful').length,
+    [monthMeetings]
+  )
+
+  // Always 12 buckets (this month + the trailing 11), zero-filled, so the
+  // trend chart shows a real year regardless of how the data is distributed.
+  const monthlyTrend = useMemo(() => {
+    const months = Array.from({ length: 12 }, (_, i) => subMonths(startOfMonth(new Date()), 11 - i))
+    const buckets = months.map(d => ({
+      key: `${d.getFullYear()}-${d.getMonth()}`,
+      month: format(d, 'MMM'),
+      total: 0,
+      successful: 0,
+    }))
+    const bucketByKey = new Map(buckets.map(b => [b.key, b]))
+    teamMeetings.forEach(mtg => {
+      const d = new Date(mtg.meeting_date)
+      const bucket = bucketByKey.get(`${d.getFullYear()}-${d.getMonth()}`)
+      if (!bucket) return
+      bucket.total += 1
+      if (mtg.outcome === 'successful') bucket.successful += 1
+    })
+    return buckets.map(({ month, total, successful }) => ({ month, total, successful }))
+  }, [teamMeetings])
 
   const metricCards = [
     {
-      title: 'Total Meetings', value: m.totalMeetings, icon: CalendarCheck,
+      title: 'Total Meetings', value: monthMeetings.length, icon: CalendarCheck,
       sub: 'This month', color: 'text-primary',
     },
     {
-      title: 'Existing Clients', value: m.meetingsByType.existing, icon: Users,
-      sub: `${m.successfulByType.existing} successful`, color: 'text-blue-400',
+      title: 'Existing Clients', value: meetingsByType.existing, icon: Users,
+      sub: `${successfulByType.existing} successful`, color: 'text-blue-400',
     },
     {
-      title: 'New Clients', value: m.meetingsByType.new, icon: TrendingUp,
-      sub: `${m.successfulByType.new} successful`, color: 'text-yellow-400',
+      title: 'New Clients', value: meetingsByType.new, icon: TrendingUp,
+      sub: `${successfulByType.new} successful`, color: 'text-yellow-400',
     },
     {
-      title: 'Prospects', value: m.meetingsByType.prospect, icon: Target,
-      sub: `${m.successfulByType.prospect} successful`, color: 'text-purple-400',
+      title: 'Prospects', value: meetingsByType.prospect, icon: Target,
+      sub: `${successfulByType.prospect} successful`, color: 'text-purple-400',
     },
     {
-      title: 'Closed Deals', value: m.closedDeals, icon: Trophy,
-      sub: 'Prospect → Closed', color: 'text-primary',
+      title: 'Closed Deals', value: closedDeals, icon: Trophy,
+      sub: 'Successful meetings', color: 'text-primary',
     },
     {
       title: 'Pending Approvals', value: pending, icon: Clock,
@@ -125,30 +210,15 @@ export default function DashboardPage() {
         title="Dashboard"
         subtitle={`Overview for ${format(new Date(), 'MMMM yyyy')}`}
         pendingApprovals={pending}
+        viewSwitcher={isAdmin ? {
+          options: VIEW_OPTIONS.map(({ id, label }) => ({ id, label })),
+          value: viewAs,
+          activeLabel: VIEW_OPTIONS.find(v => v.id === viewAs)?.shortLabel ?? 'Super Admin',
+          onChange: setViewAs,
+        } : undefined}
       />
 
       <div className="flex-1 p-6 space-y-6">
-        {/* Role-scoped view switcher */}
-        <div className="flex items-center gap-3">
-          <Building2 className="w-4 h-4 text-muted-foreground shrink-0" />
-          <p className="text-sm text-muted-foreground shrink-0">Viewing as:</p>
-          <Select value={viewAs} onValueChange={v => setViewAs(v ?? 'super_admin')}>
-            <SelectTrigger className="w-72 h-9 bg-card border-border">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {VIEW_OPTIONS.map(opt => (
-                <SelectItem key={opt.id} value={opt.id}>{opt.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {currentView.teamId && (
-            <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/30">
-              Scoped to {currentView.teamId}
-            </Badge>
-          )}
-        </div>
-
         {/* Metric cards */}
         <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
           {metricCards.map(({ title, value, icon: Icon, sub, color }) => (
@@ -173,7 +243,7 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent>
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={m.monthlyTrend} barGap={4}>
+                <BarChart data={monthlyTrend} barGap={4}>
                   <CartesianGrid strokeDasharray="3 3" stroke="oklch(1 0 0 / 6%)" vertical={false} />
                   <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'oklch(0.55 0 0)' }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: 'oklch(0.55 0 0)' }} axisLine={false} tickLine={false} />
@@ -196,9 +266,9 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               {[
-                { label: 'Existing', meetings: m.meetingsByType.existing, successful: m.successfulByType.existing },
-                { label: 'New', meetings: m.meetingsByType.new, successful: m.successfulByType.new },
-                { label: 'Prospect', meetings: m.meetingsByType.prospect, successful: m.successfulByType.prospect },
+                { label: 'Existing', meetings: meetingsByType.existing, successful: successfulByType.existing },
+                { label: 'New', meetings: meetingsByType.new, successful: successfulByType.new },
+                { label: 'Prospect', meetings: meetingsByType.prospect, successful: successfulByType.prospect },
               ].map(({ label, meetings, successful }) => {
                 const pct = meetings > 0 ? Math.round((successful / meetings) * 100) : 0
                 return (
@@ -220,7 +290,7 @@ export default function DashboardPage() {
               <div className="pt-3 border-t border-border space-y-2">
                 <p className="text-xs font-medium text-foreground">Meeting Outcomes</p>
                 {Object.entries(OUTCOME_LABEL).map(([key, label]) => {
-                  const count = mockMeetings.filter(m => m.outcome === key).length
+                  const count = monthMeetings.filter(mtg => mtg.outcome === key).length
                   return (
                     <div key={key} className="flex items-center justify-between">
                       <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${OUTCOME_COLOR[key]}`}>

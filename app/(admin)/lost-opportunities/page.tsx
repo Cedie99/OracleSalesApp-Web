@@ -4,11 +4,17 @@ import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { mockClients, mockMeetings } from '@/lib/mock/data'
+import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { AlertTriangle, Building2, User, Calendar, Clock, Unlock } from 'lucide-react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 
 export default function LostOpportunitiesPage() {
-  const lostClients = mockClients.filter(c => c.status === 'lost')
+  const { profile } = useCurrentProfile()
+  const isAdmin = profile?.role === 'admin'
+
+  const lostClients = mockClients.filter(c =>
+    c.status === 'lost' && (isAdmin || c.agent?.team_id === profile?.team_id)
+  )
 
   return (
     <div className="flex flex-col flex-1">

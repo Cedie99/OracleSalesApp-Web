@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { mockEditRequests } from '@/lib/mock/data'
+import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import type { ApprovalStatus } from '@/types'
 import { ClipboardCheck, Check, X, Clock, ArrowRight } from 'lucide-react'
 import { format } from 'date-fns'
@@ -34,9 +35,15 @@ const VALUE_LABEL: Record<string, string> = {
 
 export default function ApprovalsPage() {
   const [requests, setRequests] = useState(mockEditRequests)
+  const { profile } = useCurrentProfile()
+  const isAdmin = profile?.role === 'admin'
 
-  const pending = requests.filter(r => r.status === 'pending')
-  const resolved = requests.filter(r => r.status !== 'pending')
+  const scopedRequests = isAdmin
+    ? requests
+    : requests.filter(r => r.requester?.team_id === profile?.team_id)
+
+  const pending = scopedRequests.filter(r => r.status === 'pending')
+  const resolved = scopedRequests.filter(r => r.status !== 'pending')
 
   function handleReview(id: string, action: 'approved' | 'rejected') {
     setRequests(prev => prev.map(r =>
