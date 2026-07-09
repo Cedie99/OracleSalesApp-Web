@@ -1,15 +1,32 @@
-import type { Profile, Client, Meeting, ClockRecord, ClientEditRequest, DashboardMetrics } from '@/types'
+import { startOfMonth, subMonths, addDays, subDays } from 'date-fns'
+import type { Profile, Client, Meeting, MeetingOutcome, ClockRecord, ClientEditRequest } from '@/types'
+import { TEAM_1_ID, TEAM_2_ID, TEAM_RSR_1_ID, TEAM_RSR_2_ID } from '@/lib/teams'
+
+// Meeting dates below are anchored to "today" (not hardcoded to a fixed
+// year) so the Dashboard's "this month" stats and 12-month trend chart
+// always have real data, no matter when the app is actually opened.
+const TODAY = new Date()
+
+/** N days before today, at a specific time of day. Always in the past — never a future date, regardless of what day of the month "today" is. */
+function daysAgo(n: number, hour: number, minute = 0): string {
+  const d = subDays(TODAY, n)
+  d.setHours(hour, minute, 0, 0)
+  return d.toISOString()
+}
 
 export const mockProfiles: Profile[] = [
-  { id: 'agent-1', user_id: 'u1', full_name: 'Cyril Santos', role: 'sales_specialist', team_id: 'team-1', created_at: '2024-01-10T08:00:00Z' },
-  { id: 'agent-2', user_id: 'u2', full_name: 'Jun Reyes', role: 'sales_specialist', team_id: 'team-1', created_at: '2024-01-12T08:00:00Z' },
-  { id: 'agent-3', user_id: 'u3', full_name: 'Maria Dela Cruz', role: 'sales_specialist', team_id: 'team-2', created_at: '2024-02-01T08:00:00Z' },
-  { id: 'mgr-1', user_id: 'u4', full_name: 'Sir Eric Mendoza', role: 'sales_manager', team_id: 'team-1', created_at: '2024-01-05T08:00:00Z' },
-  { id: 'mgr-2', user_id: 'u5', full_name: 'Sir Mike Lim', role: 'sales_manager', team_id: 'team-2', created_at: '2024-01-05T08:00:00Z' },
+  { id: 'agent-1', user_id: 'u1', full_name: 'Cyril Santos', role: 'sales_specialist', team_id: TEAM_1_ID, created_at: '2024-01-10T08:00:00Z' },
+  { id: 'agent-2', user_id: 'u2', full_name: 'Jun Reyes', role: 'sales_specialist', team_id: TEAM_1_ID, created_at: '2024-01-12T08:00:00Z' },
+  { id: 'agent-3', user_id: 'u3', full_name: 'Maria Dela Cruz', role: 'sales_specialist', team_id: TEAM_2_ID, created_at: '2024-02-01T08:00:00Z' },
+  { id: 'mgr-1', user_id: 'u4', full_name: 'Sir Eric Mendoza', role: 'sales_manager', team_id: TEAM_1_ID, created_at: '2024-01-05T08:00:00Z' },
+  { id: 'mgr-2', user_id: 'u5', full_name: 'Sir Mike Lim', role: 'sales_manager', team_id: TEAM_2_ID, created_at: '2024-01-05T08:00:00Z' },
   { id: 'admin-1', user_id: 'u6', full_name: 'Admin User', role: 'admin', team_id: null, created_at: '2024-01-01T08:00:00Z' },
-  { id: 'rsr-1', user_id: 'u7', full_name: 'Reggie Pascual', role: 'rsr', team_id: 'team-1', created_at: '2024-02-10T08:00:00Z' },
-  { id: 'rsr-2', user_id: 'u8', full_name: 'JP Villanueva', role: 'rsr', team_id: 'team-2', created_at: '2024-02-15T08:00:00Z' },
+  { id: 'rsr-1', user_id: 'u7', full_name: 'Reggie Pascual', role: 'rsr', team_id: TEAM_RSR_1_ID, created_at: '2024-02-10T08:00:00Z' },
+  { id: 'rsr-2', user_id: 'u8', full_name: 'JP Villanueva', role: 'rsr', team_id: TEAM_RSR_2_ID, created_at: '2024-02-15T08:00:00Z' },
   { id: 'col-1', user_id: 'u9', full_name: 'Billy Gabi', role: 'collector', team_id: null, created_at: '2024-03-01T08:00:00Z' },
+  { id: 'agent-4', user_id: 'u10', full_name: 'Ana Bautista', role: 'sales_specialist', team_id: TEAM_2_ID, created_at: '2024-02-20T08:00:00Z' },
+  { id: 'rsr-mgr-1', user_id: 'u11', full_name: 'Nestor Aquino', role: 'rsr_manager', team_id: TEAM_RSR_1_ID, created_at: '2024-01-08T08:00:00Z' },
+  { id: 'rsr-mgr-2', user_id: 'u12', full_name: 'Divina Cortez', role: 'rsr_manager', team_id: TEAM_RSR_2_ID, created_at: '2024-01-08T08:00:00Z' },
 ]
 
 export const mockClients: Client[] = [
@@ -76,9 +93,30 @@ export const mockClients: Client[] = [
     lost_at: '2026-05-23T00:00:00Z', reassignable_at: '2026-06-06T00:00:00Z', created_at: '2023-11-01T09:00:00Z', updated_at: '2026-05-23T09:00:00Z',
     agent: mockProfiles[2],
   },
+  {
+    id: 'client-10', company_name: 'Cavite Fresh Mart', contact_person: 'Jinky Ramirez', contact_position: 'Purchasing Officer',
+    contact_number: '09189991234', office_address: 'Dasmariñas, Cavite', office_lat: 14.3294, office_lng: 120.9367, customer_type: 'new',
+    sales_channel: 'dealer', assigned_agent_id: 'agent-4', status: 'active',
+    lost_at: null, reassignable_at: null, created_at: '2024-06-15T09:00:00Z', updated_at: '2024-06-15T09:00:00Z',
+    agent: mockProfiles[9],
+  },
+  {
+    id: 'client-11', company_name: '7-Eleven Commonwealth', contact_person: 'Grace Fernandez', contact_position: 'Branch Supervisor',
+    contact_number: '09201234567', office_address: 'Commonwealth Ave, Quezon City', office_lat: 14.6969, office_lng: 121.0817, customer_type: 'existing',
+    sales_channel: 'distributor', assigned_agent_id: 'rsr-1', status: 'active',
+    lost_at: null, reassignable_at: null, created_at: '2024-01-20T09:00:00Z', updated_at: '2024-06-01T09:00:00Z',
+    agent: mockProfiles[6],
+  },
+  {
+    id: 'client-12', company_name: 'Mercury Drug Cubao', contact_person: 'Allan Ibarra', contact_position: 'Store Manager',
+    contact_number: '09301234567', office_address: 'Cubao, Quezon City', office_lat: 14.6197, office_lng: 121.0529, customer_type: 'existing',
+    sales_channel: 'distributor', assigned_agent_id: 'rsr-2', status: 'active',
+    lost_at: null, reassignable_at: null, created_at: '2024-01-22T09:00:00Z', updated_at: '2024-06-01T09:00:00Z',
+    agent: mockProfiles[7],
+  },
 ]
 
-export const mockMeetings: Meeting[] = [
+const flagshipMeetings: Meeting[] = [
   {
     id: 'meet-1', client_id: 'client-1', agent_id: 'agent-1', recorded_by: null,
     meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
@@ -86,7 +124,7 @@ export const mockMeetings: Meeting[] = [
     agenda: ['New business opportunity', 'Price negotiation/quotation'],
     remarks: 'Client is interested in expanding the contract.', outcome: 'successful',
     contact_person: 'Bong Aquino', contact_position: 'Procurement Manager',
-    meeting_date: '2024-06-25T10:00:00Z', created_at: '2024-06-25T10:05:00Z',
+    meeting_date: daysAgo(0, 10, 0), created_at: daysAgo(0, 10, 0),
     client: mockClients[0], agent: mockProfiles[0],
   },
   {
@@ -96,7 +134,7 @@ export const mockMeetings: Meeting[] = [
     agenda: ['Product/Company presentation', 'Relationship building'],
     remarks: 'First meeting. Client is receptive.', outcome: 'follow_up',
     contact_person: 'Maricel Torres', contact_position: 'Owner',
-    meeting_date: '2024-06-24T14:00:00Z', created_at: '2024-06-24T14:10:00Z',
+    meeting_date: daysAgo(3, 14, 0), created_at: daysAgo(3, 14, 0),
     client: mockClients[1], agent: mockProfiles[0], recorder: mockProfiles[3],
   },
   {
@@ -106,7 +144,7 @@ export const mockMeetings: Meeting[] = [
     agenda: ['New business opportunity'],
     remarks: null, outcome: 'no_decision',
     contact_person: 'Ramon Cruz', contact_position: 'CEO',
-    meeting_date: '2024-06-23T09:00:00Z', created_at: '2024-06-23T09:15:00Z',
+    meeting_date: daysAgo(2, 9, 0), created_at: daysAgo(2, 9, 0),
     client: mockClients[2], agent: mockProfiles[1],
   },
   {
@@ -116,7 +154,7 @@ export const mockMeetings: Meeting[] = [
     agenda: ['Negotiation (other matters)', 'Collection'],
     remarks: 'Client decided to go with a competitor.', outcome: 'lost_opportunity',
     contact_person: 'Lito Fernandez', contact_position: 'VP Sales',
-    meeting_date: '2024-06-10T11:00:00Z', created_at: '2024-06-10T11:20:00Z',
+    meeting_date: daysAgo(9, 11, 0), created_at: daysAgo(9, 11, 0),
     client: mockClients[3], agent: mockProfiles[2],
   },
   {
@@ -126,7 +164,7 @@ export const mockMeetings: Meeting[] = [
     agenda: ['Closed deal'],
     remarks: 'Contract signed for 6 months.', outcome: 'successful',
     contact_person: 'Susan Ramos', contact_position: 'Director',
-    meeting_date: '2024-06-22T13:00:00Z', created_at: '2024-06-22T13:30:00Z',
+    meeting_date: daysAgo(5, 13, 0), created_at: daysAgo(5, 13, 0),
     client: mockClients[4], agent: mockProfiles[1],
   },
   {
@@ -136,10 +174,87 @@ export const mockMeetings: Meeting[] = [
     agenda: ['Product/Company presentation', 'New business opportunity'],
     remarks: 'Promising lead. Needs follow up next week.', outcome: 'follow_up',
     contact_person: 'Karen Go', contact_position: 'Area Manager',
-    meeting_date: '2024-06-21T15:00:00Z', created_at: '2024-06-21T15:10:00Z',
+    meeting_date: daysAgo(4, 15, 0), created_at: daysAgo(4, 15, 0),
     client: mockClients[5], agent: mockProfiles[2],
   },
+  {
+    id: 'meet-7', client_id: 'client-10', agent_id: 'agent-4', recorded_by: null,
+    meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
+    gps_lat: 14.3294, gps_lng: 120.9367, photo_url: null,
+    agenda: ['New business opportunity', 'Product/Company presentation'],
+    remarks: 'Owner wants a sample delivery before committing.', outcome: 'successful',
+    contact_person: 'Jinky Ramirez', contact_position: 'Purchasing Officer',
+    meeting_date: daysAgo(6, 10, 0), created_at: daysAgo(6, 10, 0),
+    client: mockClients[9], agent: mockProfiles[9],
+  },
+  {
+    id: 'meet-8', client_id: 'client-11', agent_id: 'rsr-1', recorded_by: null,
+    meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
+    gps_lat: 14.6969, gps_lng: 121.0817, photo_url: null,
+    agenda: ['Store visit', 'Stock check'],
+    remarks: 'Restocked shelves and confirmed next delivery schedule.', outcome: 'successful',
+    contact_person: 'Grace Fernandez', contact_position: 'Branch Supervisor',
+    meeting_date: daysAgo(3, 10, 0), created_at: daysAgo(3, 10, 0),
+    client: mockClients[10], agent: mockProfiles[6],
+  },
+  {
+    id: 'meet-9', client_id: 'client-12', agent_id: 'rsr-2', recorded_by: null,
+    meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
+    gps_lat: 14.6197, gps_lng: 121.0529, photo_url: null,
+    agenda: ['Store visit', 'Stock check'],
+    remarks: 'Store manager requested additional promo materials.', outcome: 'follow_up',
+    contact_person: 'Allan Ibarra', contact_position: 'Store Manager',
+    meeting_date: daysAgo(1, 14, 0), created_at: daysAgo(1, 14, 0),
+    client: mockClients[11], agent: mockProfiles[7],
+  },
 ]
+
+// Synthetic meetings for the 11 months before the current one, purely so the
+// Dashboard's 12-month trend chart has real variation to show, not just one
+// populated bar. Cycles through every agent (sales_specialist and rsr) who
+// actually owns clients — reusing the Meeting concept for RSR activity too,
+// since there's no separate store-visit data model yet.
+function generateHistoricalMeetings(): Meeting[] {
+  const agents = [mockProfiles[0], mockProfiles[1], mockProfiles[2], mockProfiles[9], mockProfiles[6], mockProfiles[7]]
+  const outcomes: MeetingOutcome[] = ['successful', 'follow_up', 'no_decision', 'lost_opportunity']
+  const meetings: Meeting[] = []
+
+  // Each agent's *own* client roster, so filler meetings rotate across all
+  // of their real accounts instead of piling onto whichever one .find()
+  // happens to hit first.
+  const clientsByAgent = new Map(
+    agents.map(agent => [agent.id, mockClients.filter(c => c.assigned_agent_id === agent.id)])
+  )
+  const nextClientIndex = new Map(agents.map(agent => [agent.id, 0]))
+
+  for (let monthsAgo = 11; monthsAgo >= 1; monthsAgo--) {
+    const monthStart = startOfMonth(subMonths(TODAY, monthsAgo))
+    const count = 3 + (monthsAgo % 3) // 3-5 meetings per month
+    for (let i = 0; i < count; i++) {
+      const agent = agents[(monthsAgo + i) % agents.length]
+      const agentClients = clientsByAgent.get(agent.id) ?? [mockClients[0]]
+      const clientIndex = nextClientIndex.get(agent.id) ?? 0
+      const client = agentClients[clientIndex % agentClients.length]
+      nextClientIndex.set(agent.id, clientIndex + 1)
+      const outcome = outcomes[(monthsAgo + i * 2) % outcomes.length]
+      const date = addDays(monthStart, 2 + ((i * 6) % 24))
+      date.setHours(9 + (i % 6), 0, 0, 0)
+      meetings.push({
+        id: `meet-hist-${monthsAgo}-${i}`,
+        client_id: client.id, agent_id: agent.id, recorded_by: null,
+        meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
+        gps_lat: client.office_lat ?? null, gps_lng: client.office_lng ?? null, photo_url: null,
+        agenda: ['Relationship building'], remarks: null, outcome,
+        contact_person: client.contact_person, contact_position: client.contact_position,
+        meeting_date: date.toISOString(), created_at: date.toISOString(),
+        client, agent,
+      })
+    }
+  }
+  return meetings
+}
+
+export const mockMeetings: Meeting[] = [...flagshipMeetings, ...generateHistoricalMeetings()]
 
 export const mockEditRequests: ClientEditRequest[] = [
   {
@@ -160,47 +275,52 @@ export const mockEditRequests: ClientEditRequest[] = [
     status: 'rejected', reviewed_by: 'mgr-1', reviewed_at: '2024-06-22T14:00:00Z', created_at: '2024-06-22T08:00:00Z',
     client: mockClients[2], requester: mockProfiles[1], reviewer: mockProfiles[3],
   },
-]
-
-export const mockClockRecords: ClockRecord[] = [
   {
-    id: 'clk-1', agent_id: 'agent-1', type: 'office', action: 'in',
-    gps_lat: 14.5547, gps_lng: 121.0244, photo_url: null, event_name: null,
-    timestamp: '2024-06-25T08:02:00Z', created_at: '2024-06-25T08:02:00Z', agent: mockProfiles[0],
+    id: 'req-4', client_id: 'client-6', requested_by: 'agent-3',
+    changes: { contact_number: { old: '09671110000', new: '09671110001' } },
+    status: 'pending', reviewed_by: null, reviewed_at: null, created_at: '2024-06-21T16:00:00Z',
+    client: mockClients[5], requester: mockProfiles[2],
   },
   {
-    id: 'clk-2', agent_id: 'agent-1', type: 'office', action: 'out',
-    gps_lat: 14.5547, gps_lng: 121.0244, photo_url: null, event_name: null,
-    timestamp: '2024-06-25T18:00:00Z', created_at: '2024-06-25T18:00:00Z', agent: mockProfiles[0],
-  },
-  {
-    id: 'clk-3', agent_id: 'agent-2', type: 'event', action: 'in',
-    gps_lat: 14.5995, gps_lng: 120.9842, photo_url: null, event_name: 'Trade Fair PICC 2024',
-    timestamp: '2024-06-24T09:00:00Z', created_at: '2024-06-24T09:00:00Z', agent: mockProfiles[1],
-  },
-  {
-    id: 'clk-4', agent_id: 'agent-2', type: 'event', action: 'out',
-    gps_lat: 14.5995, gps_lng: 120.9842, photo_url: null, event_name: 'Trade Fair PICC 2024',
-    timestamp: '2024-06-24T17:30:00Z', created_at: '2024-06-24T17:30:00Z', agent: mockProfiles[1],
-  },
-  {
-    id: 'clk-5', agent_id: 'agent-3', type: 'office', action: 'in',
-    gps_lat: 14.4221, gps_lng: 121.0348, photo_url: null, event_name: null,
-    timestamp: '2024-06-25T07:55:00Z', created_at: '2024-06-25T07:55:00Z', agent: mockProfiles[2],
+    id: 'req-5', client_id: 'client-10', requested_by: 'agent-4',
+    changes: { customer_type: { old: 'new', new: 'existing' } },
+    status: 'approved', reviewed_by: 'mgr-2', reviewed_at: '2024-06-17T09:00:00Z', created_at: '2024-06-16T11:00:00Z',
+    client: mockClients[9], requester: mockProfiles[9], reviewer: mockProfiles[4],
   },
 ]
 
-export const mockDashboardMetrics: DashboardMetrics = {
-  totalMeetings: 24,
-  meetingsByType: { existing: 10, new: 8, prospect: 6 },
-  successfulByType: { existing: 7, new: 5, prospect: 2 },
-  closedDeals: 3,
-  monthlyTrend: [
-    { month: 'Jan', total: 12, successful: 8 },
-    { month: 'Feb', total: 15, successful: 10 },
-    { month: 'Mar', total: 18, successful: 11 },
-    { month: 'Apr', total: 20, successful: 13 },
-    { month: 'May', total: 22, successful: 15 },
-    { month: 'Jun', total: 24, successful: 14 },
-  ],
+// One clock-in/out pair per agent per calendar day that they had a meeting —
+// derived straight from mockMeetings (flagship + the 11-month historical
+// spread), so Clock Records/Reports have the same real coverage as Meetings
+// instead of a handful of hand-picked entries.
+function generateClockRecordsFromMeetings(): ClockRecord[] {
+  const seenAgentDays = new Set<string>()
+  const records: ClockRecord[] = []
+
+  for (const mtg of mockMeetings) {
+    if (!mtg.agent) continue
+    const d = new Date(mtg.meeting_date)
+    const agentDayKey = `${mtg.agent_id}|${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+    if (seenAgentDays.has(agentDayKey)) continue
+    seenAgentDays.add(agentDayKey)
+
+    const clockIn = new Date(d)
+    clockIn.setHours(8, 0, 0, 0)
+    const clockOut = new Date(d)
+    clockOut.setHours(17, 30, 0, 0)
+
+    records.push({
+      id: `clk-${mtg.id}-in`, agent_id: mtg.agent_id, type: 'office', action: 'in',
+      gps_lat: mtg.gps_lat, gps_lng: mtg.gps_lng, photo_url: null, event_name: null,
+      timestamp: clockIn.toISOString(), created_at: clockIn.toISOString(), agent: mtg.agent,
+    })
+    records.push({
+      id: `clk-${mtg.id}-out`, agent_id: mtg.agent_id, type: 'office', action: 'out',
+      gps_lat: mtg.gps_lat, gps_lng: mtg.gps_lng, photo_url: null, event_name: null,
+      timestamp: clockOut.toISOString(), created_at: clockOut.toISOString(), agent: mtg.agent,
+    })
+  }
+  return records
 }
+
+export const mockClockRecords: ClockRecord[] = generateClockRecordsFromMeetings()
