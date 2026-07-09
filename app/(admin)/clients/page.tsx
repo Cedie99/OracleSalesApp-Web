@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { mockClients } from '@/lib/mock/data'
+import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import type { CustomerType, SalesChannel, ClientStatus } from '@/types'
 import { Search, Building2, Phone, MapPin, User } from 'lucide-react'
 import { format } from 'date-fns'
@@ -41,8 +42,14 @@ export default function ClientsPage() {
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [channelFilter, setChannelFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const { profile } = useCurrentProfile()
+  const isAdmin = profile?.role === 'admin'
 
-  const filtered = mockClients.filter(c => {
+  const scopedClients = isAdmin
+    ? mockClients
+    : mockClients.filter(c => c.agent?.team_id === profile?.team_id)
+
+  const filtered = scopedClients.filter(c => {
     const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
       c.contact_person.toLowerCase().includes(search.toLowerCase()) ||
       (c.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase())
@@ -54,7 +61,7 @@ export default function ClientsPage() {
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Clients" subtitle={`${filtered.length} of ${mockClients.length} clients`} />
+      <Header title="Clients" subtitle={`${filtered.length} of ${scopedClients.length} clients`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Filters */}
