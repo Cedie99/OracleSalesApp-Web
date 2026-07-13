@@ -1,6 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
-import { canAccessPath } from '@/lib/permissions'
+import { hasWebAccess } from '@/lib/permissions'
 import type { UserRole } from '@/types'
 
 export async function proxy(request: NextRequest) {
@@ -53,7 +53,7 @@ export async function proxy(request: NextRequest) {
       .eq('user_id', user.id)
       .single()
 
-    if (!canAccessPath(profile?.role as UserRole | undefined, pathname)) {
+    if (!hasWebAccess(profile?.role as UserRole | undefined)) {
       return NextResponse.redirect(new URL('/unauthorized', request.url))
     }
   }

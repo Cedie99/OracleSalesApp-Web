@@ -11,41 +11,42 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
-  Search, UserPlus, Users, ShieldCheck, Briefcase, User,
-  MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw, Route,
+  Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
+  MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { createClient } from '@/lib/supabase/client'
 import { createUser, updateUser, toggleUserStatus } from './actions'
-import { ROLE_LABEL } from '@/lib/permissions'
+import { ROLE_LABEL, canManageUsers } from '@/lib/permissions'
+import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { teamIdsForRole } from '@/lib/teams'
 import type { UserRole } from '@/types'
 
 const ROLE_STYLE: Record<UserRole, string> = {
+  superadmin: 'bg-primary/15 text-primary border-primary/30',
   admin: 'bg-primary/15 text-primary border-primary/30',
   sales_manager: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
   sales_specialist: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  rsr_manager: 'bg-teal-500/15 text-teal-400 border-teal-500/30',
   rsr: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
   collector: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
 }
 
 const ROLE_ICON: Record<UserRole, React.ElementType> = {
+  superadmin: ShieldEllipsis,
   admin: ShieldCheck,
   sales_manager: Briefcase,
   sales_specialist: User,
-  rsr_manager: Route,
   rsr: Store,
   collector: Wallet,
 }
 
 const ROLE_DESCRIPTION: Record<UserRole, string> = {
-  admin: 'Full system access — can manage users, clients, and all data.',
-  sales_manager: 'Oversees a team of sales specialists, approves client changes, and views all team sales.',
+  superadmin: 'Full system access — the only role that can create or edit admin accounts.',
+  admin: 'Full operational access to clients, meetings, reports, approvals, and maps — user management is view-only.',
+  sales_manager: 'Oversees a team of sales specialists or RSRs, approves client changes, and views all team sales.',
   sales_specialist: 'Front-line sales agent that logs meetings, clients, and clock records.',
-  rsr_manager: 'Oversees a team of RSRs and their daily route activity.',
   rsr: 'Route Sales Representative — visits stores daily and logs field activity.',
   collector: 'Handles payment collection from assigned stores with cash/check proof.',
 }
@@ -83,6 +84,8 @@ const EMPTY_FORM: UserFormData = {
 }
 
 export default function UsersPage() {
+  const { profile } = useCurrentProfile()
+  const canManage = canManageUsers(profile?.role)
   const [users, setUsers] = useState<UserRow[]>([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState('')
@@ -146,10 +149,10 @@ export default function UsersPage() {
 
   const counts = {
     total: users.length,
+    superadmin: users.filter(u => u.role === 'superadmin').length,
     admin: users.filter(u => u.role === 'admin').length,
     sales_manager: users.filter(u => u.role === 'sales_manager').length,
     sales_specialist: users.filter(u => u.role === 'sales_specialist').length,
-    rsr_manager: users.filter(u => u.role === 'rsr_manager').length,
     rsr: users.filter(u => u.role === 'rsr').length,
     collector: users.filter(u => u.role === 'collector').length,
     active: users.filter(u => u.is_active).length,
@@ -239,10 +242,10 @@ export default function UsersPage() {
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
           {([
             { label: 'Total Users', value: counts.total, icon: Users, color: 'text-foreground' },
+            { label: 'Super Admins', value: counts.superadmin, icon: ShieldEllipsis, color: 'text-primary' },
             { label: 'Admins', value: counts.admin, icon: ShieldCheck, color: 'text-primary' },
             { label: 'Sales Managers', value: counts.sales_manager, icon: Briefcase, color: 'text-blue-400' },
             { label: 'Sales Specialists', value: counts.sales_specialist, icon: User, color: 'text-yellow-400' },
-            { label: 'RSR Managers', value: counts.rsr_manager, icon: Route, color: 'text-teal-400' },
             { label: 'RSR', value: counts.rsr, icon: Store, color: 'text-orange-400' },
             { label: 'Collectors', value: counts.collector, icon: Wallet, color: 'text-purple-400' },
           ] as const).map(({ label, value, icon: Icon, color }) => (
@@ -277,10 +280,10 @@ export default function UsersPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Roles</SelectItem>
+              <SelectItem value="superadmin">Super Admin</SelectItem>
               <SelectItem value="admin">Admin</SelectItem>
               <SelectItem value="sales_manager">Sales Manager</SelectItem>
               <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
-              <SelectItem value="rsr_manager">RSR Manager</SelectItem>
               <SelectItem value="rsr">RSR</SelectItem>
               <SelectItem value="collector">Collector</SelectItem>
             </SelectContent>
@@ -289,10 +292,12 @@ export default function UsersPage() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
-          <Button onClick={openCreate} size="sm" className="h-9 gap-2">
-            <UserPlus className="w-4 h-4" />
-            Create User
-          </Button>
+          {canManage && (
+            <Button onClick={openCreate} size="sm" className="h-9 gap-2">
+              <UserPlus className="w-4 h-4" />
+              Create User
+            </Button>
+          )}
         </div>
 
         {/* Table */}
@@ -374,24 +379,32 @@ export default function UsersPage() {
                           </Badge>
                         </td>
                         <td className="px-5 py-3 text-right">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger className="inline-flex items-center justify-center w-7 h-7 rounded-md hover:bg-accent transition-colors">
-                              <MoreHorizontal className="w-4 h-4 text-muted-foreground" />
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => openEdit(user)} className="gap-2">
-                                <Pencil className="w-3.5 h-3.5" />
-                                Edit
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => handleToggleStatus(user)}
-                                className={`gap-2 ${user.is_active ? 'text-destructive focus:text-destructive' : ''}`}
-                              >
-                                <Ban className="w-3.5 h-3.5" />
-                                {user.is_active ? 'Deactivate' : 'Reactivate'}
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                          {(() => {
+                            const locked = !canManage
+                            return (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger
+                                  className="inline-flex items-center justify-center w-7 h-7 rounded-md hover:bg-accent transition-colors disabled:opacity-40"
+                                  disabled={locked}
+                                >
+                                  <MoreHorizontal className="w-4 h-4 text-muted-foreground" />
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onClick={() => openEdit(user)} className="gap-2">
+                                    <Pencil className="w-3.5 h-3.5" />
+                                    Edit
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={() => handleToggleStatus(user)}
+                                    className={`gap-2 ${user.is_active ? 'text-destructive focus:text-destructive' : ''}`}
+                                  >
+                                    <Ban className="w-3.5 h-3.5" />
+                                    {user.is_active ? 'Deactivate' : 'Reactivate'}
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            )
+                          })()}
                         </td>
                       </tr>
                     )
@@ -416,7 +429,7 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Create New User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} canCreateAdmins={canManage} />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -437,7 +450,7 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} canCreateAdmins={canManage} />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -462,9 +475,10 @@ interface UserFormProps {
   setShowPassword: (v: boolean) => void
   isCreate: boolean
   teams: TeamRow[]
+  canCreateAdmins: boolean
 }
 
-function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, teams }: UserFormProps) {
+function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, teams, canCreateAdmins }: UserFormProps) {
   function set(field: keyof UserFormData, value: string) {
     setForm(prev => ({ ...prev, [field]: value }))
   }
@@ -533,10 +547,10 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="admin">Admin</SelectItem>
+            {canCreateAdmins && <SelectItem value="superadmin">Super Admin</SelectItem>}
+            {canCreateAdmins && <SelectItem value="admin">Admin</SelectItem>}
             <SelectItem value="sales_manager">Sales Manager</SelectItem>
             <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
-            <SelectItem value="rsr_manager">RSR Manager</SelectItem>
             <SelectItem value="rsr">RSR</SelectItem>
             <SelectItem value="collector">Collector</SelectItem>
           </SelectContent>
