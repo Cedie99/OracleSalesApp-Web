@@ -1,6 +1,8 @@
 'use server'
 
 import { createAdminClient } from '@/lib/supabase/admin'
+import { createClient } from '@/lib/supabase/server'
+import { canManageUsers } from '@/lib/permissions'
 import type { UserRole } from '@/types'
 
 interface CreateUserPayload {
@@ -18,7 +20,28 @@ interface UpdateUserPayload {
   team_id: string | null
 }
 
+/** Only a superadmin may create/edit/deactivate any user. Admins are view-only. */
+async function requireCallerIsSuperadmin(): Promise<string | null> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return 'Not authenticated.'
+
+  const { data: callerProfile } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('user_id', user.id)
+    .single()
+
+  if (!canManageUsers(callerProfile?.role as UserRole | undefined)) {
+    return 'Only a superadmin can manage users.'
+  }
+  return null
+}
+
 export async function createUser(data: CreateUserPayload): Promise<{ error: string | null }> {
+  const permError = await requireCallerIsSuperadmin()
+  if (permError) return { error: permError }
+
   const supabase = createAdminClient()
 
   const { data: authData, error: authError } = await supabase.auth.admin.createUser({
@@ -47,6 +70,9 @@ export async function createUser(data: CreateUserPayload): Promise<{ error: stri
 }
 
 export async function updateUser(profileId: string, data: UpdateUserPayload): Promise<{ error: string | null }> {
+  const authError = await requireCallerIsSuperadmin()
+  if (authError) return { error: authError }
+
   const supabase = createAdminClient()
 
   const { error } = await supabase
@@ -63,6 +89,9 @@ export async function updateUser(profileId: string, data: UpdateUserPayload): Pr
 }
 
 export async function toggleUserStatus(profileId: string, isActive: boolean): Promise<{ error: string | null }> {
+  const authError = await requireCallerIsSuperadmin()
+  if (authError) return { error: authError }
+
   const supabase = createAdminClient()
 
   const { error } = await supabase
