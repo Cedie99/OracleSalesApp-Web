@@ -8,7 +8,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { mockMeetings, mockClients, mockClockRecords, mockProfiles } from '@/lib/mock/data'
-import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { FileBarChart2, Download, FileSpreadsheet, Users, CalendarCheck, Clock } from 'lucide-react'
 import { format } from 'date-fns'
 import * as XLSX from 'xlsx'
@@ -29,16 +28,13 @@ export default function ReportsPage() {
   const [agentFilter, setAgentFilter] = useState<string>('all')
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
-  const { profile } = useCurrentProfile()
-  const isAdmin = profile?.role === 'admin'
 
   const agents = mockProfiles.filter(p =>
-    (p.role === 'sales_specialist' || p.role === 'sales_manager' || p.role === 'rsr' || p.role === 'rsr_manager') &&
-    (isAdmin || p.team_id === profile?.team_id)
+    p.role === 'sales_specialist' || p.role === 'sales_manager' || p.role === 'rsr'
   )
-  const scopedMeetingsBase = isAdmin ? mockMeetings : mockMeetings.filter(m => m.agent?.team_id === profile?.team_id)
-  const scopedClientsBase = isAdmin ? mockClients : mockClients.filter(c => c.agent?.team_id === profile?.team_id)
-  const scopedClockBase = isAdmin ? mockClockRecords : mockClockRecords.filter(r => r.agent?.team_id === profile?.team_id)
+  const scopedMeetingsBase = mockMeetings
+  const scopedClientsBase = mockClients
+  const scopedClockBase = mockClockRecords
 
   function downloadMeetingsReport() {
     const data = scopedMeetingsBase
@@ -261,7 +257,7 @@ export default function ReportsPage() {
 
         {/* Export note */}
         <p className="text-xs text-muted-foreground text-center">
-          Reports are exported as .xlsx files and include all data visible to your admin account.
+          Reports are exported as .xlsx files and include all data across every team.
         </p>
       </div>
     </div>
