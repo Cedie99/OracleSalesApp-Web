@@ -1,4 +1,4 @@
-export type UserRole = 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr_manager' | 'rsr' | 'collector'
+export type UserRole = 'superadmin' | 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector'
 export type CustomerType = 'existing' | 'new' | 'prospect'
 export type SalesChannel = 'distributor' | 'dealer' | 'end_user' | 'private_label'
 export type ClientStatus = 'active' | 'lost' | 'deleted'

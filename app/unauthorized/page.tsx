@@ -31,7 +31,7 @@ export default function UnauthorizedPage() {
         <div className="flex items-start gap-3 bg-muted/30 border border-border rounded-xl p-4 text-left">
           <Smartphone className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Sales Specialist, RSR, and Collector accounts use the Oracle Sales <span className="text-foreground font-medium">mobile app</span> instead
+            Sales Manager, Sales Specialist, RSR, and Collector accounts use the Oracle Sales <span className="text-foreground font-medium">mobile app</span> instead
             of this web dashboard. If you believe this is a mistake, contact your admin.
           </p>
         </div>

@@ -8,7 +8,6 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { mockClients, mockMeetings } from '@/lib/mock/data'
-import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { getMapStatus, isAvailableForReassignment, STATUS_META, TILE_LAYERS, type MapStatus, type MapTileType } from '@/components/maps/map-constants'
 import { Search, Building2, Phone, User, History, ShieldCheck, MapPin, Layers, LockOpen, ChevronDown, Check } from 'lucide-react'
 import { format } from 'date-fns'
@@ -40,8 +39,6 @@ export default function MapsPage() {
   const [mapTypeMenuOpen, setMapTypeMenuOpen] = useState(false)
   const mapTypeMenuRef = useRef<HTMLDivElement>(null)
   const [selectedId, setSelectedId] = useState<string | null>(mockClients[0]?.id ?? null)
-  const { profile } = useCurrentProfile()
-  const isAdmin = profile?.role === 'admin'
 
   useEffect(() => {
     if (!mapTypeMenuOpen) return
@@ -54,14 +51,10 @@ export default function MapsPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [mapTypeMenuOpen])
 
-  const scopedClients = isAdmin
-    ? mockClients
-    : mockClients.filter(c => c.agent?.team_id === profile?.team_id)
-
   const agentOptions = useMemo(() => {
     const byId = new Map<string, string>()
     let hasUnassigned = false
-    scopedClients.forEach(c => {
+    mockClients.forEach(c => {
       if (c.agent) byId.set(c.agent.id, c.agent.full_name)
       else hasUnassigned = true
     })
@@ -71,10 +64,10 @@ export default function MapsPage() {
         a.full_name.localeCompare(b.full_name)
       ),
     }
-  }, [scopedClients])
+  }, [])
 
   const filtered = useMemo(() => {
-    return scopedClients.filter(c => {
+    return mockClients.filter(c => {
       const status = getMapStatus(c)
       const matchStatus = statusFilter === 'all' || status === statusFilter
       const matchAgent =
@@ -86,9 +79,9 @@ export default function MapsPage() {
         c.office_address.toLowerCase().includes(q)
       return matchStatus && matchAgent && matchSearch
     })
-  }, [scopedClients, search, statusFilter, agentFilter])
+  }, [search, statusFilter, agentFilter])
 
-  const selected = scopedClients.find(c => c.id === selectedId) ?? null
+  const selected = mockClients.find(c => c.id === selectedId) ?? null
   const selectedHistory = selected
     ? mockMeetings
         .filter(m => m.client_id === selected.id)
@@ -96,13 +89,13 @@ export default function MapsPage() {
     : []
 
   const counts = STATUS_KEYS.reduce((acc, key) => {
-    acc[key] = scopedClients.filter(c => getMapStatus(c) === key).length
+    acc[key] = mockClients.filter(c => getMapStatus(c) === key).length
     return acc
   }, {} as Record<MapStatus, number>)
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <Header title="Maps" subtitle={`${filtered.length} of ${scopedClients.length} accounts plotted`} />
+      <Header title="Maps" subtitle={`${filtered.length} of ${mockClients.length} accounts plotted`} />
 
       <div className="flex-1 flex min-h-0">
         {/* Left panel: search/filter + account list */}

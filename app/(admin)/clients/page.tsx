@@ -66,7 +66,7 @@ const LABEL: Record<string, string> = {
   active: 'Active', lost: 'Lost', deleted: 'Deleted',
 }
 
-const ASSIGNABLE_ROLES = ['sales_specialist', 'sales_manager', 'rsr', 'rsr_manager']
+const ASSIGNABLE_ROLES = ['sales_specialist', 'sales_manager', 'rsr']
 
 interface ClientFormData {
   company_name: string
@@ -116,7 +116,7 @@ export default function ClientsPage() {
   const [channelFilter, setChannelFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const { profile } = useCurrentProfile()
-  const isAdmin = profile?.role === 'admin'
+  const isAdmin = profile?.role === 'admin' || profile?.role === 'superadmin'
   const [clients, setClients] = useState<Client[]>(mockClients)
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
   const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string; date: string; by: string } | null>(null)
@@ -131,11 +131,7 @@ export default function ClientsPage() {
   const assignableAgents = mockProfiles.filter(p => ASSIGNABLE_ROLES.includes(p.role))
   const canEditClient = (client: Client) => isAdmin || profile?.id === client.assigned_agent_id
 
-  const scopedClients = isAdmin
-    ? clients
-    : clients.filter(c => c.agent?.team_id === profile?.team_id)
-
-  const filtered = scopedClients.filter(c => {
+  const filtered = clients.filter(c => {
     const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
       c.contact_person.toLowerCase().includes(search.toLowerCase()) ||
       (c.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase())
@@ -241,7 +237,7 @@ export default function ClientsPage() {
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Clients" subtitle={`${filtered.length} of ${scopedClients.length} clients`} />
+      <Header title="Clients" subtitle={`${filtered.length} of ${mockClients.length} clients`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Filters */}

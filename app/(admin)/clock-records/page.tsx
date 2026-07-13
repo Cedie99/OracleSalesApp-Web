@@ -7,7 +7,6 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { mockClockRecords } from '@/lib/mock/data'
-import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { ROLE_LABEL } from '@/lib/permissions'
 import type { ClockRecord, ClockType, Profile } from '@/types'
 import { Search, Clock, MapPin, Calendar } from 'lucide-react'
@@ -78,23 +77,17 @@ export default function ClockRecordsPage() {
   const [agentFilter, setAgentFilter] = useState<string>('all')
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
-  const { profile } = useCurrentProfile()
-  const isAdmin = profile?.role === 'admin'
-
-  const scopedClockRecords = isAdmin
-    ? mockClockRecords
-    : mockClockRecords.filter(r => r.agent?.team_id === profile?.team_id)
 
   const agentOptions = useMemo(() => {
     const byId = new Map<string, string>()
-    scopedClockRecords.forEach(r => {
+    mockClockRecords.forEach(r => {
       if (r.agent) byId.set(r.agent.id, r.agent.full_name)
     })
     return Array.from(byId, ([id, full_name]) => ({ id, full_name }))
       .sort((a, b) => a.full_name.localeCompare(b.full_name))
-  }, [scopedClockRecords])
+  }, [])
 
-  const rows = useMemo(() => pairIntoAttendanceRows(scopedClockRecords), [scopedClockRecords])
+  const rows = useMemo(() => pairIntoAttendanceRows(mockClockRecords), [])
 
   const filtered = rows.filter(row => {
     const matchSearch = (row.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase()) ||

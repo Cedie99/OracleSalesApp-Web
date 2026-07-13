@@ -25,8 +25,8 @@ export const mockProfiles: Profile[] = [
   { id: 'rsr-2', user_id: 'u8', full_name: 'JP Villanueva', role: 'rsr', team_id: TEAM_RSR_2_ID, created_at: '2024-02-15T08:00:00Z' },
   { id: 'col-1', user_id: 'u9', full_name: 'Billy Gabi', role: 'collector', team_id: null, created_at: '2024-03-01T08:00:00Z' },
   { id: 'agent-4', user_id: 'u10', full_name: 'Ana Bautista', role: 'sales_specialist', team_id: TEAM_2_ID, created_at: '2024-02-20T08:00:00Z' },
-  { id: 'rsr-mgr-1', user_id: 'u11', full_name: 'Nestor Aquino', role: 'rsr_manager', team_id: TEAM_RSR_1_ID, created_at: '2024-01-08T08:00:00Z' },
-  { id: 'rsr-mgr-2', user_id: 'u12', full_name: 'Divina Cortez', role: 'rsr_manager', team_id: TEAM_RSR_2_ID, created_at: '2024-01-08T08:00:00Z' },
+  { id: 'rsr-mgr-1', user_id: 'u11', full_name: 'Nestor Aquino', role: 'sales_manager', team_id: TEAM_RSR_1_ID, created_at: '2024-01-08T08:00:00Z' },
+  { id: 'rsr-mgr-2', user_id: 'u12', full_name: 'Divina Cortez', role: 'sales_manager', team_id: TEAM_RSR_2_ID, created_at: '2024-01-08T08:00:00Z' },
 ]
 
 export const mockClients: Client[] = [
