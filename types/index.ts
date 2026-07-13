@@ -41,6 +41,7 @@ export interface Client {
   sales_channel: SalesChannel
   assigned_agent_id: string
   status: ClientStatus
+  rating?: number
   lost_at: string | null
   reassignable_at: string | null
   created_at: string
