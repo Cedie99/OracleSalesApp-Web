@@ -21,9 +21,14 @@ export const TEAM_LABELS: Record<string, string> = {
 export const SALES_TEAM_IDS: string[] = [TEAM_1_ID, TEAM_2_ID]
 export const RSR_TEAM_IDS: string[] = [TEAM_RSR_1_ID, TEAM_RSR_2_ID]
 
-/** Which team IDs are valid for a role. Admin/Collector have no team. */
+/**
+ * Which team IDs are valid for a role. Superadmin/Admin/Collector have no
+ * team. 'sales_manager' oversees either team type (sales or RSR) — the
+ * team type is decided by team_id, not by a separate manager role.
+ */
 export function teamIdsForRole(role: UserRole): string[] {
-  if (role === 'sales_manager' || role === 'sales_specialist') return SALES_TEAM_IDS
-  if (role === 'rsr_manager' || role === 'rsr') return RSR_TEAM_IDS
+  if (role === 'sales_manager') return [...SALES_TEAM_IDS, ...RSR_TEAM_IDS]
+  if (role === 'sales_specialist') return SALES_TEAM_IDS
+  if (role === 'rsr') return RSR_TEAM_IDS
   return []
 }

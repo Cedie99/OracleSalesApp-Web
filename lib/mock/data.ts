@@ -25,22 +25,22 @@ export const mockProfiles: Profile[] = [
   { id: 'rsr-2', user_id: 'u8', full_name: 'JP Villanueva', role: 'rsr', team_id: TEAM_RSR_2_ID, created_at: '2024-02-15T08:00:00Z' },
   { id: 'col-1', user_id: 'u9', full_name: 'Billy Gabi', role: 'collector', team_id: null, created_at: '2024-03-01T08:00:00Z' },
   { id: 'agent-4', user_id: 'u10', full_name: 'Ana Bautista', role: 'sales_specialist', team_id: TEAM_2_ID, created_at: '2024-02-20T08:00:00Z' },
-  { id: 'rsr-mgr-1', user_id: 'u11', full_name: 'Nestor Aquino', role: 'rsr_manager', team_id: TEAM_RSR_1_ID, created_at: '2024-01-08T08:00:00Z' },
-  { id: 'rsr-mgr-2', user_id: 'u12', full_name: 'Divina Cortez', role: 'rsr_manager', team_id: TEAM_RSR_2_ID, created_at: '2024-01-08T08:00:00Z' },
+  { id: 'rsr-mgr-1', user_id: 'u11', full_name: 'Nestor Aquino', role: 'sales_manager', team_id: TEAM_RSR_1_ID, created_at: '2024-01-08T08:00:00Z' },
+  { id: 'rsr-mgr-2', user_id: 'u12', full_name: 'Divina Cortez', role: 'sales_manager', team_id: TEAM_RSR_2_ID, created_at: '2024-01-08T08:00:00Z' },
 ]
 
 export const mockClients: Client[] = [
   {
     id: 'client-1', company_name: 'Oracle Petroleum', contact_person: 'Bong Aquino', contact_position: 'Procurement Manager',
     contact_number: '09171234567', office_address: '123 EDSA, Makati City', office_lat: 14.5547, office_lng: 121.0244, customer_type: 'existing',
-    sales_channel: 'distributor', assigned_agent_id: 'agent-1', status: 'active',
+    sales_channel: 'distributor', assigned_agent_id: 'agent-1', status: 'active', rating: 5,
     lost_at: null, reassignable_at: null, created_at: '2024-03-01T09:00:00Z', updated_at: '2024-06-01T09:00:00Z',
     agent: mockProfiles[0],
   },
   {
     id: 'client-2', company_name: 'San Basilica Beauty Corp', contact_person: 'Maricel Torres', contact_position: 'Owner',
     contact_number: '09281112222', office_address: 'Alabang, Muntinlupa', office_lat: 14.4221, office_lng: 121.0348, customer_type: 'new',
-    sales_channel: 'dealer', assigned_agent_id: 'agent-1', status: 'active',
+    sales_channel: 'dealer', assigned_agent_id: 'agent-1', status: 'active', rating: 4,
     lost_at: null, reassignable_at: null, created_at: '2024-05-10T09:00:00Z', updated_at: '2024-06-10T09:00:00Z',
     agent: mockProfiles[0],
   },
@@ -120,7 +120,7 @@ const flagshipMeetings: Meeting[] = [
   {
     id: 'meet-1', client_id: 'client-1', agent_id: 'agent-1', recorded_by: null,
     meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
-    gps_lat: 14.5547, gps_lng: 121.0244, photo_url: null,
+    gps_lat: 14.5547, gps_lng: 121.0244, photo_url: 'https://picsum.photos/seed/meet-1/480/360',
     agenda: ['New business opportunity', 'Price negotiation/quotation'],
     remarks: 'Client is interested in expanding the contract.', outcome: 'successful',
     contact_person: 'Bong Aquino', contact_position: 'Procurement Manager',
@@ -130,7 +130,7 @@ const flagshipMeetings: Meeting[] = [
   {
     id: 'meet-2', client_id: 'client-2', agent_id: 'agent-1', recorded_by: 'mgr-1',
     meeting_type: 'f2f', online_platform: null, location_type: 'other', location_name: 'Starbucks Alabang',
-    gps_lat: 14.4221, gps_lng: 121.0348, photo_url: null,
+    gps_lat: 14.4221, gps_lng: 121.0348, photo_url: 'https://picsum.photos/seed/meet-2/480/360',
     agenda: ['Product/Company presentation', 'Relationship building'],
     remarks: 'First meeting. Client is receptive.', outcome: 'follow_up',
     contact_person: 'Maricel Torres', contact_position: 'Owner',
@@ -150,7 +150,7 @@ const flagshipMeetings: Meeting[] = [
   {
     id: 'meet-4', client_id: 'client-4', agent_id: 'agent-3', recorded_by: null,
     meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
-    gps_lat: 14.6507, gps_lng: 121.0496, photo_url: null,
+    gps_lat: 14.6507, gps_lng: 121.0496, photo_url: 'https://picsum.photos/seed/meet-4/480/360',
     agenda: ['Negotiation (other matters)', 'Collection'],
     remarks: 'Client decided to go with a competitor.', outcome: 'lost_opportunity',
     contact_person: 'Lito Fernandez', contact_position: 'VP Sales',
@@ -160,7 +160,7 @@ const flagshipMeetings: Meeting[] = [
   {
     id: 'meet-5', client_id: 'client-5', agent_id: 'agent-2', recorded_by: null,
     meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
-    gps_lat: 14.2291, gps_lng: 121.1613, photo_url: null,
+    gps_lat: 14.2291, gps_lng: 121.1613, photo_url: 'https://picsum.photos/seed/meet-5/480/360',
     agenda: ['Closed deal'],
     remarks: 'Contract signed for 6 months.', outcome: 'successful',
     contact_person: 'Susan Ramos', contact_position: 'Director',
@@ -180,7 +180,7 @@ const flagshipMeetings: Meeting[] = [
   {
     id: 'meet-7', client_id: 'client-10', agent_id: 'agent-4', recorded_by: null,
     meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
-    gps_lat: 14.3294, gps_lng: 120.9367, photo_url: null,
+    gps_lat: 14.3294, gps_lng: 120.9367, photo_url: 'https://picsum.photos/seed/meet-7/480/360',
     agenda: ['New business opportunity', 'Product/Company presentation'],
     remarks: 'Owner wants a sample delivery before committing.', outcome: 'successful',
     contact_person: 'Jinky Ramirez', contact_position: 'Purchasing Officer',
@@ -190,7 +190,7 @@ const flagshipMeetings: Meeting[] = [
   {
     id: 'meet-8', client_id: 'client-11', agent_id: 'rsr-1', recorded_by: null,
     meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
-    gps_lat: 14.6969, gps_lng: 121.0817, photo_url: null,
+    gps_lat: 14.6969, gps_lng: 121.0817, photo_url: 'https://picsum.photos/seed/meet-8/480/360',
     agenda: ['Store visit', 'Stock check'],
     remarks: 'Restocked shelves and confirmed next delivery schedule.', outcome: 'successful',
     contact_person: 'Grace Fernandez', contact_position: 'Branch Supervisor',
@@ -200,7 +200,7 @@ const flagshipMeetings: Meeting[] = [
   {
     id: 'meet-9', client_id: 'client-12', agent_id: 'rsr-2', recorded_by: null,
     meeting_type: 'f2f', online_platform: null, location_type: 'client_office', location_name: null,
-    gps_lat: 14.6197, gps_lng: 121.0529, photo_url: null,
+    gps_lat: 14.6197, gps_lng: 121.0529, photo_url: 'https://picsum.photos/seed/meet-9/480/360',
     agenda: ['Store visit', 'Stock check'],
     remarks: 'Store manager requested additional promo materials.', outcome: 'follow_up',
     contact_person: 'Allan Ibarra', contact_position: 'Store Manager',
