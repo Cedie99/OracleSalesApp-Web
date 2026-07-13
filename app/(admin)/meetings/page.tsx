@@ -8,7 +8,6 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { mockMeetings } from '@/lib/mock/data'
-import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import type { MeetingOutcome } from '@/types'
 import { Search, CalendarCheck, MapPin, Camera, Video, Users, CheckCircle2 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -46,14 +45,8 @@ export default function MeetingsPage() {
   const [outcomeFilter, setOutcomeFilter] = useState<string>('all')
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [selected, setSelected] = useState<(typeof mockMeetings)[0] | null>(null)
-  const { profile } = useCurrentProfile()
-  const isAdmin = profile?.role === 'admin'
 
-  const scopedMeetings = isAdmin
-    ? mockMeetings
-    : mockMeetings.filter(m => m.agent?.team_id === profile?.team_id)
-
-  const filtered = scopedMeetings.filter(m => {
+  const filtered = mockMeetings.filter(m => {
     const matchSearch =
       (m.client?.company_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
       (m.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
