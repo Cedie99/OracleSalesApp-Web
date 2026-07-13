@@ -35,17 +35,13 @@ const VALUE_LABEL: Record<string, string> = {
 
 export default function ApprovalsPage() {
   const [requests, setRequests] = useState(mockEditRequests)
+
   const { profile } = useCurrentProfile()
-  const isAdmin = profile?.role === 'admin'
 
-  const scopedRequests = isAdmin
-    ? requests
-    : requests.filter(r => r.requester?.team_id === profile?.team_id)
-
-  const pending = scopedRequests
+  const pending = requests
     .filter(r => r.status === 'pending')
     .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-  const resolved = scopedRequests
+  const resolved = requests
     .filter(r => r.status !== 'pending')
     .sort((a, b) => new Date(b.reviewed_at ?? b.created_at).getTime() - new Date(a.reviewed_at ?? a.created_at).getTime())
 

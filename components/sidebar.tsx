@@ -38,7 +38,9 @@ export function Sidebar() {
     .join('')
     .toUpperCase()
     .slice(0, 2)
-  const visibleNavItems = navItems.filter(item => !item.adminOnly || profile?.role === 'admin')
+  const visibleNavItems = navItems.filter(
+    item => !item.adminOnly || profile?.role === 'admin' || profile?.role === 'superadmin'
+  )
 
   async function handleLogout() {
     const supabase = createClient()

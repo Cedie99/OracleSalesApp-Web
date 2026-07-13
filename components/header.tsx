@@ -21,7 +21,7 @@ interface HeaderProps {
   title: string
   subtitle?: string
   pendingApprovals?: number
-  /** Admin-only "Viewing as" control. Omit to hide it entirely (e.g. for non-admin roles). */
+  /** "Viewing as" control for filtering the dashboard to a specific team. Omit to hide it. */
   viewSwitcher?: ViewSwitcherProps
 }
 

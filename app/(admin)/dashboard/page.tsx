@@ -7,7 +7,6 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { mockMeetings, mockEditRequests, mockProfiles } from '@/lib/mock/data'
-import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { TEAM_1_ID, TEAM_2_ID, TEAM_RSR_1_ID, TEAM_RSR_2_ID } from '@/lib/teams'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -34,34 +33,24 @@ const OUTCOME_LABEL: Record<string, string> = {
 }
 
 const VIEW_OPTIONS = [
-  { id: 'super_admin', label: 'Super Admin — All Teams & Agencies', shortLabel: 'Super Admin', teamId: null as string | null },
-  { id: 'mgr-1', label: 'Manager View — Sales Team 1', shortLabel: 'Sales Team 1', teamId: TEAM_1_ID },
-  { id: 'mgr-2', label: 'Manager View — Sales Team 2', shortLabel: 'Sales Team 2', teamId: TEAM_2_ID },
-  { id: 'rsr-mgr-1', label: 'RSR Manager View — RSR Team 1', shortLabel: 'RSR Team 1', teamId: TEAM_RSR_1_ID },
-  { id: 'rsr-mgr-2', label: 'RSR Manager View — RSR Team 2', shortLabel: 'RSR Team 2', teamId: TEAM_RSR_2_ID },
+  { id: 'all', label: 'All Teams & Agencies', shortLabel: 'All Teams', teamId: null as string | null },
+  { id: 'mgr-1', label: 'Sales Team 1', shortLabel: 'Sales Team 1', teamId: TEAM_1_ID },
+  { id: 'mgr-2', label: 'Sales Team 2', shortLabel: 'Sales Team 2', teamId: TEAM_2_ID },
+  { id: 'rsr-mgr-1', label: 'RSR Team 1', shortLabel: 'RSR Team 1', teamId: TEAM_RSR_1_ID },
+  { id: 'rsr-mgr-2', label: 'RSR Team 2', shortLabel: 'RSR Team 2', teamId: TEAM_RSR_2_ID },
 ] as const
 
 const FIELD_AGENT_ROLES = ['sales_specialist', 'rsr'] as const
 
 export default function DashboardPage() {
-  const { profile } = useCurrentProfile()
-  const isAdmin = profile?.role === 'admin'
-
-  const [viewAs, setViewAs] = useState<string>('super_admin')
+  const [viewAs, setViewAs] = useState<string>('all')
   const [perfAgentFilter, setPerfAgentFilter] = useState<string>('all')
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
 
-  // Managers are locked to their own team; admins can switch freely.
-  const managerView = !isAdmin
-    ? VIEW_OPTIONS.find(v => v.teamId === profile?.team_id) ?? null
-    : null
   const currentView = useMemo(
-    () =>
-      isAdmin
-        ? VIEW_OPTIONS.find(v => v.id === viewAs) ?? VIEW_OPTIONS[0]
-        : managerView ?? { id: 'no-team', label: 'No team assigned', teamId: '__none__' },
-    [isAdmin, viewAs, managerView]
+    () => VIEW_OPTIONS.find(v => v.id === viewAs) ?? VIEW_OPTIONS[0],
+    [viewAs]
   )
 
   const scopedAgents = useMemo(
@@ -210,12 +199,12 @@ export default function DashboardPage() {
         title="Dashboard"
         subtitle={`Overview for ${format(new Date(), 'MMMM yyyy')}`}
         pendingApprovals={pending}
-        viewSwitcher={isAdmin ? {
+        viewSwitcher={{
           options: VIEW_OPTIONS.map(({ id, label }) => ({ id, label })),
           value: viewAs,
-          activeLabel: VIEW_OPTIONS.find(v => v.id === viewAs)?.shortLabel ?? 'Super Admin',
+          activeLabel: currentView.shortLabel,
           onChange: setViewAs,
-        } : undefined}
+        }}
       />
 
       <div className="flex-1 p-6 space-y-6">
