@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { mockClients, mockMeetings } from '@/lib/mock/data'
@@ -158,6 +159,14 @@ export default function MapsPage() {
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">{client.office_address}</p>
                   <div className="flex items-center gap-1.5 mt-1 pl-4">
+                    {client.agent && (
+                      <Avatar className="size-4 after:border-0">
+                        {client.agent.avatar_url && <AvatarImage src={client.agent.avatar_url} alt="" />}
+                        <AvatarFallback className="text-[8px] bg-primary/20 text-primary">
+                          {client.agent.full_name.charAt(0).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                    )}
                     <p className="text-[11px] text-muted-foreground">
                       Agent: {client.agent?.full_name ?? 'Unassigned'}
                     </p>
@@ -281,6 +290,20 @@ export default function MapsPage() {
                   <MapPin className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
                   <p className="text-xs text-muted-foreground">{selected.office_address}</p>
                 </div>
+                {selected.agent && (
+                  <div className="flex items-center gap-2.5 mt-3 p-2 rounded-lg bg-muted/30 border border-border">
+                    <Avatar size="default">
+                      {selected.agent.avatar_url && <AvatarImage src={selected.agent.avatar_url} alt={selected.agent.full_name} />}
+                      <AvatarFallback className="bg-primary/20 text-primary text-xs font-bold">
+                        {selected.agent.full_name.charAt(0).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-foreground truncate">{selected.agent.full_name}</p>
+                      <p className="text-[10px] text-muted-foreground">Assigned Agent</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="space-y-2.5">
