@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -13,13 +14,14 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
   MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
+  Monitor, Smartphone,
 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { createClient } from '@/lib/supabase/client'
 import { createUser, updateUser, toggleUserStatus } from './actions'
-import { ROLE_LABEL, canManageUsers } from '@/lib/permissions'
+import { ROLE_LABEL, canManageUsers, platformForRole } from '@/lib/permissions'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { teamIdsForRole } from '@/lib/teams'
 import type { UserRole } from '@/types'
@@ -41,6 +43,19 @@ const ROLE_ICON: Record<UserRole, React.ElementType> = {
   rsr: Store,
   collector: Wallet,
 }
+
+const PLATFORM_META = {
+  web: {
+    label: 'Web',
+    icon: Monitor,
+    style: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
+  },
+  mobile: {
+    label: 'Mobile App',
+    icon: Smartphone,
+    style: 'bg-green-500/15 text-green-400 border-green-500/30',
+  },
+} as const
 
 const ROLE_DESCRIPTION: Record<UserRole, string> = {
   superadmin: 'Full system access — the only role that can create or edit admin accounts.',
@@ -64,6 +79,7 @@ interface UserRow {
   role: UserRole
   team_id: string | null
   is_active: boolean
+  avatar_url: string | null
   created_at: string
 }
 
@@ -92,6 +108,7 @@ export default function UsersPage() {
 
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState<string>('all')
+  const [platformFilter, setPlatformFilter] = useState<string>('all')
   const [teams, setTeams] = useState<TeamRow[]>([])
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -107,7 +124,7 @@ export default function UsersPage() {
     const supabase = createClient()
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, user_id, full_name, email, role, team_id, is_active, created_at')
+      .select('id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at')
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -144,7 +161,8 @@ export default function UsersPage() {
       u.full_name.toLowerCase().includes(search.toLowerCase()) ||
       u.email.toLowerCase().includes(search.toLowerCase())
     const matchRole = roleFilter === 'all' || u.role === roleFilter
-    return matchSearch && matchRole
+    const matchPlatform = platformFilter === 'all' || platformForRole(u.role) === platformFilter
+    return matchSearch && matchRole && matchPlatform
   })
 
   const counts = {
@@ -288,6 +306,16 @@ export default function UsersPage() {
               <SelectItem value="collector">Collector</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={platformFilter} onValueChange={v => setPlatformFilter(v ?? 'all')}>
+            <SelectTrigger className="w-40 h-9 bg-card border-border">
+              <SelectValue placeholder="All Platforms" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Platforms</SelectItem>
+              <SelectItem value="web">Web</SelectItem>
+              <SelectItem value="mobile">Mobile App</SelectItem>
+            </SelectContent>
+          </Select>
           <Button variant="outline" size="sm" className="h-9 gap-2" onClick={loadUsers} disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
@@ -309,6 +337,7 @@ export default function UsersPage() {
                   <tr className="border-b border-border text-xs text-muted-foreground">
                     <th className="text-left px-5 py-3 font-medium">User</th>
                     <th className="text-left px-5 py-3 font-medium">Role</th>
+                    <th className="text-left px-5 py-3 font-medium">Platform</th>
                     <th className="text-left px-5 py-3 font-medium hidden md:table-cell">Team</th>
                     <th className="text-left px-5 py-3 font-medium hidden lg:table-cell">Created</th>
                     <th className="text-left px-5 py-3 font-medium">Status</th>
@@ -328,7 +357,7 @@ export default function UsersPage() {
                             </div>
                           </div>
                         </td>
-                        {[...Array(4)].map((_, j) => (
+                        {[...Array(5)].map((_, j) => (
                           <td key={j} className="px-5 py-3">
                             <div className="h-3 w-16 bg-muted rounded" />
                           </td>
@@ -338,15 +367,17 @@ export default function UsersPage() {
                     ))
                   ) : filtered.map(user => {
                     const RoleIcon = ROLE_ICON[user.role]
+                    const platform = PLATFORM_META[platformForRole(user.role)]
                     return (
                       <tr key={user.id} className="hover:bg-muted/20 transition-colors">
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                              <span className="text-xs font-bold text-primary">
+                            <Avatar className="shrink-0">
+                              {user.avatar_url && <AvatarImage src={user.avatar_url} alt={user.full_name} />}
+                              <AvatarFallback className="bg-primary/20 text-xs font-bold text-primary">
                                 {user.full_name.charAt(0).toUpperCase()}
-                              </span>
-                            </div>
+                              </AvatarFallback>
+                            </Avatar>
                             <div>
                               <p className="font-medium text-foreground leading-tight">{user.full_name}</p>
                               <p className="text-xs text-muted-foreground">{user.email || '—'}</p>
@@ -357,6 +388,12 @@ export default function UsersPage() {
                           <Badge variant="outline" className={`text-[11px] px-2 h-5 gap-1 ${ROLE_STYLE[user.role]}`}>
                             <RoleIcon className="w-3 h-3" />
                             {ROLE_LABEL[user.role]}
+                          </Badge>
+                        </td>
+                        <td className="px-5 py-3">
+                          <Badge variant="outline" className={`text-[11px] px-2 h-5 gap-1 ${platform.style}`}>
+                            <platform.icon className="w-3 h-3" />
+                            {platform.label}
                           </Badge>
                         </td>
                         <td className="px-5 py-3 hidden md:table-cell">
@@ -556,6 +593,15 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">{ROLE_DESCRIPTION[form.role]}</p>
+        {(() => {
+          const platform = PLATFORM_META[platformForRole(form.role)]
+          return (
+            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+              <platform.icon className="w-3 h-3" />
+              Signs in via: <span className="text-foreground font-medium">{platform.label}</span>
+            </p>
+          )
+        })()}
       </div>
 
       <div className="space-y-1.5">
