@@ -14,19 +14,22 @@ function daysAgo(n: number, hour: number, minute = 0): string {
   return d.toISOString()
 }
 
+// Placeholder headshots (pravatar.cc) standing in for the photos mobile
+// users will upload to the 'avatars' bucket. admin-1 (web-only) and col-1
+// are intentionally left without one to exercise the initials fallback.
 export const mockProfiles: Profile[] = [
-  { id: 'agent-1', user_id: 'u1', full_name: 'Cyril Santos', role: 'sales_specialist', team_id: TEAM_1_ID, created_at: '2024-01-10T08:00:00Z' },
-  { id: 'agent-2', user_id: 'u2', full_name: 'Jun Reyes', role: 'sales_specialist', team_id: TEAM_1_ID, created_at: '2024-01-12T08:00:00Z' },
-  { id: 'agent-3', user_id: 'u3', full_name: 'Maria Dela Cruz', role: 'sales_specialist', team_id: TEAM_2_ID, created_at: '2024-02-01T08:00:00Z' },
-  { id: 'mgr-1', user_id: 'u4', full_name: 'Sir Eric Mendoza', role: 'sales_manager', team_id: TEAM_1_ID, created_at: '2024-01-05T08:00:00Z' },
-  { id: 'mgr-2', user_id: 'u5', full_name: 'Sir Mike Lim', role: 'sales_manager', team_id: TEAM_2_ID, created_at: '2024-01-05T08:00:00Z' },
+  { id: 'agent-1', user_id: 'u1', full_name: 'Cyril Santos', role: 'sales_specialist', team_id: TEAM_1_ID, avatar_url: 'https://i.pravatar.cc/150?img=12', created_at: '2024-01-10T08:00:00Z' },
+  { id: 'agent-2', user_id: 'u2', full_name: 'Jun Reyes', role: 'sales_specialist', team_id: TEAM_1_ID, avatar_url: 'https://i.pravatar.cc/150?img=13', created_at: '2024-01-12T08:00:00Z' },
+  { id: 'agent-3', user_id: 'u3', full_name: 'Maria Dela Cruz', role: 'sales_specialist', team_id: TEAM_2_ID, avatar_url: 'https://i.pravatar.cc/150?img=47', created_at: '2024-02-01T08:00:00Z' },
+  { id: 'mgr-1', user_id: 'u4', full_name: 'Sir Eric Mendoza', role: 'sales_manager', team_id: TEAM_1_ID, avatar_url: 'https://i.pravatar.cc/150?img=14', created_at: '2024-01-05T08:00:00Z' },
+  { id: 'mgr-2', user_id: 'u5', full_name: 'Sir Mike Lim', role: 'sales_manager', team_id: TEAM_2_ID, avatar_url: 'https://i.pravatar.cc/150?img=15', created_at: '2024-01-05T08:00:00Z' },
   { id: 'admin-1', user_id: 'u6', full_name: 'Admin User', role: 'admin', team_id: null, created_at: '2024-01-01T08:00:00Z' },
-  { id: 'rsr-1', user_id: 'u7', full_name: 'Reggie Pascual', role: 'rsr', team_id: TEAM_RSR_1_ID, created_at: '2024-02-10T08:00:00Z' },
-  { id: 'rsr-2', user_id: 'u8', full_name: 'JP Villanueva', role: 'rsr', team_id: TEAM_RSR_2_ID, created_at: '2024-02-15T08:00:00Z' },
+  { id: 'rsr-1', user_id: 'u7', full_name: 'Reggie Pascual', role: 'rsr', team_id: TEAM_RSR_1_ID, avatar_url: 'https://i.pravatar.cc/150?img=53', created_at: '2024-02-10T08:00:00Z' },
+  { id: 'rsr-2', user_id: 'u8', full_name: 'JP Villanueva', role: 'rsr', team_id: TEAM_RSR_2_ID, avatar_url: 'https://i.pravatar.cc/150?img=59', created_at: '2024-02-15T08:00:00Z' },
   { id: 'col-1', user_id: 'u9', full_name: 'Billy Gabi', role: 'collector', team_id: null, created_at: '2024-03-01T08:00:00Z' },
-  { id: 'agent-4', user_id: 'u10', full_name: 'Ana Bautista', role: 'sales_specialist', team_id: TEAM_2_ID, created_at: '2024-02-20T08:00:00Z' },
-  { id: 'rsr-mgr-1', user_id: 'u11', full_name: 'Nestor Aquino', role: 'sales_manager', team_id: TEAM_RSR_1_ID, created_at: '2024-01-08T08:00:00Z' },
-  { id: 'rsr-mgr-2', user_id: 'u12', full_name: 'Divina Cortez', role: 'sales_manager', team_id: TEAM_RSR_2_ID, created_at: '2024-01-08T08:00:00Z' },
+  { id: 'agent-4', user_id: 'u10', full_name: 'Ana Bautista', role: 'sales_specialist', team_id: TEAM_2_ID, avatar_url: 'https://i.pravatar.cc/150?img=44', created_at: '2024-02-20T08:00:00Z' },
+  { id: 'rsr-mgr-1', user_id: 'u11', full_name: 'Nestor Aquino', role: 'sales_manager', team_id: TEAM_RSR_1_ID, avatar_url: 'https://i.pravatar.cc/150?img=51', created_at: '2024-01-08T08:00:00Z' },
+  { id: 'rsr-mgr-2', user_id: 'u12', full_name: 'Divina Cortez', role: 'sales_manager', team_id: TEAM_RSR_2_ID, avatar_url: 'https://i.pravatar.cc/150?img=45', created_at: '2024-01-08T08:00:00Z' },
 ]
 
 export const mockClients: Client[] = [
