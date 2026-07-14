@@ -7,6 +7,11 @@ export function hasWebAccess(role: UserRole | null | undefined): boolean {
   return !!role && WEB_ROLES.includes(role)
 }
 
+/** Which app a role signs in through. Web roles never use the mobile app and vice versa. */
+export function platformForRole(role: UserRole): 'web' | 'mobile' {
+  return WEB_ROLES.includes(role) ? 'web' : 'mobile'
+}
+
 /** Only a superadmin can create/edit/deactivate users. Admins get view-only access to user management. */
 export function canManageUsers(role: UserRole | null | undefined): boolean {
   return role === 'superadmin'
