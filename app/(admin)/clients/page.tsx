@@ -14,7 +14,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { mockClients, mockMeetings, mockProfiles } from '@/lib/mock/data'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import type { Client, CustomerType, SalesChannel, ClientStatus, MeetingOutcome, Profile } from '@/types'
-import { Search, Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Plus, Pencil, Star, X as XIcon } from 'lucide-react'
+import { Search, Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Plus, Pencil, X as XIcon } from 'lucide-react'
 import { format, addDays } from 'date-fns'
 import { toast } from 'sonner'
 
@@ -92,20 +92,22 @@ const EMPTY_CLIENT_FORM: ClientFormData = {
   assigned_agent_id: '',
 }
 
-function StarRating({ value, onChange, size = 'w-4 h-4' }: { value: number; onChange?: (v: number) => void; size?: string }) {
+// Binary per client rule: 100% once any saved meeting's agenda includes a
+// product/company presentation, 0% otherwise — info completion has no weight.
+function getClientProgress(clientId: string): number {
+  const presented = mockMeetings.some(m =>
+    m.client_id === clientId && m.agenda.some(a => /product\s*\/?\s*company presentation/i.test(a))
+  )
+  return presented ? 100 : 0
+}
+
+function ProgressBar({ value, barClass = 'w-16 h-1.5' }: { value: number; barClass?: string }) {
   return (
-    <div className="flex items-center gap-0.5">
-      {[1, 2, 3, 4, 5].map(n => (
-        <button
-          key={n}
-          type="button"
-          disabled={!onChange}
-          onClick={() => onChange?.(n)}
-          className={onChange ? 'cursor-pointer' : 'cursor-default'}
-        >
-          <Star className={`${size} ${n <= value ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground/30'}`} />
-        </button>
-      ))}
+    <div className="flex items-center gap-2">
+      <div className={`${barClass} rounded-full bg-muted overflow-hidden`}>
+        <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${value}%` }} />
+      </div>
+      <span className="text-[10px] font-medium text-muted-foreground tabular-nums">{value}%</span>
     </div>
   )
 }
@@ -230,11 +232,6 @@ export default function ClientsPage() {
     toast.success('Client updated successfully')
   }
 
-  function handleRate(clientId: string, rating: number) {
-    setClients(prev => prev.map(c => c.id === clientId ? { ...c, rating, updated_at: new Date().toISOString() } : c))
-    toast.success('Rating saved')
-  }
-
   return (
     <div className="flex flex-col flex-1">
       <Header title="Clients" subtitle={`${filtered.length} of ${mockClients.length} clients`} />
@@ -337,7 +334,7 @@ export default function ClientsPage() {
                       {LABEL[client.sales_channel]}
                     </Badge>
                   </div>
-                  {client.rating != null && <StarRating value={client.rating} size="w-3 h-3" />}
+                  <ProgressBar value={getClientProgress(client.id)} barClass="w-14 h-1" />
                 </div>
 
                 <div className="flex items-center justify-between pt-2 border-t border-border">
@@ -465,12 +462,14 @@ export default function ClientsPage() {
                       )}
                     </div>
 
-                    <div className="rounded-lg border border-border p-3.5 flex items-center justify-between">
-                      <p className="text-[11px] font-medium text-muted-foreground">Client Rating</p>
-                      <StarRating
-                        value={selectedClient.rating ?? 0}
-                        onChange={canEditClient(selectedClient) ? (v) => handleRate(selectedClient.id, v) : undefined}
-                      />
+                    <div className="rounded-lg border border-border p-3.5 flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-[11px] font-medium text-muted-foreground">Progress</p>
+                        <p className="text-[10px] text-muted-foreground/70 mt-0.5">
+                          100% once a product/company presentation meeting is saved
+                        </p>
+                      </div>
+                      <ProgressBar value={getClientProgress(selectedClient.id)} barClass="w-24 h-2" />
                     </div>
 
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
