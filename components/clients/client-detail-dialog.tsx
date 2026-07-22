@@ -5,10 +5,11 @@ import dynamic from 'next/dynamic'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { ProgressBar } from '@/components/ui/progress-bar'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { CircularProgress } from '@/components/ui/circular-progress'
 import { getClientProgress } from '@/lib/client-progress'
 import { mockMeetings } from '@/lib/mock/data'
-import type { Client } from '@/types'
+import type { Client, Meeting, MeetingOutcome } from '@/types'
 import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, X as XIcon } from 'lucide-react'
 import { format } from 'date-fns'
 import {
@@ -30,6 +31,27 @@ const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
   ),
 })
 
+function MeetingRow({ meeting }: { meeting: Meeting }) {
+  const submittedBy = meeting.recorder?.full_name ?? meeting.agent?.full_name ?? 'Unknown'
+  return (
+    <div className="flex items-center justify-between gap-2 text-xs bg-muted/40 rounded-md px-3 py-2">
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5">
+          <CalendarCheck className="w-3 h-3 text-muted-foreground shrink-0" />
+          <span className="truncate">{format(new Date(meeting.meeting_date), 'MMM d, yyyy')}</span>
+        </div>
+        <div className="flex items-center gap-1.5 mt-1 pl-[18px] text-muted-foreground">
+          <User className="w-3 h-3 shrink-0" />
+          <span className="truncate">{submittedBy}</span>
+        </div>
+      </div>
+      <Badge variant="tone" className={`shrink-0 ${TONE_CLASS[OUTCOME_TONE[meeting.outcome]]}`}>
+        {OUTCOME_LABEL[meeting.outcome]}
+      </Badge>
+    </div>
+  )
+}
+
 interface ClientDetailDialogProps {
   client: Client | null
   onOpenChange: (open: boolean) => void
@@ -37,12 +59,26 @@ interface ClientDetailDialogProps {
   onEdit?: (client: Client) => void
 }
 
+const MEETING_HISTORY_LIMIT = 5
+
 export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEdit }: ClientDetailDialogProps) {
   const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string; date: string; by: string } | null>(null)
+  const [showAllMeetings, setShowAllMeetings] = useState(false)
+  const [outcomeFilter, setOutcomeFilter] = useState<MeetingOutcome | 'all'>('all')
+
+  function handleOpenChange(open: boolean) {
+    if (!open) setShowAllMeetings(false)
+    onOpenChange(open)
+  }
+
+  function handleShowAllMeetingsChange(open: boolean) {
+    setShowAllMeetings(open)
+    if (!open) setOutcomeFilter('all')
+  }
 
   return (
     <>
-      <Dialog open={!!client} onOpenChange={onOpenChange}>
+      <Dialog open={!!client} onOpenChange={handleOpenChange}>
         <DialogContent className="sm:max-w-5xl max-h-[88vh] flex flex-col gap-0 p-0 overflow-hidden" showCloseButton={false}>
           {client && (() => {
             const clientMeetings = mockMeetings
@@ -120,12 +156,9 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
                             <span>{client.contact_number}</span>
                           </div>
                         </div>
-                        <div className="rounded-lg border border-border p-3.5">
-                          <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Progress</p>
-                          <ProgressBar value={progress} barClass="w-full h-1.5" />
-                          <p className="text-[10px] text-muted-foreground/70 mt-1.5 leading-snug">
-                            100% once a presentation meeting is saved
-                          </p>
+                        <div className="rounded-lg border border-border p-3.5 flex flex-col items-center justify-center text-center">
+                          <p className="text-[11px] font-medium text-muted-foreground mb-1.5 self-start">Progress</p>
+                          <CircularProgress value={progress} size={56} strokeWidth={5} />
                         </div>
                       </div>
 
@@ -160,8 +193,36 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
                       </div>
                     </div>
 
-                    {/* Right column: visit photos + meeting history */}
+                    {/* Right column: meeting history + visit photos */}
                     <div className="md:col-span-2 space-y-4">
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                            <CalendarCheck className="w-3.5 h-3.5 text-muted-foreground" />
+                            Meeting History
+                          </p>
+                          {clientMeetings.length > MEETING_HISTORY_LIMIT && (
+                            <button
+                              type="button"
+                              onClick={() => setShowAllMeetings(true)}
+                              className="text-[11px] font-medium text-primary hover:underline"
+                            >
+                              View all
+                            </button>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          {clientMeetings.slice(0, MEETING_HISTORY_LIMIT).map(m => (
+                            <MeetingRow key={m.id} meeting={m} />
+                          ))}
+                          {clientMeetings.length === 0 && (
+                            <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border p-3.5">
+                              No meetings recorded yet
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
                       <div>
                         <p className="text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5">
                           <Camera className="w-3.5 h-3.5 text-muted-foreground" />
@@ -203,40 +264,6 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
                           </p>
                         )}
                       </div>
-
-                      <div>
-                        <p className="text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5">
-                          <CalendarCheck className="w-3.5 h-3.5 text-muted-foreground" />
-                          Meeting History
-                        </p>
-                        <div className="space-y-2">
-                          {clientMeetings.slice(0, 6).map(m => {
-                            const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
-                            return (
-                              <div key={m.id} className="flex items-center justify-between gap-2 text-xs bg-muted/40 rounded-md px-3 py-2">
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-1.5">
-                                    <CalendarCheck className="w-3 h-3 text-muted-foreground shrink-0" />
-                                    <span className="truncate">{format(new Date(m.meeting_date), 'MMM d, yyyy')}</span>
-                                  </div>
-                                  <div className="flex items-center gap-1.5 mt-1 pl-[18px] text-muted-foreground">
-                                    <User className="w-3 h-3 shrink-0" />
-                                    <span className="truncate">{submittedBy}</span>
-                                  </div>
-                                </div>
-                                <Badge variant="tone" className={`shrink-0 ${TONE_CLASS[OUTCOME_TONE[m.outcome]]}`}>
-                                  {OUTCOME_LABEL[m.outcome]}
-                                </Badge>
-                              </div>
-                            )
-                          })}
-                          {clientMeetings.length === 0 && (
-                            <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border p-3.5">
-                              No meetings recorded yet
-                            </p>
-                          )}
-                        </div>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -251,6 +278,46 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
                     <span>{client.agent?.full_name}</span>
                   </div>
                   <span>Added {format(new Date(client.created_at), 'MMM d, yyyy')}</span>
+                </div>
+              </>
+            )
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showAllMeetings} onOpenChange={handleShowAllMeetingsChange}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col gap-0 p-0 overflow-hidden">
+          <DialogHeader className="shrink-0 border-b border-border px-5 py-4">
+            <DialogTitle className="text-base">Meeting History</DialogTitle>
+            {client && <p className="text-xs text-muted-foreground">{client.company_name}</p>}
+          </DialogHeader>
+          {client && (() => {
+            const allMeetings = mockMeetings
+              .filter(m => m.client_id === client.id)
+              .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
+            const filteredMeetings = allMeetings.filter(m => outcomeFilter === 'all' || m.outcome === outcomeFilter)
+
+            return (
+              <>
+                <div className="shrink-0 px-5 py-3 border-b border-border">
+                  <Select value={outcomeFilter} onValueChange={v => setOutcomeFilter((v as MeetingOutcome | 'all') ?? 'all')}>
+                    <SelectTrigger className="w-full h-9 bg-card border-border">
+                      <SelectValue placeholder="Filter by outcome" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Outcomes</SelectItem>
+                      <SelectItem value="successful">{OUTCOME_LABEL.successful}</SelectItem>
+                      <SelectItem value="follow_up">{OUTCOME_LABEL.follow_up}</SelectItem>
+                      <SelectItem value="no_decision">{OUTCOME_LABEL.no_decision}</SelectItem>
+                      <SelectItem value="lost_opportunity">{OUTCOME_LABEL.lost_opportunity}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-2">
+                  {filteredMeetings.map(m => <MeetingRow key={m.id} meeting={m} />)}
+                  {filteredMeetings.length === 0 && (
+                    <p className="text-xs text-muted-foreground text-center py-6">No meetings match this filter</p>
+                  )}
                 </div>
               </>
             )

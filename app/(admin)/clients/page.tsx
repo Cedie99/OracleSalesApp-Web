@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { ProgressBar } from '@/components/ui/progress-bar'
+import { CircularProgress } from '@/components/ui/circular-progress'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
 import { getClientProgress } from '@/lib/client-progress'
 import { mockClients, mockProfiles } from '@/lib/mock/data'
@@ -236,45 +236,46 @@ export default function ClientsPage() {
               className="bg-card border-border hover:border-primary/30 transition-colors cursor-pointer"
             >
               <CardContent className="p-4">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                      <Building2 className="w-4 h-4 text-primary" />
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2.5 mb-3">
+                      <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                        <Building2 className="w-4 h-4 text-primary" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-foreground truncate leading-tight">{client.company_name}</p>
+                        <Badge variant="tone" className={`h-4 mt-0.5 ${TONE_CLASS[CLIENT_STATUS_TONE[client.status]]}`}>
+                          {LABEL[client.status]}
+                        </Badge>
+                      </div>
                     </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-foreground truncate leading-tight">{client.company_name}</p>
-                      <Badge variant="tone" className={`h-4 mt-0.5 ${TONE_CLASS[CLIENT_STATUS_TONE[client.status]]}`}>
-                        {LABEL[client.status]}
+
+                    <div className="space-y-1.5 text-xs text-muted-foreground mb-3">
+                      <div className="flex items-center gap-1.5">
+                        <User className="w-3 h-3 shrink-0" />
+                        <span className="truncate">{client.contact_person}{client.contact_position ? ` · ${client.contact_position}` : ''}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Phone className="w-3 h-3 shrink-0" />
+                        <span>{client.contact_number}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <MapPin className="w-3 h-3 shrink-0" />
+                        <span className="truncate">{client.office_address}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[client.customer_type]]}>
+                        {LABEL[client.customer_type]}
+                      </Badge>
+                      <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[client.sales_channel]]}>
+                        {LABEL[client.sales_channel]}
                       </Badge>
                     </div>
                   </div>
-                </div>
 
-                <div className="space-y-1.5 text-xs text-muted-foreground mb-3">
-                  <div className="flex items-center gap-1.5">
-                    <User className="w-3 h-3 shrink-0" />
-                    <span className="truncate">{client.contact_person}{client.contact_position ? ` · ${client.contact_position}` : ''}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Phone className="w-3 h-3 shrink-0" />
-                    <span>{client.contact_number}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <MapPin className="w-3 h-3 shrink-0" />
-                    <span className="truncate">{client.office_address}</span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex flex-wrap gap-1.5">
-                    <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[client.customer_type]]}>
-                      {LABEL[client.customer_type]}
-                    </Badge>
-                    <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[client.sales_channel]]}>
-                      {LABEL[client.sales_channel]}
-                    </Badge>
-                  </div>
-                  <ProgressBar value={getClientProgress(client.id)} barClass="w-14 h-1" />
+                  <CircularProgress value={getClientProgress(client.id)} size={80} strokeWidth={7} className="shrink-0" />
                 </div>
 
                 <div className="flex items-center justify-between pt-2 border-t border-border">
