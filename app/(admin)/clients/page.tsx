@@ -13,10 +13,19 @@ import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogFo
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { mockClients, mockMeetings, mockProfiles } from '@/lib/mock/data'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import type { Client, CustomerType, SalesChannel, ClientStatus, MeetingOutcome, Profile } from '@/types'
+import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
 import { Search, Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Plus, Pencil, X as XIcon } from 'lucide-react'
 import { format, addDays } from 'date-fns'
 import { toast } from 'sonner'
+import {
+  CHANNEL_TONE,
+  CLIENT_STATUS_TONE,
+  CUSTOMER_TYPE_TONE,
+  OUTCOME_LABEL,
+  OUTCOME_TONE,
+  TONE_CLASS,
+  VALUE_LABEL as LABEL,
+} from '@/lib/status-styles'
 
 const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
   ssr: false,
@@ -26,45 +35,6 @@ const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
     </div>
   ),
 })
-
-const OUTCOME_STYLE: Record<MeetingOutcome, string> = {
-  successful: 'bg-primary/15 text-primary border-primary/30',
-  follow_up: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  no_decision: 'bg-muted text-muted-foreground border-border',
-  lost_opportunity: 'bg-destructive/15 text-destructive border-destructive/30',
-}
-
-const OUTCOME_LABEL: Record<MeetingOutcome, string> = {
-  successful: 'Successful',
-  follow_up: 'Follow-up Required',
-  no_decision: 'No Decision',
-  lost_opportunity: 'Lost Opportunity',
-}
-
-const CUSTOMER_TYPE_STYLE: Record<CustomerType, string> = {
-  existing: 'bg-primary/15 text-primary border-primary/30',
-  new: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  prospect: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-}
-
-const CHANNEL_STYLE: Record<SalesChannel, string> = {
-  distributor: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
-  dealer: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30',
-  end_user: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
-  private_label: 'bg-pink-500/15 text-pink-400 border-pink-500/30',
-}
-
-const STATUS_STYLE: Record<ClientStatus, string> = {
-  active: 'bg-primary/15 text-primary border-primary/30',
-  lost: 'bg-destructive/15 text-destructive border-destructive/30',
-  deleted: 'bg-muted text-muted-foreground border-border',
-}
-
-const LABEL: Record<string, string> = {
-  existing: 'Existing', new: 'New', prospect: 'Prospect',
-  distributor: 'Distributor', dealer: 'Dealer', end_user: 'End-User', private_label: 'Private Label',
-  active: 'Active', lost: 'Lost', deleted: 'Deleted',
-}
 
 const ASSIGNABLE_ROLES = ['sales_specialist', 'sales_manager', 'rsr']
 
@@ -303,7 +273,7 @@ export default function ClientsPage() {
                     </div>
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-foreground truncate leading-tight">{client.company_name}</p>
-                      <Badge variant="outline" className={`text-[10px] px-1.5 h-4 mt-0.5 ${STATUS_STYLE[client.status]}`}>
+                      <Badge variant="tone" className={`h-4 mt-0.5 ${TONE_CLASS[CLIENT_STATUS_TONE[client.status]]}`}>
                         {LABEL[client.status]}
                       </Badge>
                     </div>
@@ -327,10 +297,10 @@ export default function ClientsPage() {
 
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex flex-wrap gap-1.5">
-                    <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${CUSTOMER_TYPE_STYLE[client.customer_type]}`}>
+                    <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[client.customer_type]]}>
                       {LABEL[client.customer_type]}
                     </Badge>
-                    <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${CHANNEL_STYLE[client.sales_channel]}`}>
+                    <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[client.sales_channel]]}>
                       {LABEL[client.sales_channel]}
                     </Badge>
                   </div>
@@ -382,13 +352,13 @@ export default function ClientsPage() {
                       <div className="min-w-0">
                         <DialogTitle className="text-lg">{selectedClient.company_name}</DialogTitle>
                         <div className="flex flex-wrap gap-1.5 mt-1.5">
-                          <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${STATUS_STYLE[selectedClient.status]}`}>
+                          <Badge variant="tone" className={TONE_CLASS[CLIENT_STATUS_TONE[selectedClient.status]]}>
                             {LABEL[selectedClient.status]}
                           </Badge>
-                          <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${CUSTOMER_TYPE_STYLE[selectedClient.customer_type]}`}>
+                          <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[selectedClient.customer_type]]}>
                             {LABEL[selectedClient.customer_type]}
                           </Badge>
-                          <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${CHANNEL_STYLE[selectedClient.sales_channel]}`}>
+                          <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[selectedClient.sales_channel]]}>
                             {LABEL[selectedClient.sales_channel]}
                           </Badge>
                         </div>
@@ -547,7 +517,7 @@ export default function ClientsPage() {
                                   <span className="truncate">{submittedBy}</span>
                                 </div>
                               </div>
-                              <Badge variant="outline" className={`text-[10px] px-1.5 h-5 shrink-0 ${OUTCOME_STYLE[m.outcome]}`}>
+                              <Badge variant="tone" className={`shrink-0 ${TONE_CLASS[OUTCOME_TONE[m.outcome]]}`}>
                                 {OUTCOME_LABEL[m.outcome]}
                               </Badge>
                             </div>

@@ -8,23 +8,9 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { mockMeetings } from '@/lib/mock/data'
-import type { MeetingOutcome } from '@/types'
 import { Search, CalendarCheck, MapPin, Camera, Video, Users, CheckCircle2 } from 'lucide-react'
 import { format } from 'date-fns'
-
-const OUTCOME_STYLE: Record<MeetingOutcome, string> = {
-  successful: 'bg-primary/15 text-primary border-primary/30',
-  follow_up: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  no_decision: 'bg-muted text-muted-foreground border-border',
-  lost_opportunity: 'bg-destructive/15 text-destructive border-destructive/30',
-}
-
-const OUTCOME_LABEL: Record<MeetingOutcome, string> = {
-  successful: 'Successful',
-  follow_up: 'Follow-up Required',
-  no_decision: 'No Decision',
-  lost_opportunity: 'Lost Opportunity',
-}
+import { OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS } from '@/lib/status-styles'
 
 const AGENDA_ICONS: Record<string, string> = {
   'New business opportunity': '💼',
@@ -152,7 +138,7 @@ export default function MeetingsPage() {
                       {format(new Date(m.meeting_date), 'h:mm a')}
                     </td>
                     <td className="px-4 py-3">
-                      <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${OUTCOME_STYLE[m.outcome]}`}>
+                      <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[m.outcome]]}>
                         {OUTCOME_LABEL[m.outcome]}
                       </Badge>
                     </td>
@@ -190,7 +176,7 @@ export default function MeetingsPage() {
                   <p className="font-semibold text-foreground">{selected.client?.company_name}</p>
                   <p className="text-xs text-muted-foreground">{selected.contact_person}{selected.contact_position ? ` · ${selected.contact_position}` : ''}</p>
                 </div>
-                <Badge variant="outline" className={`${OUTCOME_STYLE[selected.outcome]}`}>
+                <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[selected.outcome]]}>
                   {OUTCOME_LABEL[selected.outcome]}
                 </Badge>
               </div>

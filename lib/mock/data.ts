@@ -1,5 +1,5 @@
 import { startOfMonth, subMonths, addDays, subDays } from 'date-fns'
-import type { Profile, Client, Meeting, MeetingOutcome, ClockRecord, ClientEditRequest } from '@/types'
+import type { Profile, Client, Meeting, MeetingOutcome, ClockRecord, ClientEditRequest, CollectionVisit, Remittance } from '@/types'
 import { TEAM_1_ID, TEAM_2_ID, TEAM_RSR_1_ID, TEAM_RSR_2_ID } from '@/lib/teams'
 
 // Meeting dates below are anchored to "today" (not hardcoded to a fixed
@@ -30,7 +30,18 @@ export const mockProfiles: Profile[] = [
   { id: 'agent-4', user_id: 'u10', full_name: 'Ana Bautista', role: 'sales_specialist', team_id: TEAM_2_ID, avatar_url: 'https://i.pravatar.cc/150?img=44', created_at: '2024-02-20T08:00:00Z' },
   { id: 'rsr-mgr-1', user_id: 'u11', full_name: 'Nestor Aquino', role: 'sales_manager', team_id: TEAM_RSR_1_ID, avatar_url: 'https://i.pravatar.cc/150?img=51', created_at: '2024-01-08T08:00:00Z' },
   { id: 'rsr-mgr-2', user_id: 'u12', full_name: 'Divina Cortez', role: 'sales_manager', team_id: TEAM_RSR_2_ID, avatar_url: 'https://i.pravatar.cc/150?img=45', created_at: '2024-01-08T08:00:00Z' },
+  // ⚠️ APPEND ONLY. Rows below are referenced positionally elsewhere in this file
+  // (`mockProfiles[9]` and friends), so inserting into the middle silently
+  // reassigns those references to the wrong person. Add new profiles at the end.
+  { id: 'col-2', user_id: 'u13', full_name: 'Lito Tanteo', role: 'collector', team_id: null, avatar_url: 'https://i.pravatar.cc/150?img=68', created_at: '2024-03-05T08:00:00Z' },
 ]
+
+/** Look a profile up by id instead of array position. Throws loudly on a typo. */
+function profile(id: string): Profile {
+  const found = mockProfiles.find(p => p.id === id)
+  if (!found) throw new Error(`mock data: no profile with id "${id}"`)
+  return found
+}
 
 export const mockClients: Client[] = [
   {
@@ -218,24 +229,33 @@ const flagshipMeetings: Meeting[] = [
 // actually owns clients — reusing the Meeting concept for RSR activity too,
 // since there's no separate store-visit data model yet.
 function generateHistoricalMeetings(): Meeting[] {
-  const agents = [mockProfiles[0], mockProfiles[1], mockProfiles[2], mockProfiles[9], mockProfiles[6], mockProfiles[7]]
+  // Looked up by id, not array position: this used to be `mockProfiles[9]` etc.,
+  // which meant adding a profile mid-array silently repointed these at whoever
+  // shifted into that slot. That actually happened — a collector landed on index
+  // 9, and since collectors own no clients the roster below came back empty and
+  // `agentClients[i % 0]` blew up with `undefined.id`.
+  const agents = ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'rsr-1', 'rsr-2'].map(profile)
   const outcomes: MeetingOutcome[] = ['successful', 'follow_up', 'no_decision', 'lost_opportunity']
   const meetings: Meeting[] = []
 
   // Each agent's *own* client roster, so filler meetings rotate across all
   // of their real accounts instead of piling onto whichever one .find()
-  // happens to hit first.
+  // happens to hit first. Agents with no clients are dropped rather than
+  // falling through to an empty array — `?? []` does not catch a length of 0.
   const clientsByAgent = new Map(
-    agents.map(agent => [agent.id, mockClients.filter(c => c.assigned_agent_id === agent.id)])
+    agents
+      .map(agent => [agent.id, mockClients.filter(c => c.assigned_agent_id === agent.id)] as const)
+      .filter(([, clients]) => clients.length > 0)
   )
-  const nextClientIndex = new Map(agents.map(agent => [agent.id, 0]))
+  const agentsWithClients = agents.filter(a => clientsByAgent.has(a.id))
+  const nextClientIndex = new Map(agentsWithClients.map(agent => [agent.id, 0]))
 
   for (let monthsAgo = 11; monthsAgo >= 1; monthsAgo--) {
     const monthStart = startOfMonth(subMonths(TODAY, monthsAgo))
     const count = 3 + (monthsAgo % 3) // 3-5 meetings per month
     for (let i = 0; i < count; i++) {
-      const agent = agents[(monthsAgo + i) % agents.length]
-      const agentClients = clientsByAgent.get(agent.id) ?? [mockClients[0]]
+      const agent = agentsWithClients[(monthsAgo + i) % agentsWithClients.length]
+      const agentClients = clientsByAgent.get(agent.id)!
       const clientIndex = nextClientIndex.get(agent.id) ?? 0
       const client = agentClients[clientIndex % agentClients.length]
       nextClientIndex.set(agent.id, clientIndex + 1)
@@ -327,3 +347,123 @@ function generateClockRecordsFromMeetings(): ClockRecord[] {
 }
 
 export const mockClockRecords: ClockRecord[] = generateClockRecordsFromMeetings()
+
+// ---------------------------------------------------------------------------
+// Collection module (F-007) — mock only.
+//
+// No collection tables exist in the database (latest migration is 022) and the
+// mobile app has no collector screens yet, so nothing here is wired to anything
+// real. Shapes follow the July 3 client spec in Features.md F-007 and the vault
+// wireframe, so swapping in Supabase later should be a query change, not a
+// redesign.
+//
+// The data is arranged to exercise the cases an admin actually cares about:
+// a clean reconciled remittance, one with a shortfall, cash/check/GCash spread,
+// and a rescheduled visit that collected nothing.
+// ---------------------------------------------------------------------------
+
+const collectorById = (id: string) => mockProfiles.find(p => p.id === id)
+const clientById = (id: string) => mockClients.find(c => c.id === id)
+
+const collectionVisitSeed: Omit<CollectionVisit, 'client' | 'collector'>[] = [
+  {
+    id: 'cv-1', collector_id: 'col-1', client_id: 'client-1', status: 'collected',
+    amount_due: 9800, amount_collected: 9800, payment_method: 'cash',
+    photo_url: 'https://picsum.photos/seed/cv1/400/300', gps_lat: 14.8006, gps_lng: 120.5372,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(1, 9, 41), created_at: daysAgo(1, 9, 41),
+  },
+  {
+    id: 'cv-2', collector_id: 'col-1', client_id: 'client-2', status: 'collected',
+    amount_due: 18000, amount_collected: 18000, payment_method: 'check',
+    photo_url: 'https://picsum.photos/seed/cv2/400/300', gps_lat: 14.4198, gps_lng: 121.0409,
+    remarks: 'Check dated next week', rescheduled_to: null, visited_at: daysAgo(1, 11, 15), created_at: daysAgo(1, 11, 15),
+  },
+  {
+    id: 'cv-3', collector_id: 'col-1', client_id: 'client-3', status: 'collected',
+    amount_due: 12000, amount_collected: 12000, payment_method: 'gcash',
+    photo_url: 'https://picsum.photos/seed/cv3/400/300', gps_lat: 14.6760, gps_lng: 120.5401,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(1, 14, 5), created_at: daysAgo(1, 14, 5),
+  },
+  {
+    // Short payment — the store paid less than due. Drives the variance case below.
+    id: 'cv-4', collector_id: 'col-2', client_id: 'client-4', status: 'collected',
+    amount_due: 15000, amount_collected: 13500, payment_method: 'cash',
+    photo_url: 'https://picsum.photos/seed/cv4/400/300', gps_lat: 14.6507, gps_lng: 121.1029,
+    remarks: 'Partial — balance next visit', rescheduled_to: null, visited_at: daysAgo(2, 10, 20), created_at: daysAgo(2, 10, 20),
+  },
+  {
+    id: 'cv-5', collector_id: 'col-2', client_id: 'client-5', status: 'collected',
+    amount_due: 7400, amount_collected: 7400, payment_method: 'cash',
+    photo_url: 'https://picsum.photos/seed/cv5/400/300', gps_lat: 14.2117, gps_lng: 121.1644,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(2, 13, 30), created_at: daysAgo(2, 13, 30),
+  },
+  {
+    // Collection-day reschedule — nothing collected, no photo, no amount.
+    id: 'cv-6', collector_id: 'col-2', client_id: 'client-6', status: 'rescheduled',
+    amount_due: 22000, amount_collected: null, payment_method: null,
+    photo_url: null, gps_lat: 14.4126, gps_lng: 121.0410,
+    remarks: 'Owner out of town', rescheduled_to: daysAgo(-3, 9, 0), visited_at: daysAgo(2, 15, 45), created_at: daysAgo(2, 15, 45),
+  },
+  {
+    // Collected today and not yet remitted — this is what "Still held" reports.
+    id: 'cv-7', collector_id: 'col-1', client_id: 'client-7', status: 'collected',
+    amount_due: 5600, amount_collected: 5600, payment_method: 'cash',
+    photo_url: 'https://picsum.photos/seed/cv7/400/300', gps_lat: 14.2786, gps_lng: 121.1257,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(0, 10, 5), created_at: daysAgo(0, 10, 5),
+  },
+  // Earlier cycle, both handed over at a bayad center (rm-3).
+  {
+    id: 'cv-9', collector_id: 'col-1', client_id: 'client-9', status: 'collected',
+    amount_due: 8200, amount_collected: 8200, payment_method: 'cash',
+    photo_url: 'https://picsum.photos/seed/cv9/400/300', gps_lat: 14.5764, gps_lng: 121.0851,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(4, 9, 30), created_at: daysAgo(4, 9, 30),
+  },
+  {
+    id: 'cv-10', collector_id: 'col-1', client_id: 'client-1', status: 'collected',
+    amount_due: 6000, amount_collected: 6000, payment_method: 'check',
+    photo_url: 'https://picsum.photos/seed/cv10/400/300', gps_lat: 14.5547, gps_lng: 121.0244,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(4, 13, 15), created_at: daysAgo(4, 13, 15),
+  },
+  {
+    id: 'cv-8', collector_id: 'col-2', client_id: 'client-8', status: 'pending',
+    amount_due: 11200, amount_collected: null, payment_method: null,
+    photo_url: null, gps_lat: null, gps_lng: null,
+    remarks: null, rescheduled_to: null, visited_at: null, created_at: daysAgo(0, 8, 0),
+  },
+]
+
+export const mockCollectionVisits: CollectionVisit[] = collectionVisitSeed.map(v => ({
+  ...v, client: clientById(v.client_id), collector: collectorById(v.collector_id),
+}))
+
+const remittanceSeed: Omit<Remittance, 'collector'>[] = [
+  {
+    // Office remittance: receiver signature present, as the spec requires.
+    id: 'rm-1', collector_id: 'col-1', destination: 'office',
+    amount_remitted: 39800, amount_collected: 39800, status: 'reconciled',
+    receiver_name: 'Grace Villanueva', signed_proof_url: 'https://picsum.photos/seed/rm1/400/300',
+    receiver_signature_url: 'https://picsum.photos/seed/sig1/400/160',
+    visit_ids: ['cv-1', 'cv-2', 'cv-3'], submitted_at: daysAgo(1, 17, 20), created_at: daysAgo(1, 17, 20),
+  },
+  {
+    // Shortfall: collector handed over less than the visits total. This is the
+    // row an admin needs to see first, so the UI sorts variance to the top.
+    id: 'rm-2', collector_id: 'col-2', destination: 'office',
+    amount_remitted: 20000, amount_collected: 20900, status: 'variance',
+    receiver_name: 'Grace Villanueva', signed_proof_url: 'https://picsum.photos/seed/rm2/400/300',
+    receiver_signature_url: 'https://picsum.photos/seed/sig2/400/160',
+    visit_ids: ['cv-4', 'cv-5'], submitted_at: daysAgo(2, 17, 45), created_at: daysAgo(2, 17, 45),
+  },
+  {
+    // Bayad-center drop: no in-app signature — that requirement is office-only.
+    id: 'rm-3', collector_id: 'col-1', destination: 'bayad_center',
+    amount_remitted: 14200, amount_collected: 14200, status: 'submitted',
+    receiver_name: null, signed_proof_url: 'https://picsum.photos/seed/rm3/400/300',
+    receiver_signature_url: null,
+    visit_ids: ['cv-9', 'cv-10'], submitted_at: daysAgo(4, 16, 10), created_at: daysAgo(4, 16, 10),
+  },
+]
+
+export const mockRemittances: Remittance[] = remittanceSeed.map(r => ({
+  ...r, collector: collectorById(r.collector_id),
+}))

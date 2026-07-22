@@ -10,6 +10,77 @@ export type ClockType = 'office' | 'event'
 export type ClockAction = 'in' | 'out'
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
 
+/**
+ * Collection module (F-007). Spec'd with the client at the 2026-07-03 meeting;
+ * see Features.md F-007 and Wireframe-Collection-Delivery-BizLink.html in the vault.
+ *
+ * These types describe what the *mobile* collector captures. Web is an oversight
+ * surface only — superadmin/admin reconcile and export, they never record a
+ * collection. Nothing here is in the database yet (no collection tables exist as
+ * of migration 022) and no collector screens exist in the mobile app, so this
+ * currently backs mock data only.
+ */
+export type PaymentMethod = 'cash' | 'check' | 'gcash'
+
+/** Where a collector hands off the money they're holding. */
+export type RemittanceDestination = 'office' | 'bayad_center' | 'bank_deposit'
+
+export type CollectionVisitStatus = 'collected' | 'rescheduled' | 'pending'
+
+export type RemittanceStatus = 'submitted' | 'reconciled' | 'variance'
+
+export interface CollectionVisit {
+  id: string
+  collector_id: string
+  client_id: string
+  status: CollectionVisitStatus
+  /** Amount due at the store for this visit, in PHP. */
+  amount_due: number
+  /**
+   * Exact amount typed by the collector to match the payment photo. Null when the
+   * visit was rescheduled or is still pending. This is the figure reconciled
+   * against remittance totals.
+   */
+  amount_collected: number | null
+  payment_method: PaymentMethod | null
+  /** Camera-only capture, compressed <=3MB per spec. */
+  photo_url: string | null
+  gps_lat: number | null
+  gps_lng: number | null
+  remarks: string | null
+  /** Set when status is 'rescheduled' — the collection-day reschedule rule. */
+  rescheduled_to: string | null
+  visited_at: string | null
+  created_at: string
+  client?: Client
+  collector?: Profile
+}
+
+export interface Remittance {
+  id: string
+  collector_id: string
+  destination: RemittanceDestination
+  /** Total the collector declared they are handing over. */
+  amount_remitted: number
+  /** Sum of the visits this remittance covers — variance = remitted - collected. */
+  amount_collected: number
+  status: RemittanceStatus
+  /** Name of the receiving officer. Required for destination 'office'. */
+  receiver_name: string | null
+  /** Photo of the signed acknowledgment / receipt (e.g. a 7-11 slip). */
+  signed_proof_url: string | null
+  /**
+   * In-app signature pad capture from the receiving officer. Required before an
+   * OFFICE remittance can submit (added 2026-07-16 per direct instruction).
+   * Not required for bayad-center or bank-deposit destinations.
+   */
+  receiver_signature_url: string | null
+  visit_ids: string[]
+  submitted_at: string
+  created_at: string
+  collector?: Profile
+}
+
 export interface Profile {
   id: string
   user_id: string

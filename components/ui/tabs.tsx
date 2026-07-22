@@ -24,7 +24,7 @@ function Tabs({
 }
 
 const tabsListVariants = cva(
-  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
+  "group/tabs-list inline-flex w-fit items-center justify-center rounded-xl p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
   {
     variants: {
       variant: {
@@ -73,7 +73,15 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
   return (
     <TabsPrimitive.Panel
       data-slot="tabs-content"
-      className={cn("flex-1 text-sm outline-none", className)}
+      // `data-[ending-style]:hidden` is load-bearing, not decoration.
+      //
+      // Base UI keeps the outgoing panel mounted (marked data-ending-style +
+      // inert) until its exit animation finishes, expecting the consumer to
+      // style that exit. This wrapper defined no exit styles, so the old panel
+      // stayed fully visible and both tabs' content rendered stacked on top of
+      // each other after any tab switch — visible on /approvals before this fix.
+      // There is no exit animation to preserve here, so hide it immediately.
+      className={cn("flex-1 text-sm outline-none data-[ending-style]:hidden", className)}
       {...props}
     />
   )

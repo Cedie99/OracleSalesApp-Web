@@ -8,16 +8,10 @@ import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { mockEditRequests } from '@/lib/mock/data'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import type { ApprovalStatus } from '@/types'
 import { ClipboardCheck, Check, X, Clock, ArrowRight } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
-
-const STATUS_STYLE: Record<ApprovalStatus, string> = {
-  pending: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  approved: 'bg-primary/15 text-primary border-primary/30',
-  rejected: 'bg-destructive/15 text-destructive border-destructive/30',
-}
+import { APPROVAL_TONE, TONE_CLASS, VALUE_LABEL } from '@/lib/status-styles'
 
 const FIELD_LABEL: Record<string, string> = {
   sales_channel: 'Sales Channel',
@@ -26,11 +20,6 @@ const FIELD_LABEL: Record<string, string> = {
   contact_number: 'Contact Number',
   office_address: 'Office Address',
   contact_position: 'Contact Position',
-}
-
-const VALUE_LABEL: Record<string, string> = {
-  distributor: 'Distributor', dealer: 'Dealer', end_user: 'End-User', private_label: 'Private Label',
-  existing: 'Existing', new: 'New', prospect: 'Prospect',
 }
 
 export default function ApprovalsPage() {
@@ -65,7 +54,7 @@ export default function ApprovalsPage() {
                 Requested by <span className="text-foreground">{req.requester?.full_name}</span> · {format(new Date(req.created_at), 'MMM d, h:mm a')}
               </p>
             </div>
-            <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${STATUS_STYLE[req.status]}`}>
+            <Badge variant="tone" className={TONE_CLASS[APPROVAL_TONE[req.status]]}>
               {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
             </Badge>
           </div>
