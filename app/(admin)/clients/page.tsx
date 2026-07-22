@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import dynamic from 'next/dynamic'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -9,32 +8,24 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { mockClients, mockMeetings, mockProfiles } from '@/lib/mock/data'
+import { ProgressBar } from '@/components/ui/progress-bar'
+import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
+import { getClientProgress } from '@/lib/client-progress'
+import { mockClients, mockProfiles } from '@/lib/mock/data'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
-import { Search, Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Plus, Pencil, X as XIcon } from 'lucide-react'
+import { Search, Building2, Phone, MapPin, User, Plus } from 'lucide-react'
 import { format, addDays } from 'date-fns'
 import { toast } from 'sonner'
 import {
   CHANNEL_TONE,
   CLIENT_STATUS_TONE,
   CUSTOMER_TYPE_TONE,
-  OUTCOME_LABEL,
-  OUTCOME_TONE,
   TONE_CLASS,
   VALUE_LABEL as LABEL,
 } from '@/lib/status-styles'
-
-const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex-1 h-full flex items-center justify-center text-xs text-muted-foreground">
-      Loading map…
-    </div>
-  ),
-})
 
 const ASSIGNABLE_ROLES = ['sales_specialist', 'sales_manager', 'rsr']
 
@@ -62,26 +53,6 @@ const EMPTY_CLIENT_FORM: ClientFormData = {
   assigned_agent_id: '',
 }
 
-// Binary per client rule: 100% once any saved meeting's agenda includes a
-// product/company presentation, 0% otherwise — info completion has no weight.
-function getClientProgress(clientId: string): number {
-  const presented = mockMeetings.some(m =>
-    m.client_id === clientId && m.agenda.some(a => /product\s*\/?\s*company presentation/i.test(a))
-  )
-  return presented ? 100 : 0
-}
-
-function ProgressBar({ value, barClass = 'w-16 h-1.5' }: { value: number; barClass?: string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <div className={`${barClass} rounded-full bg-muted overflow-hidden`}>
-        <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${value}%` }} />
-      </div>
-      <span className="text-[10px] font-medium text-muted-foreground tabular-nums">{value}%</span>
-    </div>
-  )
-}
-
 export default function ClientsPage() {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<string>('all')
@@ -91,7 +62,6 @@ export default function ClientsPage() {
   const isAdmin = profile?.role === 'admin' || profile?.role === 'superadmin'
   const [clients, setClients] = useState<Client[]>(mockClients)
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
-  const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string; date: string; by: string } | null>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Client | null>(null)
@@ -333,223 +303,12 @@ export default function ClientsPage() {
         )}
       </div>
 
-      <Dialog open={!!selectedClient} onOpenChange={open => { if (!open) setSelectedClientId(null) }}>
-        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto" showCloseButton={false}>
-          {selectedClient && (() => {
-            const clientMeetings = mockMeetings
-              .filter(m => m.client_id === selectedClient.id)
-              .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
-            const meetingPhotos = clientMeetings.filter(m => m.photo_url)
-
-            return (
-              <>
-                <DialogHeader>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-11 h-11 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                        <Building2 className="w-5 h-5 text-primary" />
-                      </div>
-                      <div className="min-w-0">
-                        <DialogTitle className="text-lg">{selectedClient.company_name}</DialogTitle>
-                        <div className="flex flex-wrap gap-1.5 mt-1.5">
-                          <Badge variant="tone" className={TONE_CLASS[CLIENT_STATUS_TONE[selectedClient.status]]}>
-                            {LABEL[selectedClient.status]}
-                          </Badge>
-                          <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[selectedClient.customer_type]]}>
-                            {LABEL[selectedClient.customer_type]}
-                          </Badge>
-                          <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[selectedClient.sales_channel]]}>
-                            {LABEL[selectedClient.sales_channel]}
-                          </Badge>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {canEditClient(selectedClient) && (
-                        <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => openEdit(selectedClient)}>
-                          <Pencil className="w-3.5 h-3.5" />
-                          Edit
-                        </Button>
-                      )}
-                      <DialogClose render={<Button variant="ghost" size="icon-sm" />}>
-                        <XIcon className="w-4 h-4" />
-                        <span className="sr-only">Close</span>
-                      </DialogClose>
-                    </div>
-                  </div>
-                </DialogHeader>
-
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-                  {/* Left column: client details */}
-                  <div className="md:col-span-3 space-y-4">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="rounded-lg border border-border p-3.5">
-                        <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Contact Person</p>
-                        <div className="flex items-center gap-2 text-sm text-foreground">
-                          <User className="w-4 h-4 text-muted-foreground shrink-0" />
-                          <span>{selectedClient.contact_person}</span>
-                        </div>
-                        {selectedClient.contact_position && (
-                          <p className="text-xs text-muted-foreground mt-1 pl-6">{selectedClient.contact_position}</p>
-                        )}
-                      </div>
-                      <div className="rounded-lg border border-border p-3.5">
-                        <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Phone Number</p>
-                        <div className="flex items-center gap-2 text-sm text-foreground">
-                          <Phone className="w-4 h-4 text-muted-foreground shrink-0" />
-                          <span>{selectedClient.contact_number}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-border p-3.5 space-y-3">
-                      <div>
-                        <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Office Address</p>
-                        <div className="flex items-start gap-2 text-sm text-foreground">
-                          <MapPin className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
-                          <span>{selectedClient.office_address}</span>
-                        </div>
-                      </div>
-
-                      {selectedClient.office_lat != null && selectedClient.office_lng != null && (
-                        <div className="space-y-1.5">
-                          <div className="h-48 rounded-md overflow-hidden border border-border">
-                            <ClientMap
-                              clients={[selectedClient]}
-                              selectedId={selectedClient.id}
-                              onSelect={() => {}}
-                              mapType="standard"
-                            />
-                          </div>
-                          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                            <Navigation className="w-3 h-3 shrink-0" />
-                            <span className="font-mono">
-                              {selectedClient.office_lat.toFixed(4)}, {selectedClient.office_lng.toFixed(4)}
-                            </span>
-                            <span className="text-muted-foreground/70">(mock GPS)</span>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="rounded-lg border border-border p-3.5 flex items-center justify-between gap-4">
-                      <div>
-                        <p className="text-[11px] font-medium text-muted-foreground">Progress</p>
-                        <p className="text-[10px] text-muted-foreground/70 mt-0.5">
-                          100% once a product/company presentation meeting is saved
-                        </p>
-                      </div>
-                      <ProgressBar value={getClientProgress(selectedClient.id)} barClass="w-24 h-2" />
-                    </div>
-
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center">
-                          <span className="text-[9px] font-bold text-primary">
-                            {selectedClient.agent?.full_name?.charAt(0)}
-                          </span>
-                        </div>
-                        <span>{selectedClient.agent?.full_name}</span>
-                      </div>
-                      <span>Added {format(new Date(selectedClient.created_at), 'MMM d, yyyy')}</span>
-                    </div>
-
-                    {selectedClient.status === 'lost' && selectedClient.lost_at && (
-                      <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
-                        Marked lost on {format(new Date(selectedClient.lost_at), 'MMM d, yyyy')}
-                        {selectedClient.reassignable_at && (
-                          <> · reassignable after {format(new Date(selectedClient.reassignable_at), 'MMM d, yyyy')}</>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right column: visit photos + meeting history */}
-                  <div className="md:col-span-2 space-y-4">
-                    <div>
-                      <p className="text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5">
-                        <Camera className="w-3.5 h-3.5 text-muted-foreground" />
-                        Visit Photos
-                      </p>
-                      {meetingPhotos.length > 0 ? (
-                        <div className="grid grid-cols-3 gap-2">
-                          {meetingPhotos.slice(0, 6).map(m => {
-                            const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
-                            const dateLabel = format(new Date(m.meeting_date), 'MMM d, yyyy')
-                            return (
-                              <button
-                                key={m.id}
-                                type="button"
-                                onClick={() => setLightboxPhoto({ url: m.photo_url!, date: dateLabel, by: submittedBy })}
-                                className="relative aspect-square rounded-md overflow-hidden border border-border group cursor-pointer"
-                              >
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img src={m.photo_url!} alt={`Visit on ${dateLabel}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
-                                <span className="absolute bottom-1 right-1 text-[9px] bg-black/60 text-white rounded px-1 py-0.5">
-                                  {format(new Date(m.meeting_date), 'MMM d')}
-                                </span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border p-3.5">
-                          No visit photos yet
-                        </p>
-                      )}
-                    </div>
-
-                    <div>
-                      <p className="text-xs font-semibold text-foreground mb-2">Meeting History</p>
-                      <div className="space-y-2">
-                        {clientMeetings.slice(0, 5).map(m => {
-                          const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
-                          return (
-                            <div key={m.id} className="flex items-center justify-between gap-2 text-xs bg-muted/40 rounded-md px-3 py-2">
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  <CalendarCheck className="w-3 h-3 text-muted-foreground shrink-0" />
-                                  <span className="truncate">{format(new Date(m.meeting_date), 'MMM d, yyyy')}</span>
-                                </div>
-                                <div className="flex items-center gap-1.5 mt-1 pl-[18px] text-muted-foreground">
-                                  <User className="w-3 h-3 shrink-0" />
-                                  <span className="truncate">{submittedBy}</span>
-                                </div>
-                              </div>
-                              <Badge variant="tone" className={`shrink-0 ${TONE_CLASS[OUTCOME_TONE[m.outcome]]}`}>
-                                {OUTCOME_LABEL[m.outcome]}
-                              </Badge>
-                            </div>
-                          )
-                        })}
-                        {clientMeetings.length === 0 && (
-                          <p className="text-xs text-muted-foreground">No meetings recorded yet</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </>
-            )
-          })()}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={!!lightboxPhoto} onOpenChange={open => { if (!open) setLightboxPhoto(null) }}>
-        <DialogContent className="sm:max-w-2xl p-0 overflow-hidden">
-          {lightboxPhoto && (
-            <>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={lightboxPhoto.url} alt="Visit photo" className="w-full max-h-[75vh] object-contain bg-black" />
-              <div className="flex items-center justify-between text-xs text-muted-foreground p-3">
-                <span>Submitted by {lightboxPhoto.by}</span>
-                <span>{lightboxPhoto.date}</span>
-              </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+      <ClientDetailDialog
+        client={selectedClient}
+        onOpenChange={open => { if (!open) setSelectedClientId(null) }}
+        canEdit={!!selectedClient && canEditClient(selectedClient)}
+        onEdit={openEdit}
+      />
 
       {/* Create Client Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

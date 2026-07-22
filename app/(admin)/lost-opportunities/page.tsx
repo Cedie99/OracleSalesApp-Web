@@ -1,18 +1,38 @@
 'use client'
 
+import { useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
 import { mockClients, mockMeetings } from '@/lib/mock/data'
-import { AlertTriangle, Building2, User, Calendar, Clock, Unlock } from 'lucide-react'
+import { AlertTriangle, Building2, User, Calendar, Clock, Unlock, Search } from 'lucide-react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 
 export default function LostOpportunitiesPage() {
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
+
   const lostClients = mockClients.filter(c => c.status === 'lost')
+  const selectedClient = lostClients.find(c => c.id === selectedClientId) ?? null
+
+  const filtered = lostClients.filter(c => {
+    const isReassignable = c.reassignable_at ? isPast(new Date(c.reassignable_at)) : false
+    const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
+      c.contact_person.toLowerCase().includes(search.toLowerCase()) ||
+      (c.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase())
+    const matchStatus = statusFilter === 'all' ||
+      (statusFilter === 'ready' && isReassignable) ||
+      (statusFilter === 'locked' && !isReassignable)
+    return matchSearch && matchStatus
+  })
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Lost Opportunities" subtitle={`${lostClients.length} clients removed from agents`} />
+      <Header title="Lost Opportunities" subtitle={`${filtered.length} of ${lostClients.length} clients removed from agents`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Info banner */}
@@ -26,13 +46,40 @@ export default function LostOpportunitiesPage() {
           </div>
         </div>
 
+        {/* Filters */}
+        <div className="flex flex-wrap gap-3">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search company, contact, or agent..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="pl-9 bg-card border-border h-9"
+            />
+          </div>
+          <Select value={statusFilter} onValueChange={v => setStatusFilter(v ?? 'all')}>
+            <SelectTrigger className="w-52 h-9 bg-card border-border">
+              <SelectValue placeholder="Reassignment Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Statuses</SelectItem>
+              <SelectItem value="ready">Ready for Reassignment</SelectItem>
+              <SelectItem value="locked">Locked</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {lostClients.map(client => {
+          {filtered.map(client => {
             const lostMeeting = mockMeetings.find(m => m.client_id === client.id && m.outcome === 'lost_opportunity')
             const isReassignable = client.reassignable_at ? isPast(new Date(client.reassignable_at)) : false
 
             return (
-              <Card key={client.id} className={`bg-card border-border ${isReassignable ? 'border-primary/30' : 'border-destructive/20'}`}>
+              <Card
+                key={client.id}
+                onClick={() => setSelectedClientId(client.id)}
+                className={`bg-card hover:border-primary/30 transition-colors cursor-pointer ${isReassignable ? 'border-primary/30' : 'border-destructive/20'}`}
+              >
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2.5">
@@ -95,13 +142,18 @@ export default function LostOpportunitiesPage() {
           })}
         </div>
 
-        {lostClients.length === 0 && (
+        {filtered.length === 0 && (
           <div className="text-center py-16 text-muted-foreground">
             <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-40" />
-            <p className="text-sm">No lost opportunities</p>
+            <p className="text-sm">No lost opportunities found</p>
           </div>
         )}
       </div>
+
+      <ClientDetailDialog
+        client={selectedClient}
+        onOpenChange={open => { if (!open) setSelectedClientId(null) }}
+      />
     </div>
   )
 }
