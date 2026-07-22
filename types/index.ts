@@ -1,4 +1,4 @@
-export type UserRole = 'superadmin' | 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector'
+export type UserRole = 'superadmin' | 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector' | 'delivery'
 export type CustomerType = 'existing' | 'new' | 'prospect'
 export type SalesChannel = 'distributor' | 'dealer' | 'end_user' | 'private_label'
 export type ClientStatus = 'active' | 'lost' | 'deleted'
@@ -54,6 +54,47 @@ export interface CollectionVisit {
   created_at: string
   client?: Client
   collector?: Profile
+}
+
+/**
+ * Delivery module (F-007). Modelled on the delivery screens in
+ * Wireframe-Collection-Delivery-BizLink.html, which is the spec of record for
+ * this flow — the vault's Features.md still lists delivery as open question
+ * OQ-5, but that doc is stale; the flow was agreed with the client.
+ *
+ * Deliberately unlike Collection in one respect: there is NO GPS capture here.
+ * The wireframe states it outright — "Walang GPS sa delivery module (per
+ * confirmed scope) — timestamp + proof photo lang." Do not add GPS fields.
+ */
+export type DeliveryStatus = 'pending' | 'followup' | 'delivered'
+
+export interface PurchaseOrder {
+  id: string
+  po_number: string
+  client_id: string
+  /** Delivery area, e.g. "Balanga". Coarser than an address — no GPS in scope. */
+  area: string
+  /** Free-text line items as captured on the PO, e.g. "12 × Engine Oil 1L". */
+  items: string
+  status: DeliveryStatus
+  /**
+   * Which day of the 3-day follow-up window this PO is on, 1-3. Set only when
+   * status is 'followup'. A failed delivery attempt starts the countdown and
+   * each subsequent failure advances it; an undelivered PO is auto-deleted once
+   * the window expires, so day 3 is the last chance to act.
+   */
+  followup_day: number | null
+  /** Name of whoever signed for the goods. Required to mark delivered. */
+  receiver_name: string | null
+  /** Camera-only capture of the delivered items / signed DR, compressed <=3MB. */
+  proof_url: string | null
+  delivered_at: string | null
+  remarks: string | null
+  /** Assigned delivery personnel — a profile with the `delivery` role (migration 023). */
+  assigned_to: string
+  created_at: string
+  client?: Client
+  assignee?: Profile
 }
 
 export interface Remittance {

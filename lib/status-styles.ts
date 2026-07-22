@@ -17,6 +17,7 @@ import type {
   ClientStatus,
   ClockType,
   CustomerType,
+  DeliveryStatus,
   MeetingOutcome,
   CollectionVisitStatus,
   PaymentMethod,
@@ -144,7 +145,11 @@ export const ROLE_TONE: Record<UserRole, BadgeTone> = {
   sales_manager: 'navy',
   sales_specialist: 'amber',
   rsr: 'purple',
+  // Collector and delivery deliberately share a tone: five usable tones cover
+  // seven roles, and these two are the same kind of thing (mobile operations
+  // support). The label and icon distinguish them, so the colour doesn't need to.
   collector: 'neutral',
+  delivery: 'neutral',
 }
 
 export const PLATFORM_TONE = {
@@ -208,6 +213,20 @@ export const REMITTANCE_DESTINATION_LABEL: Record<RemittanceDestination, string>
   office: 'Office',
   bayad_center: '7-11 / Bayad Center',
   bank_deposit: 'Bank Deposit',
+}
+
+// --- Delivery (F-007) ------------------------------------------------------
+
+export const DELIVERY_STATUS_TONE: Record<DeliveryStatus, BadgeTone> = {
+  delivered: 'brand',
+  followup: 'amber',
+  pending: 'navy',
+}
+
+export const DELIVERY_STATUS_LABEL: Record<DeliveryStatus, string> = {
+  delivered: 'Delivered',
+  followup: 'Follow-up',
+  pending: 'Pending',
 }
 
 /**

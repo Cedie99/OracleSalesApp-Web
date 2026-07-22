@@ -1,5 +1,5 @@
 import { startOfMonth, subMonths, addDays, subDays } from 'date-fns'
-import type { Profile, Client, Meeting, MeetingOutcome, ClockRecord, ClientEditRequest, CollectionVisit, Remittance } from '@/types'
+import type { Profile, Client, Meeting, MeetingOutcome, ClockRecord, ClientEditRequest, CollectionVisit, Remittance, PurchaseOrder } from '@/types'
 import { TEAM_1_ID, TEAM_2_ID, TEAM_RSR_1_ID, TEAM_RSR_2_ID } from '@/lib/teams'
 
 // Meeting dates below are anchored to "today" (not hardcoded to a fixed
@@ -34,6 +34,11 @@ export const mockProfiles: Profile[] = [
   // (`mockProfiles[9]` and friends), so inserting into the middle silently
   // reassigns those references to the wrong person. Add new profiles at the end.
   { id: 'col-2', user_id: 'u13', full_name: 'Lito Tanteo', role: 'collector', team_id: null, avatar_url: 'https://i.pravatar.cc/150?img=68', created_at: '2024-03-05T08:00:00Z' },
+  // Delivery personnel. Their own role as of migration 023 — before that, POs had
+  // to be assigned to collectors/RSRs because no delivery role existed. No team,
+  // same as collectors (see teamIdsForRole).
+  { id: 'del-1', user_id: 'u14', full_name: 'Dennis Rivera', role: 'delivery', team_id: null, avatar_url: 'https://i.pravatar.cc/150?img=60', created_at: '2024-03-12T08:00:00Z' },
+  { id: 'del-2', user_id: 'u15', full_name: 'Marlon Cruz', role: 'delivery', team_id: null, created_at: '2024-03-12T08:00:00Z' },
 ]
 
 /** Look a profile up by id instead of array position. Throws loudly on a typo. */
@@ -466,4 +471,78 @@ const remittanceSeed: Omit<Remittance, 'collector'>[] = [
 
 export const mockRemittances: Remittance[] = remittanceSeed.map(r => ({
   ...r, collector: collectorById(r.collector_id),
+}))
+
+// ---------------------------------------------------------------------------
+// Delivery module (F-007) — mock only.
+//
+// Seeded from the PO fixtures in the delivery wireframe
+// (Wireframe-Collection-Delivery-BizLink.html), which is the spec of record for
+// this flow. Clients are mapped onto the existing mock roster where the names
+// differ, so the Delivery tab joins against real client rows.
+//
+// Covers the cases an admin needs to see: plain pending POs, a follow-up on its
+// last day before auto-delete, one earlier in the window, and delivered POs with
+// receiver + proof. No GPS anywhere — that is per confirmed scope, not an omission.
+// ---------------------------------------------------------------------------
+
+const purchaseOrderSeed: Omit<PurchaseOrder, 'client' | 'assignee'>[] = [
+  {
+    id: 'po-1', po_number: 'PO-2091', client_id: 'client-7', area: 'Balanga',
+    items: '12 × Engine Oil 1L · 4 × Gear Oil 500ml', status: 'pending', followup_day: null,
+    receiver_name: null, proof_url: null, delivered_at: null, remarks: null,
+    assigned_to: 'del-1', created_at: daysAgo(0, 7, 30),
+  },
+  {
+    // Day 3 of 3 — auto-deletes if it isn't delivered today.
+    id: 'po-2', po_number: 'PO-2087', client_id: 'client-3', area: 'Dinalupihan',
+    items: '4 drums · Diesel additive', status: 'followup', followup_day: 3,
+    receiver_name: null, proof_url: null, delivered_at: null,
+    remarks: 'Second failed attempt — consignee closed',
+    assigned_to: 'del-1', created_at: daysAgo(3, 8, 0),
+  },
+  {
+    id: 'po-3', po_number: 'PO-2093', client_id: 'client-1', area: 'Orani',
+    items: '6 × Hydraulic Oil 4L', status: 'pending', followup_day: null,
+    receiver_name: null, proof_url: null, delivered_at: null, remarks: null,
+    assigned_to: 'del-1', created_at: daysAgo(0, 7, 30),
+  },
+  {
+    id: 'po-4', po_number: 'PO-2094', client_id: 'client-8', area: 'Abucay',
+    items: '2 boxes · Grease tubs', status: 'pending', followup_day: null,
+    receiver_name: null, proof_url: null, delivered_at: null, remarks: null,
+    assigned_to: 'del-2', created_at: daysAgo(0, 7, 30),
+  },
+  {
+    id: 'po-5', po_number: 'PO-2088', client_id: 'client-5', area: 'Hermosa',
+    items: '10 × Coolant 4L', status: 'followup', followup_day: 1,
+    receiver_name: null, proof_url: null, delivered_at: null,
+    remarks: 'Nobody at the delivery point',
+    assigned_to: 'del-2', created_at: daysAgo(1, 8, 0),
+  },
+  {
+    id: 'po-6', po_number: 'PO-2085', client_id: 'client-9', area: 'Mariveles',
+    items: '20 × Gear Oil 1L', status: 'delivered', followup_day: null,
+    receiver_name: 'J. Ramos', proof_url: 'https://picsum.photos/seed/po5/400/300',
+    delivered_at: daysAgo(0, 8, 40), remarks: null,
+    assigned_to: 'del-1', created_at: daysAgo(1, 8, 0),
+  },
+  {
+    id: 'po-7', po_number: 'PO-2082', client_id: 'client-2', area: 'Hermosa',
+    items: '8 × Engine Oil 4L', status: 'delivered', followup_day: null,
+    receiver_name: 'M. dela Cruz', proof_url: 'https://picsum.photos/seed/po6/400/300',
+    delivered_at: daysAgo(0, 9, 10), remarks: null,
+    assigned_to: 'del-2', created_at: daysAgo(1, 8, 0),
+  },
+  {
+    id: 'po-8', po_number: 'PO-2079', client_id: 'client-6', area: 'Orani',
+    items: '5 × Brake Fluid 1L', status: 'delivered', followup_day: null,
+    receiver_name: 'A. Santiago', proof_url: 'https://picsum.photos/seed/po8/400/300',
+    delivered_at: daysAgo(2, 14, 25), remarks: null,
+    assigned_to: 'del-1', created_at: daysAgo(3, 8, 0),
+  },
+]
+
+export const mockPurchaseOrders: PurchaseOrder[] = purchaseOrderSeed.map(po => ({
+  ...po, client: clientById(po.client_id), assignee: collectorById(po.assigned_to),
 }))

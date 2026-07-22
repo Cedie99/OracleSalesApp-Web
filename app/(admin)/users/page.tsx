@@ -14,7 +14,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
   MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
-  Monitor, Smartphone,
+  Monitor, Smartphone, Truck,
 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -34,6 +34,7 @@ const ROLE_ICON: Record<UserRole, React.ElementType> = {
   sales_specialist: User,
   rsr: Store,
   collector: Wallet,
+  delivery: Truck,
 }
 
 const PLATFORM_META = {
@@ -48,6 +49,7 @@ const ROLE_DESCRIPTION: Record<UserRole, string> = {
   sales_specialist: 'Front-line sales agent that logs meetings, clients, and clock records.',
   rsr: 'Route Sales Representative — visits stores daily and logs field activity.',
   collector: 'Handles payment collection from assigned stores with cash/check proof.',
+  delivery: 'Delivers purchase orders and captures receiver name plus a proof photo — no GPS, per confirmed scope.',
 }
 
 interface TeamRow {
@@ -157,6 +159,7 @@ export default function UsersPage() {
     sales_specialist: users.filter(u => u.role === 'sales_specialist').length,
     rsr: users.filter(u => u.role === 'rsr').length,
     collector: users.filter(u => u.role === 'collector').length,
+    delivery: users.filter(u => u.role === 'delivery').length,
     active: users.filter(u => u.is_active).length,
   }
 
@@ -241,7 +244,7 @@ export default function UsersPage() {
         )}
 
         {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
           {([
             { label: 'Total Users', value: counts.total, icon: Users, color: 'text-foreground' },
             { label: 'Super Admins', value: counts.superadmin, icon: ShieldEllipsis, color: 'text-primary' },
@@ -250,6 +253,7 @@ export default function UsersPage() {
             { label: 'Sales Specialists', value: counts.sales_specialist, icon: User, color: TONE_TEXT[ROLE_TONE.sales_specialist] },
             { label: 'RSR', value: counts.rsr, icon: Store, color: TONE_TEXT[ROLE_TONE.rsr] },
             { label: 'Collectors', value: counts.collector, icon: Wallet, color: TONE_TEXT[ROLE_TONE.collector] },
+            { label: 'Delivery', value: counts.delivery, icon: Truck, color: TONE_TEXT[ROLE_TONE.delivery] },
           ] as const).map(({ label, value, icon: Icon, color }) => (
             <Card key={label} className="bg-card border-border last:col-span-2 sm:last:col-span-1">
               <CardContent className="p-4 flex items-center gap-3">
@@ -288,6 +292,7 @@ export default function UsersPage() {
               <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
               <SelectItem value="rsr">RSR</SelectItem>
               <SelectItem value="collector">Collector</SelectItem>
+              <SelectItem value="delivery">Delivery</SelectItem>
             </SelectContent>
           </Select>
           <Select value={platformFilter} onValueChange={v => setPlatformFilter(v ?? 'all')}>
@@ -571,6 +576,7 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
             <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
             <SelectItem value="rsr">RSR</SelectItem>
             <SelectItem value="collector">Collector</SelectItem>
+            <SelectItem value="delivery">Delivery</SelectItem>
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">{ROLE_DESCRIPTION[form.role]}</p>

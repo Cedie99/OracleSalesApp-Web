@@ -24,4 +24,5 @@ export const ROLE_LABEL: Record<UserRole, string> = {
   sales_specialist: 'Sales Specialist',
   rsr: 'RSR',
   collector: 'Collector',
+  delivery: 'Delivery',
 }
