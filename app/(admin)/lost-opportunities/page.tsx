@@ -16,8 +16,8 @@ export default function LostOpportunitiesPage() {
 
       <div className="flex-1 p-6 space-y-4">
         {/* Info banner */}
-        <div className="flex items-start gap-3 bg-yellow-500/5 border border-yellow-500/20 rounded-xl p-4">
-          <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
+        <div className="flex items-start gap-3 bg-[var(--badge-amber-bg)] rounded-2xl p-4">
+          <AlertTriangle className="w-4 h-4 text-[var(--badge-amber-fg)] shrink-0 mt-0.5" />
           <div className="text-xs text-muted-foreground">
             <p className="font-medium text-foreground mb-0.5">Lost Opportunity Rules</p>
             When a meeting is marked &ldquo;Lost Opportunity,&rdquo; the client is automatically removed from the agent&apos;s list and archived here.

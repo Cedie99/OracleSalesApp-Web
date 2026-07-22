@@ -35,7 +35,7 @@ export function Header({ title, subtitle, pendingApprovals = 0, viewSwitcher }: 
       <div className="flex items-center gap-2">
         {viewSwitcher && (
           <DropdownMenu>
-            <DropdownMenuTrigger className="flex items-center gap-1.5 px-2.5 h-8 rounded-lg text-xs font-medium text-muted-foreground border border-border hover:bg-accent hover:text-foreground transition-colors">
+            <DropdownMenuTrigger className="flex items-center gap-1.5 px-3 h-8 rounded-full text-xs font-medium text-muted-foreground border border-border hover:bg-accent hover:text-foreground transition-colors">
               <Eye className="w-3.5 h-3.5" />
               {viewSwitcher.activeLabel}
               <ChevronDown className="w-3 h-3" />
@@ -54,7 +54,7 @@ export function Header({ title, subtitle, pendingApprovals = 0, viewSwitcher }: 
             </DropdownMenuContent>
           </DropdownMenu>
         )}
-        <button className="relative p-2 rounded-lg hover:bg-accent transition-colors">
+        <button className="relative p-2 rounded-full hover:bg-accent transition-colors">
           <Bell className="w-4 h-4 text-muted-foreground" />
           {pendingApprovals > 0 && (
             <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-primary" />

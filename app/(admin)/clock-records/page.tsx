@@ -11,11 +11,7 @@ import { ROLE_LABEL } from '@/lib/permissions'
 import type { ClockRecord, ClockType, Profile } from '@/types'
 import { Search, Clock, MapPin, Calendar } from 'lucide-react'
 import { format, differenceInMinutes } from 'date-fns'
-
-const TYPE_STYLE: Record<ClockType, string> = {
-  office: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  event: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
-}
+import { CLOCK_TYPE_TONE, TONE_CLASS } from '@/lib/status-styles'
 
 interface AttendanceRow {
   key: string
@@ -194,7 +190,7 @@ export default function ClockRecordsPage() {
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2 min-w-0">
                                 <p className="font-medium text-foreground truncate">{row.agent?.full_name ?? '—'}</p>
-                                <Badge variant="outline" className={`text-[10px] px-1.5 h-4 shrink-0 ${TYPE_STYLE[row.type]}`}>
+                                <Badge variant="tone" className={`h-4 shrink-0 ${TONE_CLASS[CLOCK_TYPE_TONE[row.type]]}`}>
                                   {row.type === 'office' ? 'Office' : 'Event'}
                                 </Badge>
                               </div>

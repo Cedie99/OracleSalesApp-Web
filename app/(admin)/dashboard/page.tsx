@@ -16,21 +16,15 @@ import {
   Users, CheckCircle2, Clock, BarChart3
 } from 'lucide-react'
 import { format, isSameMonth, startOfMonth, subMonths } from 'date-fns'
-import type { CustomerType } from '@/types'
-
-const OUTCOME_COLOR: Record<string, string> = {
-  successful: 'bg-primary/15 text-primary border-primary/30',
-  follow_up: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  no_decision: 'bg-muted text-muted-foreground border-border',
-  lost_opportunity: 'bg-destructive/15 text-destructive border-destructive/30',
-}
-
-const OUTCOME_LABEL: Record<string, string> = {
-  successful: 'Successful',
-  follow_up: 'Follow-up',
-  no_decision: 'No Decision',
-  lost_opportunity: 'Lost',
-}
+import type { CustomerType, MeetingOutcome } from '@/types'
+import {
+  APPROVAL_TONE,
+  CUSTOMER_TYPE_TONE,
+  OUTCOME_LABEL_SHORT as OUTCOME_LABEL,
+  OUTCOME_TONE,
+  TONE_CLASS,
+  TONE_TEXT,
+} from '@/lib/status-styles'
 
 const VIEW_OPTIONS = [
   { id: 'all', label: 'All Teams & Agencies', shortLabel: 'All Teams', teamId: null as string | null },
@@ -171,17 +165,19 @@ export default function DashboardPage() {
       title: 'Total Meetings', value: monthMeetings.length, icon: CalendarCheck,
       sub: 'This month', color: 'text-primary',
     },
+    // Derived from CUSTOMER_TYPE_TONE rather than restated, so a prospect reads
+    // the same amber here as it does on its pill in the Clients table.
     {
       title: 'Existing Clients', value: meetingsByType.existing, icon: Users,
-      sub: `${successfulByType.existing} successful`, color: 'text-blue-400',
+      sub: `${successfulByType.existing} successful`, color: TONE_TEXT[CUSTOMER_TYPE_TONE.existing],
     },
     {
       title: 'New Clients', value: meetingsByType.new, icon: TrendingUp,
-      sub: `${successfulByType.new} successful`, color: 'text-yellow-400',
+      sub: `${successfulByType.new} successful`, color: TONE_TEXT[CUSTOMER_TYPE_TONE.new],
     },
     {
       title: 'Prospects', value: meetingsByType.prospect, icon: Target,
-      sub: `${successfulByType.prospect} successful`, color: 'text-purple-400',
+      sub: `${successfulByType.prospect} successful`, color: TONE_TEXT[CUSTOMER_TYPE_TONE.prospect],
     },
     {
       title: 'Closed Deals', value: closedDeals, icon: Trophy,
@@ -189,7 +185,7 @@ export default function DashboardPage() {
     },
     {
       title: 'Pending Approvals', value: pending, icon: Clock,
-      sub: 'Awaiting review', color: pending > 0 ? 'text-yellow-400' : 'text-muted-foreground',
+      sub: 'Awaiting review', color: pending > 0 ? TONE_TEXT[APPROVAL_TONE.pending] : 'text-muted-foreground',
     },
   ]
 
@@ -278,11 +274,11 @@ export default function DashboardPage() {
 
               <div className="pt-3 border-t border-border space-y-2">
                 <p className="text-xs font-medium text-foreground">Meeting Outcomes</p>
-                {Object.entries(OUTCOME_LABEL).map(([key, label]) => {
+                {(Object.entries(OUTCOME_LABEL) as [MeetingOutcome, string][]).map(([key, label]) => {
                   const count = monthMeetings.filter(mtg => mtg.outcome === key).length
                   return (
                     <div key={key} className="flex items-center justify-between">
-                      <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${OUTCOME_COLOR[key]}`}>
+                      <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[key]]}>
                         {label}
                       </Badge>
                       <span className="text-xs text-muted-foreground">{count}</span>
@@ -402,7 +398,7 @@ export default function DashboardPage() {
                     <p className="text-xs text-muted-foreground">{meeting.agent?.full_name} · {meeting.contact_person}</p>
                   </div>
                   <div className="text-right shrink-0">
-                    <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${OUTCOME_COLOR[meeting.outcome]}`}>
+                    <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[meeting.outcome]]}>
                       {OUTCOME_LABEL[meeting.outcome]}
                     </Badge>
                     <p className="text-xs text-muted-foreground mt-1">

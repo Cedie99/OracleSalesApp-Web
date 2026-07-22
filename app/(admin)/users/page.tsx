@@ -25,15 +25,7 @@ import { ROLE_LABEL, canManageUsers, platformForRole } from '@/lib/permissions'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { teamIdsForRole } from '@/lib/teams'
 import type { UserRole } from '@/types'
-
-const ROLE_STYLE: Record<UserRole, string> = {
-  superadmin: 'bg-primary/15 text-primary border-primary/30',
-  admin: 'bg-primary/15 text-primary border-primary/30',
-  sales_manager: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  sales_specialist: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  rsr: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
-  collector: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
-}
+import { PLATFORM_TONE, ROLE_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
 
 const ROLE_ICON: Record<UserRole, React.ElementType> = {
   superadmin: ShieldEllipsis,
@@ -45,16 +37,8 @@ const ROLE_ICON: Record<UserRole, React.ElementType> = {
 }
 
 const PLATFORM_META = {
-  web: {
-    label: 'Web',
-    icon: Monitor,
-    style: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
-  },
-  mobile: {
-    label: 'Mobile App',
-    icon: Smartphone,
-    style: 'bg-green-500/15 text-green-400 border-green-500/30',
-  },
+  web: { label: 'Web', icon: Monitor, style: TONE_CLASS[PLATFORM_TONE.web] },
+  mobile: { label: 'Mobile App', icon: Smartphone, style: TONE_CLASS[PLATFORM_TONE.mobile] },
 } as const
 
 const ROLE_DESCRIPTION: Record<UserRole, string> = {
@@ -262,10 +246,10 @@ export default function UsersPage() {
             { label: 'Total Users', value: counts.total, icon: Users, color: 'text-foreground' },
             { label: 'Super Admins', value: counts.superadmin, icon: ShieldEllipsis, color: 'text-primary' },
             { label: 'Admins', value: counts.admin, icon: ShieldCheck, color: 'text-primary' },
-            { label: 'Sales Managers', value: counts.sales_manager, icon: Briefcase, color: 'text-blue-400' },
-            { label: 'Sales Specialists', value: counts.sales_specialist, icon: User, color: 'text-yellow-400' },
-            { label: 'RSR', value: counts.rsr, icon: Store, color: 'text-orange-400' },
-            { label: 'Collectors', value: counts.collector, icon: Wallet, color: 'text-purple-400' },
+            { label: 'Sales Managers', value: counts.sales_manager, icon: Briefcase, color: TONE_TEXT[ROLE_TONE.sales_manager] },
+            { label: 'Sales Specialists', value: counts.sales_specialist, icon: User, color: TONE_TEXT[ROLE_TONE.sales_specialist] },
+            { label: 'RSR', value: counts.rsr, icon: Store, color: TONE_TEXT[ROLE_TONE.rsr] },
+            { label: 'Collectors', value: counts.collector, icon: Wallet, color: TONE_TEXT[ROLE_TONE.collector] },
           ] as const).map(({ label, value, icon: Icon, color }) => (
             <Card key={label} className="bg-card border-border last:col-span-2 sm:last:col-span-1">
               <CardContent className="p-4 flex items-center gap-3">
@@ -385,7 +369,7 @@ export default function UsersPage() {
                           </div>
                         </td>
                         <td className="px-5 py-3">
-                          <Badge variant="outline" className={`text-[11px] px-2 h-5 gap-1 ${ROLE_STYLE[user.role]}`}>
+                          <Badge variant="tone" className={`gap-1 ${TONE_CLASS[ROLE_TONE[user.role]]}`}>
                             <RoleIcon className="w-3 h-3" />
                             {ROLE_LABEL[user.role]}
                           </Badge>
@@ -406,11 +390,8 @@ export default function UsersPage() {
                         </td>
                         <td className="px-5 py-3">
                           <Badge
-                            variant="outline"
-                            className={user.is_active
-                              ? 'text-[11px] px-2 h-5 bg-primary/10 text-primary border-primary/30'
-                              : 'text-[11px] px-2 h-5 bg-muted text-muted-foreground border-border'
-                            }
+                            variant="tone"
+                            className={TONE_CLASS[user.is_active ? 'brand' : 'neutral']}
                           >
                             {user.is_active ? 'Active' : 'Inactive'}
                           </Badge>
