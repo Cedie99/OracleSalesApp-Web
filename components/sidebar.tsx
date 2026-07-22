@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, Users, CalendarCheck, ClipboardCheck,
-  AlertTriangle, Clock, FileBarChart2, LogOut, UserCog, Map, Wallet,
+  AlertTriangle, Clock, FileBarChart2, LogOut, UserCog, Map, Wallet, Truck,
 } from 'lucide-react'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
@@ -58,11 +58,12 @@ function buildNavGroups(pendingApprovals: number): NavGroup[] {
       ],
     },
     {
-      // Collection (F-007) is a different business function from sales
+      // Collection/Delivery (F-007) are a different business function from sales
       // — different role (collector), different data, different people.
       label: 'Operations',
       items: [
         { href: '/collection', label: 'Collection', icon: Wallet },
+        { href: '/delivery', label: 'Delivery', icon: Truck },
       ],
     },
     {
