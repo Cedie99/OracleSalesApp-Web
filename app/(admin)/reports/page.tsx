@@ -7,8 +7,12 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { mockMeetings, mockClients, mockClockRecords, mockProfiles } from '@/lib/mock/data'
-import { FileBarChart2, Download, FileSpreadsheet, Users, CalendarCheck, Clock } from 'lucide-react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { useMeetings, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
+import { useClients } from '@/lib/hooks/use-clients'
+import { useClockRecords } from '@/lib/hooks/use-clock-records'
+import { useProfiles } from '@/lib/hooks/use-profiles'
+import { FileBarChart2, Download, FileSpreadsheet, Users, CalendarCheck, Clock, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
 import * as XLSX from 'xlsx'
 
@@ -29,31 +33,45 @@ export default function ReportsPage() {
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
 
-  const agents = mockProfiles.filter(p =>
-    p.role === 'sales_specialist' || p.role === 'sales_manager' || p.role === 'rsr'
-  )
-  const scopedMeetingsBase = mockMeetings
-  const scopedClientsBase = mockClients
-  const scopedClockBase = mockClockRecords
+  const { meetings, loading: meetingsLoading, error: meetingsError } = useMeetings()
+  const { clients, loading: clientsLoading, error: clientsError } = useClients()
+  const { records: clockRecords, error: clockError } = useClockRecords()
+  const { byRole } = useProfiles()
+
+  const agents = byRole(['sales_specialist', 'sales_manager', 'rsr'])
+  const scopedMeetingsBase = meetings
+  const scopedClientsBase = clients
+  const scopedClockBase = clockRecords
+
+  const loading = meetingsLoading || clientsLoading
+  const loadError = meetingsError || clientsError || clockError
 
   function downloadMeetingsReport() {
     const data = scopedMeetingsBase
       .filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
       .filter(m => inRange(m.meeting_date, dateFrom, dateTo))
-      .map(m => ({
-        'Date': format(new Date(m.meeting_date), 'MMM d, yyyy h:mm a'),
-        'Client': m.client?.company_name ?? '',
-        'Agent': m.agent?.full_name ?? '',
-        'Recorded By': m.recorder?.full_name ?? m.agent?.full_name ?? '',
-        'Meeting Type': m.meeting_type === 'f2f' ? 'Face to Face' : m.online_platform === 'zoom' ? 'Zoom' : 'Google Meet',
-        'Location': m.location_type === 'client_office' ? 'Client Office' : m.location_name ?? '',
-        'Contact Person': m.contact_person,
-        'Contact Position': m.contact_position ?? '',
-        'Agenda': m.agenda.join('; '),
-        'Outcome': OUTCOME_LABEL[m.outcome] ?? m.outcome,
-        'Remarks': m.remarks ?? '',
-        'GPS': m.gps_lat ? `${m.gps_lat}, ${m.gps_lng}` : '',
-      }))
+      .map(m => {
+        // Real duration from mobile's start/end capture pair. Blank rather than
+        // 0 when either end is missing — an unrecorded duration is not a
+        // zero-length meeting, and most historical rows predate the feature.
+        const duration = meetingDurationMinutes(m)
+        return {
+          'Date': format(new Date(m.meeting_date), 'MMM d, yyyy h:mm a'),
+          'Client': m.client?.company_name ?? '',
+          'Agent': m.agent?.full_name ?? '',
+          'Recorded By': m.recorder?.full_name ?? m.agent?.full_name ?? '',
+          'Meeting Type': m.meeting_type === 'f2f' ? 'Face to Face' : m.online_platform === 'zoom' ? 'Zoom' : 'Google Meet',
+          'Location': m.location_type === 'client_office' ? 'Client Office' : m.location_name ?? '',
+          'Contact Person': m.contact_person,
+          'Contact Position': m.contact_position ?? '',
+          'Agenda': (m.agenda ?? []).join('; '),
+          'Outcome': OUTCOME_LABEL[m.outcome] ?? m.outcome,
+          'Duration (mins)': duration ?? '',
+          'Remarks': m.remarks ?? '',
+          'GPS': m.gps_lat != null ? `${m.gps_lat}, ${m.gps_lng}` : '',
+          'Photo': m.photo_url ? 'Yes' : 'No',
+        }
+      })
 
     const ws = XLSX.utils.json_to_sheet(data)
     const wb = XLSX.utils.book_new()
@@ -161,6 +179,21 @@ export default function ReportsPage() {
       <Header title="Reports" subtitle="Export data as Excel files" />
 
       <div className="flex-1 p-6 space-y-5">
+        {loadError && (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">
+              Couldn&apos;t load report data: {loadError}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {loading && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            Loading live data…
+          </div>
+        )}
+
         {/* Filter bar */}
         <div className="flex flex-wrap items-center gap-3">
           <FileBarChart2 className="w-4 h-4 text-muted-foreground" />

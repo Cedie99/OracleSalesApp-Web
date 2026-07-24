@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -14,18 +14,25 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
   MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
-  Monitor, Smartphone, Truck,
+  Monitor, Smartphone, Truck, CircleHelp, ImagePlus, Trash2,
 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { createClient } from '@/lib/supabase/client'
-import { createUser, updateUser, toggleUserStatus } from './actions'
-import { ROLE_LABEL, canManageUsers, platformForRole } from '@/lib/permissions'
+import { createUser, updateUser, toggleUserStatus, uploadUserAvatar, removeUserAvatar } from './actions'
+import {
+  AVATAR_ACCEPT_ATTR, AVATAR_ACCEPTED_TYPES, AVATAR_MAX_SOURCE_BYTES, resizeAvatar,
+} from '@/lib/avatar'
+import {
+  ADMIN_SCOPES, ADMIN_SCOPE_DESCRIPTION, ADMIN_SCOPE_LABEL, adminScope,
+  canManageUsers, platformForRole, roleScopeLabel,
+} from '@/lib/permissions'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { teamIdsForRole } from '@/lib/teams'
-import type { UserRole } from '@/types'
-import { PLATFORM_TONE, ROLE_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
+import type { AdminScope, UserRole } from '@/types'
+import { PLATFORM_TONE, ROLE_TONE, TONE_CLASS, TONE_TEXT, roleTone } from '@/lib/status-styles'
 
 const ROLE_ICON: Record<UserRole, React.ElementType> = {
   superadmin: ShieldEllipsis,
@@ -37,6 +44,18 @@ const ROLE_ICON: Record<UserRole, React.ElementType> = {
   delivery: Truck,
 }
 
+/**
+ * Icon per admin category. The icon carries the business function (wallet =
+ * collection) while the label carries the level ("Collection Admin"), so it
+ * intentionally matches the icon of the field role that function belongs to.
+ */
+const ADMIN_SCOPE_ICON: Record<AdminScope, LucideIcon> = {
+  all: ShieldCheck,
+  sales: Briefcase,
+  collection: Wallet,
+  delivery: Truck,
+}
+
 const PLATFORM_META = {
   web: { label: 'Web', icon: Monitor, style: TONE_CLASS[PLATFORM_TONE.web] },
   mobile: { label: 'Mobile App', icon: Smartphone, style: TONE_CLASS[PLATFORM_TONE.mobile] },
@@ -44,7 +63,7 @@ const PLATFORM_META = {
 
 const ROLE_DESCRIPTION: Record<UserRole, string> = {
   superadmin: 'Full system access — the only role that can create or edit admin accounts.',
-  admin: 'Full operational access to clients, meetings, reports, approvals, and maps — user management is view-only.',
+  admin: 'Operational access to the modules its category covers — user management is view-only.',
   sales_manager: 'Oversees a team of sales specialists or RSRs, approves client changes, and views all team sales.',
   sales_specialist: 'Front-line sales agent that logs meetings, clients, and clock records.',
   rsr: 'Route Sales Representative — visits stores daily and logs field activity.',
@@ -63,6 +82,7 @@ interface UserRow {
   full_name: string
   email: string
   role: UserRole
+  admin_scope: AdminScope
   team_id: string | null
   is_active: boolean
   avatar_url: string | null
@@ -74,6 +94,7 @@ interface UserFormData {
   email: string
   password: string
   role: UserRole
+  admin_scope: AdminScope
   team_id: string
 }
 
@@ -82,6 +103,7 @@ const EMPTY_FORM: UserFormData = {
   email: '',
   password: '',
   role: 'sales_specialist',
+  admin_scope: 'all',
   team_id: '',
 }
 
@@ -104,13 +126,89 @@ export default function UsersPage() {
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
 
+  // Avatar lives outside UserFormData because it is a File, not a text field.
+  const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+  const [avatarCleared, setAvatarCleared] = useState(false)
+  const objectUrlRef = useRef<string | null>(null)
+
+  function releasePreview() {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
+  }
+
+  function resetAvatar(existingUrl: string | null) {
+    releasePreview()
+    setAvatarFile(null)
+    setAvatarPreview(existingUrl)
+    setAvatarCleared(false)
+  }
+
+  useEffect(() => releasePreview, [])
+
+  async function handleAvatarPick(file: File) {
+    if (!AVATAR_ACCEPTED_TYPES.includes(file.type)) {
+      setFormError('Photo must be a JPEG, PNG, or WebP image.')
+      return
+    }
+    if (file.size > AVATAR_MAX_SOURCE_BYTES) {
+      setFormError('Photo is too large — pick an image under 5 MB.')
+      return
+    }
+
+    let resized: File
+    try {
+      resized = await resizeAvatar(file)
+    } catch {
+      setFormError('That image could not be read.')
+      return
+    }
+
+    releasePreview()
+    objectUrlRef.current = URL.createObjectURL(resized)
+    setAvatarFile(resized)
+    setAvatarPreview(objectUrlRef.current)
+    setAvatarCleared(false)
+    setFormError('')
+  }
+
+  function handleAvatarClear() {
+    releasePreview()
+    setAvatarFile(null)
+    setAvatarPreview(null)
+    setAvatarCleared(true)
+  }
+
+  /**
+   * Runs after the profile row is saved — the photo needs an existing profile
+   * to hang off. Returns a message if the profile saved but the photo didn't,
+   * which the callers surface at page level rather than in the (now closed)
+   * dialog.
+   */
+  async function syncAvatar(profileId: string, hadAvatar: boolean): Promise<string> {
+    if (avatarFile) {
+      const payload = new FormData()
+      payload.append('profileId', profileId)
+      payload.append('file', avatarFile)
+      const { error } = await uploadUserAvatar(payload)
+      return error ? `Profile saved, but the photo failed to upload: ${error}` : ''
+    }
+    if (avatarCleared && hadAvatar) {
+      const { error } = await removeUserAvatar(profileId)
+      return error ? `Profile saved, but the photo could not be removed: ${error}` : ''
+    }
+    return ''
+  }
+
   async function loadUsers() {
     setLoading(true)
     setFetchError('')
     const supabase = createClient()
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at')
+      .select('id, user_id, full_name, email, role, admin_scope, team_id, is_active, avatar_url, created_at')
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -121,6 +219,7 @@ export default function UsersPage() {
           ...p,
           email: p.email ?? '',
           is_active: p.is_active ?? true,
+          admin_scope: adminScope(p.role, p.admin_scope),
         }))
       )
     }
@@ -146,7 +245,12 @@ export default function UsersPage() {
     const matchSearch =
       u.full_name.toLowerCase().includes(search.toLowerCase()) ||
       u.email.toLowerCase().includes(search.toLowerCase())
-    const matchRole = roleFilter === 'all' || u.role === roleFilter
+    // 'admin' matches every category; 'admin:sales' narrows to one of them.
+    const matchRole =
+      roleFilter === 'all' ||
+      (roleFilter.startsWith('admin:')
+        ? u.role === 'admin' && u.admin_scope === roleFilter.slice('admin:'.length)
+        : u.role === roleFilter)
     const matchPlatform = platformFilter === 'all' || platformForRole(u.role) === platformFilter
     return matchSearch && matchRole && matchPlatform
   })
@@ -167,6 +271,7 @@ export default function UsersPage() {
     setForm(EMPTY_FORM)
     setFormError('')
     setShowPassword(false)
+    resetAvatar(null)
     setCreateOpen(true)
   }
 
@@ -176,10 +281,12 @@ export default function UsersPage() {
       email: user.email,
       password: '',
       role: user.role,
+      admin_scope: user.admin_scope,
       team_id: user.team_id ?? '',
     } satisfies UserFormData)
     setFormError('')
     setShowPassword(false)
+    resetAvatar(user.avatar_url)
     setEditTarget(user)
   }
 
@@ -196,17 +303,22 @@ export default function UsersPage() {
     const err = validateForm(true)
     if (err) { setFormError(err); return }
     setSaving(true)
-    const { error } = await createUser({
+    const { error, profileId } = await createUser({
       full_name: form.full_name.trim(),
       email: form.email.trim().toLowerCase(),
       password: form.password,
       role: form.role,
+      admin_scope: form.admin_scope,
       team_id: form.team_id || null,
     })
+    if (error) { setSaving(false); setFormError(error); return }
+
+    const avatarError = profileId ? await syncAvatar(profileId, false) : ''
     setSaving(false)
-    if (error) { setFormError(error); return }
     setCreateOpen(false)
-    loadUsers()
+    await loadUsers()
+    // After loadUsers — it clears fetchError on entry.
+    if (avatarError) setFetchError(avatarError)
   }
 
   async function handleEdit() {
@@ -218,12 +330,17 @@ export default function UsersPage() {
       full_name: form.full_name.trim(),
       email: form.email.trim().toLowerCase(),
       role: form.role,
+      admin_scope: form.admin_scope,
       team_id: form.team_id || null,
     })
+    if (error) { setSaving(false); setFormError(error); return }
+
+    const avatarError = await syncAvatar(editTarget.id, !!editTarget.avatar_url)
     setSaving(false)
-    if (error) { setFormError(error); return }
     setEditTarget(null)
-    loadUsers()
+    await loadUsers()
+    // After loadUsers — it clears fetchError on entry.
+    if (avatarError) setFetchError(avatarError)
   }
 
   async function handleToggleStatus(user: UserRow) {
@@ -287,7 +404,12 @@ export default function UsersPage() {
             <SelectContent>
               <SelectItem value="all">All Roles</SelectItem>
               <SelectItem value="superadmin">Super Admin</SelectItem>
-              <SelectItem value="admin">Admin</SelectItem>
+              <SelectItem value="admin">Admins — any category</SelectItem>
+              {ADMIN_SCOPES.map(scope => (
+                <SelectItem key={scope} value={`admin:${scope}`}>
+                  {scope === 'all' ? 'Admin (all modules)' : ADMIN_SCOPE_LABEL[scope]}
+                </SelectItem>
+              ))}
               <SelectItem value="sales_manager">Sales Manager</SelectItem>
               <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
               <SelectItem value="rsr">RSR</SelectItem>
@@ -355,7 +477,13 @@ export default function UsersPage() {
                       </tr>
                     ))
                   ) : filtered.map(user => {
-                    const RoleIcon = ROLE_ICON[user.role]
+                    // Falls back for roles added to the DB by the mobile repo that
+                    // this build has no icon for — an undefined element type here
+                    // takes the whole page down. See roleLabel in lib/permissions.
+                    const RoleIcon =
+                      user.role === 'admin'
+                        ? ADMIN_SCOPE_ICON[user.admin_scope]
+                        : ROLE_ICON[user.role] ?? CircleHelp
                     const platform = PLATFORM_META[platformForRole(user.role)]
                     return (
                       <tr key={user.id} className="hover:bg-muted/20 transition-colors">
@@ -374,9 +502,9 @@ export default function UsersPage() {
                           </div>
                         </td>
                         <td className="px-5 py-3">
-                          <Badge variant="tone" className={`gap-1 ${TONE_CLASS[ROLE_TONE[user.role]]}`}>
+                          <Badge variant="tone" className={`gap-1 ${TONE_CLASS[roleTone(user.role)]}`}>
                             <RoleIcon className="w-3 h-3" />
-                            {ROLE_LABEL[user.role]}
+                            {roleScopeLabel(user.role, user.admin_scope)}
                           </Badge>
                         </td>
                         <td className="px-5 py-3">
@@ -452,7 +580,8 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Create New User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} canCreateAdmins={canManage} />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} canCreateAdmins={canManage}
+            avatarPreview={avatarPreview} onAvatarPick={handleAvatarPick} onAvatarClear={handleAvatarClear} />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -473,7 +602,8 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} canCreateAdmins={canManage} />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} canCreateAdmins={canManage}
+            avatarPreview={avatarPreview} onAvatarPick={handleAvatarPick} onAvatarClear={handleAvatarClear} />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -499,9 +629,17 @@ interface UserFormProps {
   isCreate: boolean
   teams: TeamRow[]
   canCreateAdmins: boolean
+  avatarPreview: string | null
+  onAvatarPick: (file: File) => void
+  onAvatarClear: () => void
 }
 
-function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, teams, canCreateAdmins }: UserFormProps) {
+function UserForm({
+  form, setForm, showPassword, setShowPassword, isCreate, teams, canCreateAdmins,
+  avatarPreview, onAvatarPick, onAvatarClear,
+}: UserFormProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
   function set(field: keyof UserFormData, value: string) {
     setForm(prev => ({ ...prev, [field]: value }))
   }
@@ -511,6 +649,9 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
     setForm(prev => ({
       ...prev,
       role,
+      // Only admins carry a category; anything else must go back to 'all' or
+      // the DB's profiles_admin_scope_role_check rejects the row.
+      admin_scope: role === 'admin' ? prev.admin_scope : 'all',
       team_id: validTeamIds.includes(prev.team_id) ? prev.team_id : '',
     }))
   }
@@ -519,6 +660,56 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
 
   return (
     <div className="space-y-4 py-2">
+      {/* Profile photo — mobile users can set their own from the app, but an
+          admin can supply one here so field agents show a face on map pins. */}
+      <div className="flex items-center gap-4">
+        <Avatar className="size-16 shrink-0">
+          {avatarPreview && <AvatarImage src={avatarPreview} alt="" />}
+          <AvatarFallback className="bg-primary/20 text-lg font-bold text-primary">
+            {form.full_name.trim().charAt(0).toUpperCase() || '?'}
+          </AvatarFallback>
+        </Avatar>
+        <div className="space-y-1.5 min-w-0">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <ImagePlus className="w-3.5 h-3.5" />
+              {avatarPreview ? 'Change photo' : 'Upload photo'}
+            </Button>
+            {avatarPreview && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 text-destructive hover:text-destructive"
+                onClick={onAvatarClear}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Remove
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">JPG, PNG or WebP — cropped square, max 5 MB.</p>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={AVATAR_ACCEPT_ATTR}
+          className="hidden"
+          onChange={e => {
+            const file = e.target.files?.[0]
+            // Reset so re-picking the same file still fires a change event.
+            e.target.value = ''
+            if (file) onAvatarPick(file)
+          }}
+        />
+      </div>
+
       <div className="space-y-1.5">
         <Label htmlFor="full_name">Full Name</Label>
         <Input
@@ -590,6 +781,32 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
           )
         })()}
       </div>
+
+      {/* Admin category (migration 024). Hidden for every other role — scope is
+          meaningless there and the DB constraint forbids narrowing it. */}
+      {form.role === 'admin' && (
+        <div className="space-y-1.5">
+          <Label>Admin Category</Label>
+          <Select
+            value={form.admin_scope}
+            onValueChange={v => set('admin_scope', (v as AdminScope | null) ?? 'all')}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ADMIN_SCOPES.map(scope => (
+                <SelectItem key={scope} value={scope}>
+                  {scope === 'all' ? 'Admin (all modules)' : ADMIN_SCOPE_LABEL[scope]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {ADMIN_SCOPE_DESCRIPTION[form.admin_scope]}
+          </p>
+        </div>
+      )}
 
       <div className="space-y-1.5">
         <Label>Team <span className="text-muted-foreground">(optional)</span></Label>

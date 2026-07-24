@@ -1,4 +1,11 @@
 export type UserRole = 'superadmin' | 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector' | 'delivery'
+
+/**
+ * Which business function an admin covers (migration 024). Only meaningful for
+ * role 'admin' — everyone else is 'all'. Deliberately not part of UserRole: the
+ * role column is shared with the mobile app, this column is web-only.
+ */
+export type AdminScope = 'all' | 'sales' | 'collection' | 'delivery'
 export type CustomerType = 'existing' | 'new' | 'prospect'
 export type SalesChannel = 'distributor' | 'dealer' | 'end_user' | 'private_label'
 export type ClientStatus = 'active' | 'lost' | 'deleted'
@@ -128,6 +135,8 @@ export interface Profile {
   full_name: string
   email?: string
   role: UserRole
+  /** Defaults to 'all'; may be absent on rows written before migration 024. */
+  admin_scope?: AdminScope
   team_id: string | null
   is_active?: boolean
   avatar_url?: string | null
@@ -148,18 +157,50 @@ export interface Client {
   contact_position: string | null
   contact_number: string
   office_address: string
+  /**
+   * ⚠️ NOT IN THE DATABASE YET. The live `clients` table has no coordinate
+   * columns — verified against the deployed schema on 2026-07-24. The mobile
+   * app does not capture a location when a client is created; adding that pin
+   * is a planned change, and these fields are the shape it will fill.
+   *
+   * Until then anything reading from Supabase sees them undefined, so the Maps
+   * page renders with no pins by design. Do NOT substitute meeting GPS
+   * (`Meeting.gps_lat/gps_lng`) — that records where the agent stood during a
+   * visit, which is not the client's address, and plotting it would assert a
+   * location the data cannot support.
+   */
   office_lat?: number
   office_lng?: number
   customer_type: CustomerType
   sales_channel: SalesChannel
   assigned_agent_id: string
   status: ClientStatus
+  /** ⚠️ NOT IN THE DATABASE — replaced by the binary progress bar. See lib/client-progress.ts. */
   rating?: number
   lost_at: string | null
   reassignable_at: string | null
   created_at: string
   updated_at: string
   agent?: Profile
+
+  // --- Columns mobile added that web had never modelled (live as of 2026-07-24) ---
+
+  /** Structured address parts. Mobile captures these; `office_address` is the legacy single field. */
+  address_line1?: string | null
+  address_line2?: string | null
+  landmark?: string | null
+  province?: string | null
+  city?: string | null
+  /**
+   * Deadline for completing the client's full details after a bare-bones
+   * creation in the field — the client-lifecycle timing rule. Null once met.
+   */
+  details_deadline_at?: string | null
+  details_completed_at?: string | null
+  /** Free-text reason captured when a client is marked lost/inactive. */
+  inactive_reason?: string | null
+  /** Lowercased/trimmed company_name, maintained by mobile for duplicate detection. */
+  normalized_company_name?: string | null
 }
 
 export interface ClientEditRequest {
@@ -198,6 +239,19 @@ export interface Meeting {
   client?: Client
   agent?: Profile
   recorder?: Profile
+
+  // --- Start/end capture, added by mobile (live as of 2026-07-24) ---
+  //
+  // The pair of timestamps is what makes a real meeting duration computable —
+  // previously the web Excel export had to approximate it. `end_gps_*` records
+  // where the agent actually finished, which can differ from where they started.
+
+  start_photo_url?: string | null
+  start_captured_at?: string | null
+  end_photo_url?: string | null
+  end_captured_at?: string | null
+  end_gps_lat?: number | null
+  end_gps_lng?: number | null
 }
 
 export interface ClockRecord {

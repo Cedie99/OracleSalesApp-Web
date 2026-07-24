@@ -7,32 +7,57 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { mockMeetings } from '@/lib/mock/data'
-import { Search, CalendarCheck, MapPin, Camera, Video, Users, CheckCircle2 } from 'lucide-react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { useMeetings } from '@/lib/hooks/use-meetings'
+import type { Meeting } from '@/types'
+import { Search, CalendarCheck, MapPin, Camera, Video, Users, CheckCircle2, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
 import { OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS } from '@/lib/status-styles'
 
+/**
+ * Keys are normalised (see `agendaIcon`) rather than written as the mobile app
+ * spells them, because the two had already drifted: this map was keyed
+ * 'Product/Company presentation' and 'Terms and Limit negotiation' while the
+ * database actually holds "Product / company presentation" and "Terms & limit
+ * negotiation", so three of the nine live agenda values silently rendered
+ * without an icon.
+ */
 const AGENDA_ICONS: Record<string, string> = {
-  'New business opportunity': '💼',
-  'Product/Company presentation': '📊',
-  'Price negotiation/quotation': '💰',
-  'Terms and Limit negotiation': '📋',
-  'Negotiation (other matters)': '🤝',
-  'Collection': '💳',
-  'Technical support': '🔧',
-  'Marketing support': '📣',
-  'Complaint resolution': '⚠️',
-  'Relationship building': '🫱',
-  'Closed deal': '✅',
+  'new business opportunity': '💼',
+  'product company presentation': '📊',
+  'price negotiation quotation': '💰',
+  'terms limit negotiation': '📋',
+  'negotiation other matters': '🤝',
+  'collection': '💳',
+  'technical support': '🔧',
+  'marketing support': '📣',
+  'complaint resolution': '⚠️',
+  'relationship building': '🫱',
+  'closed deal': '✅',
+}
+
+/** Lowercase, drop punctuation/connectives, collapse whitespace. */
+function normalizeAgenda(agenda: string): string {
+  return agenda
+    .toLowerCase()
+    .replace(/[/&,()]/g, ' ')
+    .replace(/\b(and|or)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function agendaIcon(agenda: string): string {
+  return AGENDA_ICONS[normalizeAgenda(agenda)] ?? '•'
 }
 
 export default function MeetingsPage() {
   const [search, setSearch] = useState('')
   const [outcomeFilter, setOutcomeFilter] = useState<string>('all')
   const [typeFilter, setTypeFilter] = useState<string>('all')
-  const [selected, setSelected] = useState<(typeof mockMeetings)[0] | null>(null)
+  const [selected, setSelected] = useState<Meeting | null>(null)
+  const { meetings, loading, error } = useMeetings()
 
-  const filtered = mockMeetings.filter(m => {
+  const filtered = meetings.filter(m => {
     const matchSearch =
       (m.client?.company_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
       (m.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
@@ -44,7 +69,7 @@ export default function MeetingsPage() {
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Meetings" subtitle={`${filtered.length} records`} />
+      <Header title="Meetings" subtitle={`${filtered.length} of ${meetings.length} records`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Filters */}
@@ -153,10 +178,29 @@ export default function MeetingsPage() {
               </tbody>
             </table>
 
-            {filtered.length === 0 && (
+            {loading && (
+              <div className="text-center py-16 text-muted-foreground">
+                <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
+                <p className="text-sm">Loading meetings…</p>
+              </div>
+            )}
+
+            {!loading && error && (
+              <div className="p-4">
+                <Alert variant="destructive">
+                  <AlertDescription className="text-xs">
+                    Couldn&apos;t load meetings: {error}
+                  </AlertDescription>
+                </Alert>
+              </div>
+            )}
+
+            {!loading && !error && filtered.length === 0 && (
               <div className="text-center py-16 text-muted-foreground">
                 <CalendarCheck className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                <p className="text-sm">No meetings found</p>
+                <p className="text-sm">
+                  {meetings.length === 0 ? 'No meetings recorded yet' : 'No meetings match these filters'}
+                </p>
               </div>
             )}
           </div>
@@ -214,7 +258,7 @@ export default function MeetingsPage() {
                 <div className="flex flex-wrap gap-1.5">
                   {selected.agenda.map(a => (
                     <Badge key={a} variant="outline" className="text-[10px] bg-primary/5 border-primary/20 text-primary">
-                      {AGENDA_ICONS[a] ?? '•'} {a}
+                      {agendaIcon(a)} {a}
                     </Badge>
                   ))}
                 </div>

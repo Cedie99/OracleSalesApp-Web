@@ -10,11 +10,11 @@ import Image from 'next/image'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import { ROLE_LABEL } from '@/lib/permissions'
+import { canAccessRoute, roleScopeLabel } from '@/lib/permissions'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import { ROLE_TONE, TONE_CLASS } from '@/lib/status-styles'
-import { mockEditRequests } from '@/lib/mock/data'
+import { TONE_CLASS, roleTone } from '@/lib/status-styles'
+import { useEditRequests } from '@/lib/hooks/use-edit-requests'
 
 interface NavItem {
   href: string
@@ -97,14 +97,20 @@ export function Sidebar() {
     .join('')
     .toUpperCase()
     .slice(0, 2)
-  const pendingApprovals = mockEditRequests.filter(r => r.status === 'pending').length
+  const { requests: editRequests } = useEditRequests()
+  const pendingApprovals = editRequests.filter(r => r.status === 'pending').length
 
   // Filter items first, then drop any group left empty so its header doesn't orphan.
+  // A scoped admin (Sales/Collection/Delivery) only sees their own function's
+  // pages — the same rule proxy.ts enforces, so the nav can't offer a link that
+  // would bounce them straight back.
   const visibleGroups = buildNavGroups(pendingApprovals)
     .map(group => ({
       ...group,
       items: group.items.filter(
-        item => !item.adminOnly || profile?.role === 'admin' || profile?.role === 'superadmin'
+        item =>
+          (!item.adminOnly || profile?.role === 'admin' || profile?.role === 'superadmin') &&
+          canAccessRoute(profile?.role, profile?.admin_scope, item.href)
       ),
     }))
     .filter(group => group.items.length > 0)
@@ -184,9 +190,9 @@ export function Sidebar() {
             </p>
             <Badge
               variant="tone"
-              className={`h-4 mt-0.5 ${TONE_CLASS[ROLE_TONE[profile?.role ?? 'admin']]}`}
+              className={`h-4 mt-0.5 ${TONE_CLASS[roleTone(profile?.role)]}`}
             >
-              {profile ? ROLE_LABEL[profile.role] : '—'}
+              {roleScopeLabel(profile?.role, profile?.admin_scope)}
             </Badge>
           </div>
         </div>

@@ -6,9 +6,11 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
-import { mockClients, mockMeetings } from '@/lib/mock/data'
-import { AlertTriangle, Building2, User, Calendar, Clock, Unlock, Search } from 'lucide-react'
+import { useClients } from '@/lib/hooks/use-clients'
+import { useMeetings } from '@/lib/hooks/use-meetings'
+import { AlertTriangle, Building2, User, Calendar, Clock, Unlock, Search, Loader2 } from 'lucide-react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 
 export default function LostOpportunitiesPage() {
@@ -16,7 +18,10 @@ export default function LostOpportunitiesPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
 
-  const lostClients = mockClients.filter(c => c.status === 'lost')
+  const { clients, loading, error } = useClients()
+  const { meetings } = useMeetings()
+
+  const lostClients = clients.filter(c => c.status === 'lost')
   const selectedClient = lostClients.find(c => c.id === selectedClientId) ?? null
 
   const filtered = lostClients.filter(c => {
@@ -71,7 +76,7 @@ export default function LostOpportunitiesPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {filtered.map(client => {
-            const lostMeeting = mockMeetings.find(m => m.client_id === client.id && m.outcome === 'lost_opportunity')
+            const lostMeeting = meetings.find(m => m.client_id === client.id && m.outcome === 'lost_opportunity')
             const isReassignable = client.reassignable_at ? isPast(new Date(client.reassignable_at)) : false
 
             return (
@@ -142,16 +147,36 @@ export default function LostOpportunitiesPage() {
           })}
         </div>
 
-        {filtered.length === 0 && (
+        {loading && (
+          <div className="text-center py-16 text-muted-foreground">
+            <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
+            <p className="text-sm">Loading clients…</p>
+          </div>
+        )}
+
+        {!loading && error && (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">
+              Couldn&apos;t load clients: {error}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
           <div className="text-center py-16 text-muted-foreground">
             <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-40" />
-            <p className="text-sm">No lost opportunities found</p>
+            <p className="text-sm">
+              {lostClients.length === 0
+                ? 'No lost opportunities — no client is currently marked lost'
+                : 'No lost opportunities match these filters'}
+            </p>
           </div>
         )}
       </div>
 
       <ClientDetailDialog
         client={selectedClient}
+        meetings={meetings}
         onOpenChange={open => { if (!open) setSelectedClientId(null) }}
       />
     </div>

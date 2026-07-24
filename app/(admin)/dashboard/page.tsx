@@ -6,14 +6,17 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { mockMeetings, mockEditRequests, mockProfiles } from '@/lib/mock/data'
-import { TEAM_1_ID, TEAM_2_ID, TEAM_RSR_1_ID, TEAM_RSR_2_ID } from '@/lib/teams'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { useMeetings } from '@/lib/hooks/use-meetings'
+import { useProfiles } from '@/lib/hooks/use-profiles'
+import { useTeams } from '@/lib/hooks/use-teams'
+import { useEditRequests } from '@/lib/hooks/use-edit-requests'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from 'recharts'
 import {
   CalendarCheck, TrendingUp, Target, Trophy,
-  Users, CheckCircle2, Clock, BarChart3
+  Users, CheckCircle2, Clock, BarChart3, Loader2
 } from 'lucide-react'
 import { format, isSameMonth, startOfMonth, subMonths } from 'date-fns'
 import type { CustomerType, MeetingOutcome } from '@/types'
@@ -26,13 +29,7 @@ import {
   TONE_TEXT,
 } from '@/lib/status-styles'
 
-const VIEW_OPTIONS = [
-  { id: 'all', label: 'All Teams & Agencies', shortLabel: 'All Teams', teamId: null as string | null },
-  { id: 'mgr-1', label: 'Sales Team 1', shortLabel: 'Sales Team 1', teamId: TEAM_1_ID },
-  { id: 'mgr-2', label: 'Sales Team 2', shortLabel: 'Sales Team 2', teamId: TEAM_2_ID },
-  { id: 'rsr-mgr-1', label: 'RSR Team 1', shortLabel: 'RSR Team 1', teamId: TEAM_RSR_1_ID },
-  { id: 'rsr-mgr-2', label: 'RSR Team 2', shortLabel: 'RSR Team 2', teamId: TEAM_RSR_2_ID },
-] as const
+const ALL_TEAMS_VIEW = { id: 'all', label: 'All Teams & Agencies', shortLabel: 'All Teams', teamId: null as string | null }
 
 const FIELD_AGENT_ROLES = ['sales_specialist', 'rsr'] as const
 
@@ -42,27 +39,44 @@ export default function DashboardPage() {
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
 
+  const { meetings, loading: meetingsLoading, error: meetingsError } = useMeetings()
+  const { profiles } = useProfiles()
+  const { teams, teamName } = useTeams()
+  const { requests: editRequests } = useEditRequests()
+
+  // Built from the real `teams` rows rather than a hardcoded list, so a team
+  // renamed or added on the mobile side shows up here without a code change —
+  // the previous hardcoded labels had already drifted ("RSR Team 1" in code vs
+  // "Team 3" in the database).
+  const viewOptions = useMemo(
+    () => [
+      ALL_TEAMS_VIEW,
+      ...teams.map(t => ({ id: t.id, label: t.name, shortLabel: t.name, teamId: t.id })),
+    ],
+    [teams]
+  )
+
   const currentView = useMemo(
-    () => VIEW_OPTIONS.find(v => v.id === viewAs) ?? VIEW_OPTIONS[0],
-    [viewAs]
+    () => viewOptions.find(v => v.id === viewAs) ?? ALL_TEAMS_VIEW,
+    [viewOptions, viewAs]
   )
 
   const scopedAgents = useMemo(
     () =>
-      mockProfiles.filter(
+      profiles.filter(
         p =>
           (FIELD_AGENT_ROLES as readonly string[]).includes(p.role) &&
           (currentView.teamId === null || p.team_id === currentView.teamId)
       ),
-    [currentView]
+    [profiles, currentView]
   )
 
   // All meetings within the current team scope (not affected by the Agent
   // Performance table's own agent/date filters below) — drives the metric
   // cards, monthly trend, success rate, and outcome counts.
   const teamMeetings = useMemo(
-    () => mockMeetings.filter(mtg => currentView.teamId === null || mtg.agent?.team_id === currentView.teamId),
-    [currentView]
+    () => meetings.filter(mtg => currentView.teamId === null || mtg.agent?.team_id === currentView.teamId),
+    [meetings, currentView]
   )
 
   const scopedMeetings = useMemo(
@@ -103,10 +117,10 @@ export default function DashboardPage() {
 
   const pending = useMemo(
     () =>
-      mockEditRequests.filter(
+      editRequests.filter(
         r => r.status === 'pending' && (currentView.teamId === null || r.requester?.team_id === currentView.teamId)
       ).length,
-    [currentView]
+    [editRequests, currentView]
   )
 
   // Just this calendar month, within the team scope — drives the metric
@@ -196,7 +210,7 @@ export default function DashboardPage() {
         subtitle={`Overview for ${format(new Date(), 'MMMM yyyy')}`}
         pendingApprovals={pending}
         viewSwitcher={{
-          options: VIEW_OPTIONS.map(({ id, label }) => ({ id, label })),
+          options: viewOptions.map(({ id, label }) => ({ id, label })),
           value: viewAs,
           activeLabel: currentView.shortLabel,
           onChange: setViewAs,
@@ -204,6 +218,21 @@ export default function DashboardPage() {
       />
 
       <div className="flex-1 p-6 space-y-6">
+        {meetingsError && (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">
+              Couldn&apos;t load dashboard data: {meetingsError}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {meetingsLoading && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            Loading live data…
+          </div>
+        )}
+
         {/* Metric cards */}
         <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
           {metricCards.map(({ title, value, icon: Icon, sub, color }) => (
@@ -349,7 +378,7 @@ export default function DashboardPage() {
                         <p className="text-xs text-muted-foreground capitalize">{agent.role.replace('_', ' ')}</p>
                       </td>
                       <td className="px-5 py-3 hidden md:table-cell text-xs text-muted-foreground">
-                        {agent.team_id ?? '—'}
+                        {teamName(agent.team_id)}
                       </td>
                       <td className="px-5 py-3 text-right font-medium text-foreground">{total}</td>
                       <td className="px-5 py-3 text-right hidden lg:table-cell text-muted-foreground">{successful}</td>
@@ -395,7 +424,11 @@ export default function DashboardPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-foreground truncate">{meeting.client?.company_name}</p>
-                    <p className="text-xs text-muted-foreground">{meeting.agent?.full_name} · {meeting.contact_person}</p>
+                    {/* Separator is conditional: 9 of 30 live meetings have a
+                        blank contact_person, which otherwise leaves a dangling "·". */}
+                    <p className="text-xs text-muted-foreground">
+                      {[meeting.agent?.full_name, meeting.contact_person].filter(Boolean).join(' · ')}
+                    </p>
                   </div>
                   <div className="text-right shrink-0">
                     <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[meeting.outcome]]}>
