@@ -6,10 +6,11 @@ import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { mockClockRecords } from '@/lib/mock/data'
-import { ROLE_LABEL } from '@/lib/permissions'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { useClockRecords } from '@/lib/hooks/use-clock-records'
+import { roleLabel } from '@/lib/permissions'
 import type { ClockRecord, ClockType, Profile } from '@/types'
-import { Search, Clock, MapPin, Calendar } from 'lucide-react'
+import { Search, Clock, MapPin, Calendar, Loader2 } from 'lucide-react'
 import { format, differenceInMinutes } from 'date-fns'
 import { CLOCK_TYPE_TONE, TONE_CLASS } from '@/lib/status-styles'
 
@@ -74,16 +75,18 @@ export default function ClockRecordsPage() {
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
 
+  const { records, loading, error } = useClockRecords()
+
   const agentOptions = useMemo(() => {
     const byId = new Map<string, string>()
-    mockClockRecords.forEach(r => {
+    records.forEach(r => {
       if (r.agent) byId.set(r.agent.id, r.agent.full_name)
     })
     return Array.from(byId, ([id, full_name]) => ({ id, full_name }))
       .sort((a, b) => a.full_name.localeCompare(b.full_name))
-  }, [])
+  }, [records])
 
-  const rows = useMemo(() => pairIntoAttendanceRows(mockClockRecords), [])
+  const rows = useMemo(() => pairIntoAttendanceRows(records), [records])
 
   const filtered = rows.filter(row => {
     const matchSearch = (row.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
@@ -196,7 +199,7 @@ export default function ClockRecordsPage() {
                               </div>
                             </td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">
-                              {row.agent ? ROLE_LABEL[row.agent.role] : '—'}
+                              {roleLabel(row.agent?.role)}
                             </td>
                             <td className="px-4 py-3 text-muted-foreground">
                               {row.clockIn ? format(new Date(row.clockIn.timestamp), 'h:mm a') : '—'}
@@ -224,10 +227,34 @@ export default function ClockRecordsPage() {
             </div>
           ))}
 
-        {filtered.length === 0 && (
+        {loading && (
+          <div className="text-center py-16 text-muted-foreground">
+            <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
+            <p className="text-sm">Loading clock records…</p>
+          </div>
+        )}
+
+        {!loading && error && (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">
+              Couldn&apos;t load clock records: {error}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
           <div className="text-center py-16 text-muted-foreground">
             <Clock className="w-8 h-8 mx-auto mb-2 opacity-40" />
-            <p className="text-sm">No clock records found</p>
+            {records.length === 0 ? (
+              <>
+                <p className="text-sm">No clock records yet</p>
+                <p className="text-xs mt-1 text-muted-foreground/70">
+                  The table exists but is empty — the mobile app hasn&apos;t shipped clock in/out.
+                </p>
+              </>
+            ) : (
+              <p className="text-sm">No clock records match these filters</p>
+            )}
           </div>
         )}
       </div>

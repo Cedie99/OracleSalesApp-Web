@@ -13,10 +13,13 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { CircularProgress } from '@/components/ui/circular-progress'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
 import { getClientProgress } from '@/lib/client-progress'
-import { mockClients, mockProfiles } from '@/lib/mock/data'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
+import { useClients } from '@/lib/hooks/use-clients'
+import { useMeetings } from '@/lib/hooks/use-meetings'
+import { useProfiles } from '@/lib/hooks/use-profiles'
+import { createClient as createSupabaseClient } from '@/lib/supabase/client'
 import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
-import { Search, Building2, Phone, MapPin, User, Plus } from 'lucide-react'
+import { Search, Building2, Phone, MapPin, User, Plus, Loader2 } from 'lucide-react'
 import { format, addDays } from 'date-fns'
 import { toast } from 'sonner'
 import {
@@ -60,17 +63,22 @@ export default function ClientsPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const { profile } = useCurrentProfile()
   const isAdmin = profile?.role === 'admin' || profile?.role === 'superadmin'
-  const [clients, setClients] = useState<Client[]>(mockClients)
+  const { clients, loading, error, refresh } = useClients()
+  // Meetings drive the progress ring (see lib/client-progress.ts), so the page
+  // needs them even though it never lists a meeting.
+  const { meetings } = useMeetings()
+  const { byRole } = useProfiles()
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Client | null>(null)
   const [form, setForm] = useState<ClientFormData>(EMPTY_CLIENT_FORM)
   const [formError, setFormError] = useState('')
+  const [saving, setSaving] = useState(false)
 
   const selectedClient = clients.find(c => c.id === selectedClientId) ?? null
 
-  const assignableAgents = mockProfiles.filter(p => ASSIGNABLE_ROLES.includes(p.role))
+  const assignableAgents = byRole(ASSIGNABLE_ROLES)
   const canEditClient = (client: Client) => isAdmin || profile?.id === client.assigned_agent_id
 
   const filtered = clients.filter(c => {
@@ -114,14 +122,9 @@ export default function ClientsPage() {
     return ''
   }
 
-  function handleCreate() {
-    const err = validateForm()
-    if (err) { setFormError(err); return }
-    const now = new Date().toISOString()
-    const agent = mockProfiles.find(p => p.id === form.assigned_agent_id)
-    const isLost = form.status === 'lost'
-    const newClient: Client = {
-      id: `client-${Date.now()}`,
+  /** The form fields that map 1:1 onto columns, trimmed. */
+  function formColumns() {
+    return {
       company_name: form.company_name.trim(),
       contact_person: form.contact_person.trim(),
       contact_position: form.contact_position.trim() || null,
@@ -131,50 +134,78 @@ export default function ClientsPage() {
       sales_channel: form.sales_channel,
       assigned_agent_id: form.assigned_agent_id,
       status: form.status,
-      lost_at: isLost ? now : null,
-      reassignable_at: isLost ? addDays(new Date(), 14).toISOString() : null,
-      created_at: now,
-      updated_at: now,
-      agent,
     }
-    setClients(prev => [newClient, ...prev])
-    setCreateOpen(false)
-    toast.success('Client created successfully')
   }
 
-  function handleEdit() {
+  async function handleCreate() {
+    const err = validateForm()
+    if (err) { setFormError(err); return }
+
+    setSaving(true)
+    setFormError('')
+    const now = new Date().toISOString()
+    const isLost = form.status === 'lost'
+
+    const { error: insertError } = await createSupabaseClient()
+      .from('clients')
+      .insert({
+        ...formColumns(),
+        lost_at: isLost ? now : null,
+        // 14-day cooling-off before a lost client can be reassigned.
+        reassignable_at: isLost ? addDays(new Date(), 14).toISOString() : null,
+      })
+
+    setSaving(false)
+    if (insertError) {
+      setFormError(insertError.message)
+      return
+    }
+
+    setCreateOpen(false)
+    toast.success('Client created successfully')
+    await refresh()
+  }
+
+  async function handleEdit() {
     if (!editTarget) return
     const err = validateForm()
     if (err) { setFormError(err); return }
-    const agent = mockProfiles.find(p => p.id === form.assigned_agent_id)
+
+    setSaving(true)
+    setFormError('')
     const wasLost = editTarget.status === 'lost'
     const isLost = form.status === 'lost'
-    setClients(prev => prev.map(c => {
-      if (c.id !== editTarget.id) return c
-      return {
-        ...c,
-        company_name: form.company_name.trim(),
-        contact_person: form.contact_person.trim(),
-        contact_position: form.contact_position.trim() || null,
-        contact_number: form.contact_number.trim(),
-        office_address: form.office_address.trim(),
-        customer_type: form.customer_type,
-        sales_channel: form.sales_channel,
-        assigned_agent_id: form.assigned_agent_id,
-        status: form.status,
-        lost_at: isLost ? (c.lost_at ?? new Date().toISOString()) : (wasLost && !isLost ? null : c.lost_at),
-        reassignable_at: isLost ? (c.reassignable_at ?? addDays(new Date(), 14).toISOString()) : (wasLost && !isLost ? null : c.reassignable_at),
-        updated_at: new Date().toISOString(),
-        agent,
-      }
-    }))
+
+    // Only stamp lost_at/reassignable_at on the transition. Re-saving an
+    // already-lost client must not restart its 14-day reassignment clock.
+    const lostFields = isLost
+      ? {
+          lost_at: editTarget.lost_at ?? new Date().toISOString(),
+          reassignable_at: editTarget.reassignable_at ?? addDays(new Date(), 14).toISOString(),
+        }
+      : wasLost
+        ? { lost_at: null, reassignable_at: null }
+        : {}
+
+    const { error: updateError } = await createSupabaseClient()
+      .from('clients')
+      .update({ ...formColumns(), ...lostFields, updated_at: new Date().toISOString() })
+      .eq('id', editTarget.id)
+
+    setSaving(false)
+    if (updateError) {
+      setFormError(updateError.message)
+      return
+    }
+
     setEditTarget(null)
     toast.success('Client updated successfully')
+    await refresh()
   }
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Clients" subtitle={`${filtered.length} of ${mockClients.length} clients`} />
+      <Header title="Clients" subtitle={`${filtered.length} of ${clients.length} clients`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Filters */}
@@ -275,7 +306,7 @@ export default function ClientsPage() {
                     </div>
                   </div>
 
-                  <CircularProgress value={getClientProgress(client.id)} size={80} strokeWidth={7} className="shrink-0" />
+                  <CircularProgress value={getClientProgress(client.id, meetings)} size={80} strokeWidth={7} className="shrink-0" />
                 </div>
 
                 <div className="flex items-center justify-between pt-2 border-t border-border">
@@ -296,16 +327,34 @@ export default function ClientsPage() {
           ))}
         </div>
 
-        {filtered.length === 0 && (
+        {loading && (
+          <div className="text-center py-16 text-muted-foreground">
+            <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
+            <p className="text-sm">Loading clients…</p>
+          </div>
+        )}
+
+        {!loading && error && (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">
+              Couldn&apos;t load clients: {error}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
           <div className="text-center py-16 text-muted-foreground">
             <Building2 className="w-8 h-8 mx-auto mb-2 opacity-40" />
-            <p className="text-sm">No clients found</p>
+            <p className="text-sm">
+              {clients.length === 0 ? 'No clients yet' : 'No clients match these filters'}
+            </p>
           </div>
         )}
       </div>
 
       <ClientDetailDialog
         client={selectedClient}
+        meetings={meetings}
         onOpenChange={open => { if (!open) setSelectedClientId(null) }}
         canEdit={!!selectedClient && canEditClient(selectedClient)}
         onEdit={openEdit}
@@ -324,8 +373,10 @@ export default function ClientsPage() {
             </Alert>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button onClick={handleCreate}>Create Client</Button>
+            <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={saving}>Cancel</Button>
+            <Button onClick={handleCreate} disabled={saving}>
+              {saving ? 'Creating…' : 'Create Client'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -343,8 +394,10 @@ export default function ClientsPage() {
             </Alert>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditTarget(null)}>Cancel</Button>
-            <Button onClick={handleEdit}>Save Changes</Button>
+            <Button variant="outline" onClick={() => setEditTarget(null)} disabled={saving}>Cancel</Button>
+            <Button onClick={handleEdit} disabled={saving}>
+              {saving ? 'Saving…' : 'Save Changes'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

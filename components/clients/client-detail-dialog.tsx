@@ -8,7 +8,6 @@ import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CircularProgress } from '@/components/ui/circular-progress'
 import { getClientProgress } from '@/lib/client-progress'
-import { mockMeetings } from '@/lib/mock/data'
 import type { Client, Meeting, MeetingOutcome } from '@/types'
 import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, X as XIcon } from 'lucide-react'
 import { format } from 'date-fns'
@@ -54,6 +53,12 @@ function MeetingRow({ meeting }: { meeting: Meeting }) {
 
 interface ClientDetailDialogProps {
   client: Client | null
+  /**
+   * All meetings, unfiltered — the dialog narrows to this client itself. Passed
+   * in rather than fetched here so the parent owns one query and the dialog
+   * stays usable from both the Supabase-backed and mock-backed pages.
+   */
+  meetings: Meeting[]
   onOpenChange: (open: boolean) => void
   canEdit?: boolean
   onEdit?: (client: Client) => void
@@ -61,7 +66,7 @@ interface ClientDetailDialogProps {
 
 const MEETING_HISTORY_LIMIT = 5
 
-export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEdit }: ClientDetailDialogProps) {
+export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = false, onEdit }: ClientDetailDialogProps) {
   const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string; date: string; by: string } | null>(null)
   const [showAllMeetings, setShowAllMeetings] = useState(false)
   const [outcomeFilter, setOutcomeFilter] = useState<MeetingOutcome | 'all'>('all')
@@ -81,11 +86,11 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
       <Dialog open={!!client} onOpenChange={handleOpenChange}>
         <DialogContent className="sm:max-w-5xl max-h-[88vh] flex flex-col gap-0 p-0 overflow-hidden" showCloseButton={false}>
           {client && (() => {
-            const clientMeetings = mockMeetings
+            const clientMeetings = meetings
               .filter(m => m.client_id === client.id)
               .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
             const meetingPhotos = clientMeetings.filter(m => m.photo_url)
-            const progress = getClientProgress(client.id)
+            const progress = getClientProgress(client.id, meetings)
 
             return (
               <>
@@ -167,10 +172,17 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
                           <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Office Address</p>
                           <div className="flex items-start gap-2 text-sm text-foreground">
                             <MapPin className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
-                            <span>{client.office_address}</span>
+                            <span>
+                              {client.office_address ||
+                                [client.city, client.province].filter(Boolean).join(', ') ||
+                                'No address on file'}
+                            </span>
                           </div>
                         </div>
 
+                        {/* Hidden until clients carry their own coordinates.
+                            Deliberately not falling back to meeting GPS — that
+                            is where the agent stood, not the client's address. */}
                         {client.office_lat != null && client.office_lng != null && (
                           <div className="space-y-1.5">
                             <div className="h-64 rounded-md overflow-hidden border border-border">
@@ -186,7 +198,6 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
                               <span className="font-mono">
                                 {client.office_lat.toFixed(4)}, {client.office_lng.toFixed(4)}
                               </span>
-                              <span className="text-muted-foreground/70">(mock GPS)</span>
                             </div>
                           </div>
                         )}
@@ -292,7 +303,7 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
             {client && <p className="text-xs text-muted-foreground">{client.company_name}</p>}
           </DialogHeader>
           {client && (() => {
-            const allMeetings = mockMeetings
+            const allMeetings = meetings
               .filter(m => m.client_id === client.id)
               .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
             const filteredMeetings = allMeetings.filter(m => outcomeFilter === 'all' || m.outcome === outcomeFilter)

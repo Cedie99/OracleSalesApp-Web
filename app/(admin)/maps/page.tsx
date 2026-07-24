@@ -8,9 +8,10 @@ import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { mockClients, mockMeetings } from '@/lib/mock/data'
+import { useClients } from '@/lib/hooks/use-clients'
+import { useMeetings } from '@/lib/hooks/use-meetings'
 import { getMapStatus, isAvailableForReassignment, STATUS_META, TILE_LAYERS, type MapStatus, type MapTileType } from '@/components/maps/map-constants'
-import { Search, Building2, Phone, User, History, ShieldCheck, MapPin, Layers, LockOpen, ChevronDown, Check } from 'lucide-react'
+import { Search, Building2, Phone, User, History, ShieldCheck, MapPin, Layers, LockOpen, ChevronDown, Check, Info } from 'lucide-react'
 import { format } from 'date-fns'
 
 const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
@@ -39,7 +40,11 @@ export default function MapsPage() {
   const [mapType, setMapType] = useState<MapTileType>('satellite')
   const [mapTypeMenuOpen, setMapTypeMenuOpen] = useState(false)
   const mapTypeMenuRef = useRef<HTMLDivElement>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(mockClients[0]?.id ?? null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  const { clients } = useClients()
+  // Meetings back the Activity History panel only — never the pin positions.
+  const { meetings } = useMeetings()
 
   useEffect(() => {
     if (!mapTypeMenuOpen) return
@@ -55,7 +60,7 @@ export default function MapsPage() {
   const agentOptions = useMemo(() => {
     const byId = new Map<string, string>()
     let hasUnassigned = false
-    mockClients.forEach(c => {
+    clients.forEach(c => {
       if (c.agent) byId.set(c.agent.id, c.agent.full_name)
       else hasUnassigned = true
     })
@@ -65,10 +70,10 @@ export default function MapsPage() {
         a.full_name.localeCompare(b.full_name)
       ),
     }
-  }, [])
+  }, [clients])
 
   const filtered = useMemo(() => {
-    return mockClients.filter(c => {
+    return clients.filter(c => {
       const status = getMapStatus(c)
       const matchStatus = statusFilter === 'all' || status === statusFilter
       const matchAgent =
@@ -80,23 +85,40 @@ export default function MapsPage() {
         c.office_address.toLowerCase().includes(q)
       return matchStatus && matchAgent && matchSearch
     })
-  }, [search, statusFilter, agentFilter])
+  }, [clients, search, statusFilter, agentFilter])
 
-  const selected = mockClients.find(c => c.id === selectedId) ?? null
-  const selectedHistory = selected
-    ? mockMeetings
-        .filter(m => m.client_id === selected.id)
-        .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
-    : []
+  // Zero until clients carry their own coordinates — see ClientMap's note.
+  const plottedCount = useMemo(
+    () => filtered.filter(c => c.office_lat != null && c.office_lng != null).length,
+    [filtered]
+  )
+
+  const selected = clients.find(c => c.id === selectedId) ?? null
+  // Keyed on selectedId (a string) rather than the selected client object:
+  // depending on the object trips the React Compiler's mutation analysis.
+  const selectedHistory = useMemo(
+    () =>
+      selectedId
+        ? meetings
+            .filter(m => m.client_id === selectedId)
+            .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
+        : [],
+    [selectedId, meetings]
+  )
 
   const counts = STATUS_KEYS.reduce((acc, key) => {
-    acc[key] = mockClients.filter(c => getMapStatus(c) === key).length
+    acc[key] = clients.filter(c => getMapStatus(c) === key).length
     return acc
   }, {} as Record<MapStatus, number>)
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <Header title="Maps" subtitle={`${filtered.length} of ${mockClients.length} accounts plotted`} />
+      {/* Counts plotted, not matched — plottedCount is 0 until clients carry
+          coordinates, and saying "44 accounts" would overstate what's on screen. */}
+      <Header
+        title="Maps"
+        subtitle={`${plottedCount} of ${filtered.length} accounts plotted`}
+      />
 
       <div className="flex-1 flex min-h-0">
         {/* Left panel: search/filter + account list */}
@@ -157,7 +179,9 @@ export default function MapsPage() {
                     />
                     <p className="text-sm font-medium text-foreground truncate">{client.company_name}</p>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">{client.office_address}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">
+                    {client.office_address || [client.city, client.province].filter(Boolean).join(', ') || 'No address on file'}
+                  </p>
                   <div className="flex items-center gap-1.5 mt-1 pl-4">
                     {client.agent && (
                       <Avatar className="size-4 after:border-0">
@@ -190,6 +214,22 @@ export default function MapsPage() {
         {/* Map */}
         <div className="flex-1 relative min-h-0">
           <ClientMap clients={filtered} selectedId={selectedId} onSelect={setSelectedId} mapType={mapType} />
+
+          {/* Says why the map is bare, so an empty map doesn't read as a bug.
+              Removed once clients carry coordinates. */}
+          {plottedCount === 0 && (
+            <Card className="absolute top-4 left-1/2 -translate-x-1/2 bg-card/95 border-border backdrop-blur-sm z-[1000] py-0 gap-0 max-w-md">
+              <CardContent className="p-3 flex items-start gap-2.5">
+                <Info className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
+                <div className="text-xs text-muted-foreground leading-relaxed">
+                  <p className="font-medium text-foreground mb-0.5">No account locations yet</p>
+                  Clients aren&apos;t pinned to a location when they&apos;re created, so there is
+                  nothing to plot. Once the app captures a pin at client creation, accounts
+                  will appear here automatically.
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Map type switcher */}
           <div ref={mapTypeMenuRef} className="absolute bottom-4 left-4 z-[1000]">
@@ -288,7 +328,9 @@ export default function MapsPage() {
                 <h2 className="text-base font-semibold text-foreground">{selected.company_name}</h2>
                 <div className="flex items-start gap-1.5 mt-1">
                   <MapPin className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                  <p className="text-xs text-muted-foreground">{selected.office_address}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {selected.office_address || [selected.city, selected.province].filter(Boolean).join(', ') || 'No address on file'}
+                  </p>
                 </div>
                 {selected.agent && (
                   <div className="flex items-center gap-2.5 mt-3 p-2 rounded-lg bg-muted/30 border border-border">
@@ -370,7 +412,7 @@ export default function MapsPage() {
                         </Badge>
                       </div>
                       <p className="text-muted-foreground mt-0.5">
-                        {m.agent?.full_name} · {m.contact_person}
+                        {[m.agent?.full_name, m.contact_person].filter(Boolean).join(' · ')}
                       </p>
                     </div>
                   ))}

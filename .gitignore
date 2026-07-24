@@ -42,3 +42,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local planning / handoff notes (personal, not shared)
+/DEV2_PLAN.md
+/SUPABASE_CHANGES_FOR_MOBILE.md

@@ -152,6 +152,15 @@ export const ROLE_TONE: Record<UserRole, BadgeTone> = {
   delivery: 'neutral',
 }
 
+/**
+ * Tone for a role string that came out of the database. Unknown roles render
+ * neutral rather than resolving to `undefined` and silently dropping the pill's
+ * background — see the note on `roleLabel` in lib/permissions.ts.
+ */
+export function roleTone(role: string | null | undefined): BadgeTone {
+  return ROLE_TONE[role as UserRole] ?? 'neutral'
+}
+
 export const PLATFORM_TONE = {
   web: 'navy',
   mobile: 'brand',
