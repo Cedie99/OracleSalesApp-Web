@@ -4,9 +4,12 @@ import { useMemo, useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Pagination } from '@/components/ui/pagination'
+import { DateRangeFilter } from '@/components/ui/date-range-filter'
+import { usePagination } from '@/lib/hooks/use-pagination'
+import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { useTeams } from '@/lib/hooks/use-teams'
@@ -36,8 +39,8 @@ const FIELD_AGENT_ROLES = ['sales_specialist', 'rsr'] as const
 export default function DashboardPage() {
   const [viewAs, setViewAs] = useState<string>('all')
   const [perfAgentFilter, setPerfAgentFilter] = useState<string>('all')
-  const [dateFrom, setDateFrom] = useState<string>('')
-  const [dateTo, setDateTo] = useState<string>('')
+  const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+  const { inRange: inDateRange } = dateFilter
 
   const { meetings, loading: meetingsLoading, error: meetingsError } = useMeetings()
   const { profiles } = useProfiles()
@@ -83,12 +86,9 @@ export default function DashboardPage() {
     () =>
       teamMeetings.filter(mtg => {
         const inAgent = perfAgentFilter === 'all' || mtg.agent_id === perfAgentFilter
-        const d = new Date(mtg.meeting_date)
-        const afterFrom = !dateFrom || d >= new Date(dateFrom)
-        const beforeTo = !dateTo || d <= new Date(`${dateTo}T23:59:59`)
-        return inAgent && afterFrom && beforeTo
+        return inAgent && inDateRange(mtg.meeting_date)
       }),
-    [teamMeetings, perfAgentFilter, dateFrom, dateTo]
+    [teamMeetings, perfAgentFilter, inDateRange]
   )
 
   const agentPerformance = useMemo(
@@ -105,6 +105,10 @@ export default function DashboardPage() {
         })
         .sort((a, b) => b.total - a.total),
     [scopedAgents, scopedMeetings]
+  )
+
+  const agentPage = usePagination(
+    agentPerformance, 8, `${viewAs}|${perfAgentFilter}|${dateFilter.key}`,
   )
 
   const recentMeetings = useMemo(
@@ -339,19 +343,7 @@ export default function DashboardPage() {
                     ))}
                   </SelectContent>
                 </Select>
-                <Input
-                  type="date"
-                  value={dateFrom}
-                  onChange={e => setDateFrom(e.target.value)}
-                  className="w-36 h-8 bg-card border-border text-xs"
-                />
-                <span className="text-xs text-muted-foreground">to</span>
-                <Input
-                  type="date"
-                  value={dateTo}
-                  onChange={e => setDateTo(e.target.value)}
-                  className="w-36 h-8 bg-card border-border text-xs"
-                />
+                <DateRangeFilter filter={dateFilter} />
               </div>
             </div>
           </CardHeader>
@@ -371,7 +363,7 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {agentPerformance.map(({ agent, total, successful, followUp, noDecision, lost, rate }) => (
+                  {agentPage.pageItems.map(({ agent, total, successful, followUp, noDecision, lost, rate }) => (
                     <tr key={agent.id} className="hover:bg-muted/20 transition-colors">
                       <td className="px-5 py-3">
                         <p className="font-medium text-foreground leading-tight">{agent.full_name}</p>
@@ -407,6 +399,14 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
+            {agentPage.total > 0 && (
+              <div className="px-5 py-3 border-t border-border">
+                <Pagination
+                  page={agentPage.page} pageCount={agentPage.pageCount} onPageChange={agentPage.setPage}
+                  from={agentPage.from} to={agentPage.to} total={agentPage.total} itemLabel="agents"
+                />
+              </div>
+            )}
           </CardContent>
         </Card>
 

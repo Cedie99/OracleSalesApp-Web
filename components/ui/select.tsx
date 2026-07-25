@@ -6,7 +6,48 @@ import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "@/lib/utils"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 
-const Select = SelectPrimitive.Root
+// base-ui's <Select.Value> renders the raw `value` (e.g. "end_user") unless
+// <Select.Root> is given an `items` map to look up the matching label. We derive
+// that map automatically from the <SelectItem> children so every dropdown shows
+// its human-readable label without each call site having to pass `items`.
+// See node_modules/@base-ui/react/docs/react/components/select.md ("Formatting the value").
+function collectSelectItems(
+  children: React.ReactNode,
+  acc: { value: unknown; label: React.ReactNode }[]
+) {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return
+    if (child.type === SelectItem) {
+      const { value, children: label } = child.props as {
+        value: unknown
+        children?: React.ReactNode
+      }
+      acc.push({ value, label: typeof label === "string" ? label : String(value) })
+      return
+    }
+    const nested = (child.props as { children?: React.ReactNode })?.children
+    if (nested) collectSelectItems(nested, acc)
+  })
+}
+
+function Select<Value = string>({
+  items,
+  children,
+  ...props
+}: SelectPrimitive.Root.Props<Value, false>) {
+  const derivedItems = React.useMemo(() => {
+    if (items) return items
+    const acc: { value: unknown; label: React.ReactNode }[] = []
+    collectSelectItems(children, acc)
+    return acc as SelectPrimitive.Root.Props<Value, false>["items"]
+  }, [items, children])
+
+  return (
+    <SelectPrimitive.Root items={derivedItems} {...props}>
+      {children}
+    </SelectPrimitive.Root>
+  )
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (

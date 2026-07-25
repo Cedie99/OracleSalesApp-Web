@@ -7,6 +7,10 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Pagination } from '@/components/ui/pagination'
+import { DateRangeFilter } from '@/components/ui/date-range-filter'
+import { usePagination } from '@/lib/hooks/use-pagination'
+import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useClockRecords } from '@/lib/hooks/use-clock-records'
 import { roleLabel } from '@/lib/permissions'
 import type { ClockRecord, ClockType, Profile } from '@/types'
@@ -72,8 +76,7 @@ export default function ClockRecordsPage() {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [agentFilter, setAgentFilter] = useState<string>('all')
-  const [dateFrom, setDateFrom] = useState<string>('')
-  const [dateTo, setDateTo] = useState<string>('')
+  const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
 
   const { records, loading, error } = useClockRecords()
 
@@ -93,17 +96,28 @@ export default function ClockRecordsPage() {
       (row.eventName ?? '').toLowerCase().includes(search.toLowerCase())
     const matchType = typeFilter === 'all' || row.type === typeFilter
     const matchAgent = agentFilter === 'all' || row.agent?.id === agentFilter
-    const d = new Date(row.day)
-    const afterFrom = !dateFrom || d >= new Date(dateFrom)
-    const beforeTo = !dateTo || d <= new Date(`${dateTo}T23:59:59`)
-    return matchSearch && matchType && matchAgent && afterFrom && beforeTo
+    return matchSearch && matchType && matchAgent && dateFilter.inRange(row.day)
   })
 
-  const grouped = filtered.reduce<Record<string, AttendanceRow[]>>((acc, row) => {
-    if (!acc[row.day]) acc[row.day] = []
-    acc[row.day].push(row)
+  // Pre-sort by day (newest first), then agent, so a paginated slice still
+  // groups cleanly into whole day sections in the right order.
+  const sortedRows = [...filtered].sort(
+    (a, b) =>
+      new Date(b.day).getTime() - new Date(a.day).getTime() ||
+      (a.agent?.full_name ?? '').localeCompare(b.agent?.full_name ?? ''),
+  )
+
+  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
+    sortedRows, 12, `${search}|${typeFilter}|${agentFilter}|${dateFilter.key}`,
+  )
+
+  // Group only the current page's rows; a Map keeps the day order from the sort.
+  const grouped = pageItems.reduce((acc, row) => {
+    const bucket = acc.get(row.day) ?? []
+    bucket.push(row)
+    acc.set(row.day, bucket)
     return acc
-  }, {})
+  }, new Map<string, AttendanceRow[]>())
 
   return (
     <div className="flex flex-col flex-1">
@@ -142,26 +156,13 @@ export default function ClockRecordsPage() {
               ))}
             </SelectContent>
           </Select>
-          <Input
-            type="date"
-            value={dateFrom}
-            onChange={e => setDateFrom(e.target.value)}
-            className="w-40 h-9 bg-card border-border"
-          />
-          <span className="text-sm text-muted-foreground self-center">to</span>
-          <Input
-            type="date"
-            value={dateTo}
-            onChange={e => setDateTo(e.target.value)}
-            className="w-40 h-9 bg-card border-border"
-          />
+          <DateRangeFilter filter={dateFilter} />
         </div>
 
         {/* Separate table per day, but every table shares the exact same
             table-fixed + colgroup widths so columns still align vertically
             down the page without merging everything into one giant table. */}
-        {Object.entries(grouped)
-          .sort(([a], [b]) => new Date(b).getTime() - new Date(a).getTime())
+        {Array.from(grouped.entries())
           .map(([day, dayRows]) => (
             <div key={day}>
               <div className="flex items-center gap-2 mb-2">
@@ -226,6 +227,13 @@ export default function ClockRecordsPage() {
               </Card>
             </div>
           ))}
+
+        {!loading && !error && (
+          <Pagination
+            page={page} pageCount={pageCount} onPageChange={setPage}
+            from={from} to={to} total={total} itemLabel="records"
+          />
+        )}
 
         {loading && (
           <div className="text-center py-16 text-muted-foreground">

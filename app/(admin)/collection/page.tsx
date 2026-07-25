@@ -8,6 +8,8 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
 import { mockCollectionVisits, mockRemittances, mockProfiles } from '@/lib/mock/data'
 import {
   PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE,
@@ -71,6 +73,9 @@ export default function CollectionPage() {
       return new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime()
     })
   }, [collectorFilter])
+
+  const visitsPage = usePagination(visits, 10, `${search}|${collectorFilter}|${methodFilter}`)
+  const remittancesPage = usePagination(remittances, 9, collectorFilter)
 
   const stats = useMemo(() => {
     const collected = visits
@@ -218,7 +223,7 @@ export default function CollectionPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {visits.map(v => {
+                    {visitsPage.pageItems.map(v => {
                       const short =
                         v.amount_collected !== null && v.amount_collected < v.amount_due
                       return (
@@ -279,12 +284,17 @@ export default function CollectionPage() {
                 )}
               </div>
             </Card>
+            <Pagination
+              className="mt-4"
+              page={visitsPage.page} pageCount={visitsPage.pageCount} onPageChange={visitsPage.setPage}
+              from={visitsPage.from} to={visitsPage.to} total={visitsPage.total} itemLabel="visits"
+            />
           </TabsContent>
 
           {/* --- Remittances --- */}
           <TabsContent value="remittances" className="mt-4">
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {remittances.map(r => {
+              {remittancesPage.pageItems.map(r => {
                 const delta = variance(r)
                 // Office remittances require an in-app receiver signature before
                 // submit; anything else legitimately has none.
@@ -353,6 +363,11 @@ export default function CollectionPage() {
                 <p className="text-sm">No remittances found</p>
               </div>
             )}
+            <Pagination
+              className="mt-4"
+              page={remittancesPage.page} pageCount={remittancesPage.pageCount} onPageChange={remittancesPage.setPage}
+              from={remittancesPage.from} to={remittancesPage.to} total={remittancesPage.total} itemLabel="remittances"
+            />
           </TabsContent>
         </Tabs>
       </div>

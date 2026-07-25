@@ -7,6 +7,8 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useMeetings } from '@/lib/hooks/use-meetings'
@@ -34,6 +36,10 @@ export default function LostOpportunitiesPage() {
       (statusFilter === 'locked' && !isReassignable)
     return matchSearch && matchStatus
   })
+
+  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
+    filtered, 9, `${search}|${statusFilter}`,
+  )
 
   return (
     <div className="flex flex-col flex-1">
@@ -75,7 +81,7 @@ export default function LostOpportunitiesPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map(client => {
+          {pageItems.map(client => {
             const lostMeeting = meetings.find(m => m.client_id === client.id && m.outcome === 'lost_opportunity')
             const isReassignable = client.reassignable_at ? isPast(new Date(client.reassignable_at)) : false
 
@@ -146,6 +152,13 @@ export default function LostOpportunitiesPage() {
             )
           })}
         </div>
+
+        {!loading && !error && (
+          <Pagination
+            page={page} pageCount={pageCount} onPageChange={setPage}
+            from={from} to={to} total={total} itemLabel="clients"
+          />
+        )}
 
         {loading && (
           <div className="text-center py-16 text-muted-foreground">
