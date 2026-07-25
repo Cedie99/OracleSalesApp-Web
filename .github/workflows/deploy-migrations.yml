@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - 'supabase/migrations/**'
+  # Manual trigger: lets us deploy on demand without a migration change —
+  # e.g. to reconcile schema_migrations after a hand-applied migration, or to
+  # re-run a deploy that failed on transient infra without touching a .sql file.
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -14,7 +18,12 @@ jobs:
 
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # Pinned, not 'latest'. 'latest' makes setup-cli query the GitHub
+          # releases API on every run to resolve the newest tag, which is
+          # unauthenticated and gets rate-limited — that failed the deploy of
+          # migration 024 on 2026-07-24 before `db push` ever ran. A pinned
+          # version skips that lookup entirely. Bump deliberately when needed.
+          version: 2.109.1
 
       - name: Link project
         run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
