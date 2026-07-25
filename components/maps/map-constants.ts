@@ -1,4 +1,4 @@
-import type { Client, ClientStatus, CustomerType } from '@/types'
+import type { Client, ClientStatus, CustomerType, Meeting, MeetingOutcome, MeetingType } from '@/types'
 
 export type MapStatus = CustomerType | Extract<ClientStatus, 'lost'>
 
@@ -12,6 +12,18 @@ export const STATUS_META: Record<MapStatus, { label: string; color: string }> = 
 export function getMapStatus(client: Client): MapStatus {
   if (client.status === 'lost') return 'lost'
   return client.customer_type
+}
+
+/**
+ * Colours for the "colour by outcome" map mode — how the *visit* went, rather
+ * than what kind of client it is. A separate palette from STATUS_META on
+ * purpose: the two are never shown at the same time.
+ */
+export const OUTCOME_META: Record<MeetingOutcome, { label: string; color: string }> = {
+  successful: { label: 'Successful', color: '#34d399' },
+  follow_up: { label: 'Follow-up', color: '#60a5fa' },
+  no_decision: { label: 'No Decision', color: '#94a3b8' },
+  lost_opportunity: { label: 'Lost', color: '#f87171' },
 }
 
 /**
@@ -71,3 +83,37 @@ export const TILE_LAYERS = {
 } as const
 
 export type MapTileType = keyof typeof TILE_LAYERS
+
+/**
+ * How each meeting mode reads on the meetings-tracking map. A meeting only earns
+ * a pin when it was captured face-to-face WITH GPS; online meetings are recorded
+ * from wherever the agent dialled in, so they carry no location and stay in the
+ * list rather than on the map.
+ */
+export const MEETING_TYPE_META: Record<
+  MeetingType,
+  { label: string; plottable: boolean }
+> = {
+  f2f: { label: 'Face-to-face', plottable: true },
+  online: { label: 'Online', plottable: false },
+}
+
+/** A meeting we can drop a pin for: face-to-face and carrying real coordinates. */
+export function isPlottableMeeting(m: Meeting): boolean {
+  return m.meeting_type === 'f2f' && m.gps_lat != null && m.gps_lng != null
+}
+
+/**
+ * Parse a Google-Maps-style coordinate entry ("14.5547, 121.0244") from the
+ * search box. Returns null for anything that isn't a bare "lat, lng" pair inside
+ * the valid ranges, so ordinary name/address searches fall through untouched.
+ * A space-separated pair ("14.55 121.02") is accepted too, matching gmaps.
+ */
+export function parseLatLng(input: string): { lat: number; lng: number } | null {
+  const m = input.trim().match(/^(-?\d{1,3}(?:\.\d+)?)\s*[,\s]\s*(-?\d{1,3}(?:\.\d+)?)$/)
+  if (!m) return null
+  const lat = Number(m[1])
+  const lng = Number(m[2])
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null
+  return { lat, lng }
+}
