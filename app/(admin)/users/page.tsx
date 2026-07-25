@@ -11,6 +11,8 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
 import {
   Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
   MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
@@ -255,6 +257,10 @@ export default function UsersPage() {
     return matchSearch && matchRole && matchPlatform
   })
 
+  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
+    filtered, 10, `${search}|${roleFilter}|${platformFilter}`,
+  )
+
   const counts = {
     total: users.length,
     superadmin: users.filter(u => u.role === 'superadmin').length,
@@ -404,10 +410,10 @@ export default function UsersPage() {
             <SelectContent>
               <SelectItem value="all">All Roles</SelectItem>
               <SelectItem value="superadmin">Super Admin</SelectItem>
-              <SelectItem value="admin">Admins — any category</SelectItem>
-              {ADMIN_SCOPES.map(scope => (
+              <SelectItem value="admin">All Admins</SelectItem>
+              {ADMIN_SCOPES.filter(scope => scope !== 'all').map(scope => (
                 <SelectItem key={scope} value={`admin:${scope}`}>
-                  {scope === 'all' ? 'Admin (all modules)' : ADMIN_SCOPE_LABEL[scope]}
+                  {ADMIN_SCOPE_LABEL[scope]}
                 </SelectItem>
               ))}
               <SelectItem value="sales_manager">Sales Manager</SelectItem>
@@ -476,7 +482,7 @@ export default function UsersPage() {
                         <td className="px-5 py-3" />
                       </tr>
                     ))
-                  ) : filtered.map(user => {
+                  ) : pageItems.map(user => {
                     // Falls back for roles added to the DB by the mobile repo that
                     // this build has no icon for — an undefined element type here
                     // takes the whole page down. See roleLabel in lib/permissions.
@@ -572,6 +578,13 @@ export default function UsersPage() {
             </div>
           </CardContent>
         </Card>
+
+        {!loading && (
+          <Pagination
+            page={page} pageCount={pageCount} onPageChange={setPage}
+            from={from} to={to} total={total} itemLabel="users"
+          />
+        )}
       </div>
 
       {/* Create User Dialog */}

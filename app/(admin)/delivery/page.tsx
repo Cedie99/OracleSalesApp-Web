@@ -7,6 +7,8 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
 import { mockPurchaseOrders, mockProfiles } from '@/lib/mock/data'
 import { DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
 import type { PurchaseOrder } from '@/types'
@@ -66,6 +68,10 @@ export default function DeliveryPage() {
       isLastChance(po) ? 0 : po.status === 'followup' ? 1 : po.status === 'pending' ? 2 : 3
     return [...filtered].sort((a, b) => rank(a) - rank(b) || a.po_number.localeCompare(b.po_number))
   }, [search, statusFilter, assigneeFilter])
+
+  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
+    orders, 10, `${search}|${statusFilter}|${assigneeFilter}`,
+  )
 
   const stats = useMemo(() => {
     const today = new Date().toDateString()
@@ -188,7 +194,7 @@ export default function DeliveryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {orders.map(po => {
+                {pageItems.map(po => {
                   const lastChance = isLastChance(po)
                   return (
                     <tr
@@ -258,6 +264,11 @@ export default function DeliveryPage() {
             )}
           </div>
         </Card>
+
+        <Pagination
+          page={page} pageCount={pageCount} onPageChange={setPage}
+          from={from} to={to} total={total} itemLabel="purchase orders"
+        />
       </div>
 
       {/* PO detail */}

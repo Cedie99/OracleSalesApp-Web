@@ -8,6 +8,8 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
 import { useMeetings } from '@/lib/hooks/use-meetings'
 import type { Meeting } from '@/types'
 import { Search, CalendarCheck, MapPin, Camera, Video, Users, CheckCircle2, Loader2 } from 'lucide-react'
@@ -67,6 +69,10 @@ export default function MeetingsPage() {
     return matchSearch && matchOutcome && matchType
   })
 
+  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
+    filtered, 10, `${search}|${outcomeFilter}|${typeFilter}`,
+  )
+
   return (
     <div className="flex flex-col flex-1">
       <Header title="Meetings" subtitle={`${filtered.length} of ${meetings.length} records`} />
@@ -123,7 +129,7 @@ export default function MeetingsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {filtered.map(m => (
+                {pageItems.map(m => (
                   <tr
                     key={m.id}
                     onClick={() => setSelected(m)}
@@ -205,6 +211,13 @@ export default function MeetingsPage() {
             )}
           </div>
         </Card>
+
+        {!loading && !error && (
+          <Pagination
+            page={page} pageCount={pageCount} onPageChange={setPage}
+            from={from} to={to} total={total} itemLabel="meetings"
+          />
+        )}
       </div>
 
       {/* Meeting Detail Dialog */}

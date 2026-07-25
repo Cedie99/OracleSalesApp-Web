@@ -6,12 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { useMeetings, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useClockRecords } from '@/lib/hooks/use-clock-records'
 import { useProfiles } from '@/lib/hooks/use-profiles'
+import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
+import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { FileBarChart2, Download, FileSpreadsheet, Users, CalendarCheck, Clock, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
 import * as XLSX from 'xlsx'
@@ -21,17 +22,10 @@ const OUTCOME_LABEL: Record<string, string> = {
   no_decision: 'No Decision', lost_opportunity: 'Lost Opportunity',
 }
 
-function inRange(dateStr: string, from: string, to: string): boolean {
-  const d = new Date(dateStr)
-  if (from && d < new Date(from)) return false
-  if (to && d > new Date(`${to}T23:59:59`)) return false
-  return true
-}
-
 export default function ReportsPage() {
   const [agentFilter, setAgentFilter] = useState<string>('all')
-  const [dateFrom, setDateFrom] = useState<string>('')
-  const [dateTo, setDateTo] = useState<string>('')
+  const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+  const { inRange } = dateFilter
 
   const { meetings, loading: meetingsLoading, error: meetingsError } = useMeetings()
   const { clients, loading: clientsLoading, error: clientsError } = useClients()
@@ -49,7 +43,7 @@ export default function ReportsPage() {
   function downloadMeetingsReport() {
     const data = scopedMeetingsBase
       .filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
-      .filter(m => inRange(m.meeting_date, dateFrom, dateTo))
+      .filter(m => inRange(m.meeting_date))
       .map(m => {
         // Real duration from mobile's start/end capture pair. Blank rather than
         // 0 when either end is missing — an unrecorded duration is not a
@@ -82,7 +76,7 @@ export default function ReportsPage() {
   function downloadClientsReport() {
     const data = scopedClientsBase
       .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter)
-      .filter(c => inRange(c.created_at, dateFrom, dateTo))
+      .filter(c => inRange(c.created_at))
       .map(c => ({
         'Company Name': c.company_name,
         'Contact Person': c.contact_person,
@@ -105,7 +99,7 @@ export default function ReportsPage() {
   function downloadClockReport() {
     const data = scopedClockBase
       .filter(r => agentFilter === 'all' || r.agent_id === agentFilter)
-      .filter(r => inRange(r.timestamp, dateFrom, dateTo))
+      .filter(r => inRange(r.timestamp))
       .map(r => ({
         'Agent': r.agent?.full_name ?? '',
         'Type': r.type === 'office' ? 'Office' : 'Event',
@@ -124,13 +118,13 @@ export default function ReportsPage() {
 
   const filteredMeetings = scopedMeetingsBase
     .filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
-    .filter(m => inRange(m.meeting_date, dateFrom, dateTo))
+    .filter(m => inRange(m.meeting_date))
   const filteredClients = scopedClientsBase
     .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter)
-    .filter(c => inRange(c.created_at, dateFrom, dateTo))
+    .filter(c => inRange(c.created_at))
   const filteredClock = scopedClockBase
     .filter(r => agentFilter === 'all' || r.agent_id === agentFilter)
-    .filter(r => inRange(r.timestamp, dateFrom, dateTo))
+    .filter(r => inRange(r.timestamp))
 
   const reportTypes = [
     {
@@ -211,26 +205,14 @@ export default function ReportsPage() {
           </Select>
 
           <p className="text-sm text-muted-foreground">Date range:</p>
-          <Input
-            type="date"
-            value={dateFrom}
-            onChange={e => setDateFrom(e.target.value)}
-            className="w-40 h-9 bg-card border-border"
-          />
-          <span className="text-sm text-muted-foreground">to</span>
-          <Input
-            type="date"
-            value={dateTo}
-            onChange={e => setDateTo(e.target.value)}
-            className="w-40 h-9 bg-card border-border"
-          />
+          <DateRangeFilter filter={dateFilter} />
 
-          {(agentFilter !== 'all' || dateFrom || dateTo) && (
+          {(agentFilter !== 'all' || dateFilter.isActive) && (
             <Button
               variant="ghost"
               size="sm"
               className="h-9 text-xs text-muted-foreground"
-              onClick={() => { setAgentFilter('all'); setDateFrom(''); setDateTo('') }}
+              onClick={() => { setAgentFilter('all'); dateFilter.reset() }}
             >
               Clear filters
             </Button>
@@ -239,11 +221,6 @@ export default function ReportsPage() {
           {agentFilter !== 'all' && (
             <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/30">
               Agent: {agents.find(a => a.id === agentFilter)?.full_name}
-            </Badge>
-          )}
-          {(dateFrom || dateTo) && (
-            <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/30">
-              {dateFrom || '…'} → {dateTo || '…'}
             </Badge>
           )}
         </div>

@@ -11,6 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { CircularProgress } from '@/components/ui/circular-progress'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
 import { getClientProgress } from '@/lib/client-progress'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
@@ -90,6 +92,10 @@ export default function ClientsPage() {
     const matchStatus = statusFilter === 'all' || c.status === statusFilter
     return matchSearch && matchType && matchChannel && matchStatus
   })
+
+  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
+    filtered, 9, `${search}|${typeFilter}|${channelFilter}|${statusFilter}`,
+  )
 
   function openCreate() {
     setForm({ ...EMPTY_CLIENT_FORM, assigned_agent_id: assignableAgents[0]?.id ?? '' })
@@ -260,7 +266,7 @@ export default function ClientsPage() {
 
         {/* Client cards grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map(client => (
+          {pageItems.map(client => (
             <Card
               key={client.id}
               onClick={() => setSelectedClientId(client.id)}
@@ -326,6 +332,13 @@ export default function ClientsPage() {
             </Card>
           ))}
         </div>
+
+        {!loading && !error && (
+          <Pagination
+            page={page} pageCount={pageCount} onPageChange={setPage}
+            from={from} to={to} total={total} itemLabel="clients"
+          />
+        )}
 
         {loading && (
           <div className="text-center py-16 text-muted-foreground">

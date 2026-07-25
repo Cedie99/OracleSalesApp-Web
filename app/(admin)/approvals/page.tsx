@@ -6,6 +6,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
 import { useEditRequests } from '@/lib/hooks/use-edit-requests'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import type { ClientEditRequest } from '@/types'
@@ -33,6 +35,9 @@ export default function ApprovalsPage() {
   const resolved = requests
     .filter(r => r.status !== 'pending')
     .sort((a, b) => new Date(b.reviewed_at ?? b.created_at).getTime() - new Date(a.reviewed_at ?? a.created_at).getTime())
+
+  const pendingPage = usePagination(pending, 9, 'pending')
+  const resolvedPage = usePagination(resolved, 9, 'resolved')
 
   async function handleReview(id: string, action: 'approved' | 'rejected') {
     const reviewError = await review(id, action, profile?.id ?? null)
@@ -143,16 +148,28 @@ export default function ApprovalsPage() {
                 <p className="text-sm">No pending approvals</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {pending.map(req => <RequestCard key={req.id} req={req} />)}
-              </div>
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {pendingPage.pageItems.map(req => <RequestCard key={req.id} req={req} />)}
+                </div>
+                <Pagination
+                  className="mt-4"
+                  page={pendingPage.page} pageCount={pendingPage.pageCount} onPageChange={pendingPage.setPage}
+                  from={pendingPage.from} to={pendingPage.to} total={pendingPage.total} itemLabel="requests"
+                />
+              </>
             )}
           </TabsContent>
 
           <TabsContent value="resolved">
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {resolved.map(req => <RequestCard key={req.id} req={req} />)}
+              {resolvedPage.pageItems.map(req => <RequestCard key={req.id} req={req} />)}
             </div>
+            <Pagination
+              className="mt-4"
+              page={resolvedPage.page} pageCount={resolvedPage.pageCount} onPageChange={resolvedPage.setPage}
+              from={resolvedPage.from} to={resolvedPage.to} total={resolvedPage.total} itemLabel="requests"
+            />
           </TabsContent>
         </Tabs>
       </div>
