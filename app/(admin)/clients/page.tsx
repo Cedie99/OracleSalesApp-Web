@@ -21,7 +21,7 @@ import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { createClient as createSupabaseClient } from '@/lib/supabase/client'
 import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
-import { Search, Building2, Phone, MapPin, User, Plus, Loader2 } from 'lucide-react'
+import { Search, Building2, Phone, MapPin, User, Plus, RefreshCw, Loader2 } from 'lucide-react'
 import { format, addDays } from 'date-fns'
 import { toast } from 'sonner'
 import {
@@ -76,6 +76,7 @@ export default function ClientsPage() {
   const [editTarget, setEditTarget] = useState<Client | null>(null)
   const [form, setForm] = useState<ClientFormData>(EMPTY_CLIENT_FORM)
   const [formError, setFormError] = useState('')
+  const [phoneTouched, setPhoneTouched] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const selectedClient = clients.find(c => c.id === selectedClientId) ?? null
@@ -100,6 +101,7 @@ export default function ClientsPage() {
   function openCreate() {
     setForm({ ...EMPTY_CLIENT_FORM, assigned_agent_id: assignableAgents[0]?.id ?? '' })
     setFormError('')
+    setPhoneTouched(false)
     setCreateOpen(true)
   }
 
@@ -116,13 +118,17 @@ export default function ClientsPage() {
       assigned_agent_id: client.assigned_agent_id,
     })
     setFormError('')
+    setPhoneTouched(false)
     setEditTarget(client)
   }
+
+  /** Sentinel returned instead of a message: the phone field shows its own red outline. */
+  const PHONE_INVALID = 'PHONE_INVALID'
 
   function validateForm(): string {
     if (!form.company_name.trim()) return 'Company name is required.'
     if (!form.contact_person.trim()) return 'Contact person is required.'
-    if (!/^\d{7,15}$/.test(form.contact_number.replace(/[\s-]/g, ''))) return 'Enter a valid phone number.'
+    if (!/^\d{11}$/.test(form.contact_number)) { setPhoneTouched(true); return PHONE_INVALID }
     if (!form.office_address.trim()) return 'Office address is required.'
     if (!form.assigned_agent_id) return 'Assign an agent to this client.'
     return ''
@@ -258,6 +264,10 @@ export default function ClientsPage() {
               <SelectItem value="lost">Lost</SelectItem>
             </SelectContent>
           </Select>
+          <Button variant="outline" size="sm" className="h-9 gap-2" onClick={refresh} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
           <Button onClick={openCreate} size="sm" className="h-9 gap-2">
             <Plus className="w-4 h-4" />
             New Client
@@ -272,7 +282,7 @@ export default function ClientsPage() {
               onClick={() => setSelectedClientId(client.id)}
               className="bg-card border-border hover:border-primary/30 transition-colors cursor-pointer"
             >
-              <CardContent className="p-4">
+              <CardContent className="p-4 flex-1 flex flex-col">
                 <div className="flex items-start justify-between gap-3 mb-3">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2.5 mb-3">
@@ -315,19 +325,23 @@ export default function ClientsPage() {
                   <CircularProgress value={getClientProgress(client.id, meetings)} size={80} strokeWidth={7} className="shrink-0" />
                 </div>
 
+                <div className="flex-1" />
+
                 <div className="flex items-center justify-between pt-2 border-t border-border">
                   <div className="flex items-center gap-1.5">
-                    <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center">
-                      <span className="text-[9px] font-bold text-primary">
+                    <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                      <span className="text-[11px] font-bold text-primary">
                         {client.agent?.full_name?.charAt(0)}
                       </span>
                     </div>
-                    <span className="text-xs text-muted-foreground">{client.agent?.full_name}</span>
+                    <span className="text-sm text-foreground">{client.agent?.full_name}</span>
                   </div>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-sm text-muted-foreground">
                     {format(new Date(client.created_at), 'MMM d, yyyy')}
                   </span>
                 </div>
+
+                <div className="flex-1" />
               </CardContent>
             </Card>
           ))}
@@ -379,8 +393,14 @@ export default function ClientsPage() {
           <DialogHeader>
             <DialogTitle>New Client</DialogTitle>
           </DialogHeader>
-          <ClientForm form={form} setForm={setForm} agents={assignableAgents} />
-          {formError && (
+          <ClientForm
+            form={form}
+            setForm={setForm}
+            agents={assignableAgents}
+            phoneInvalid={phoneTouched && !/^\d{11}$/.test(form.contact_number)}
+            onPhoneBlur={() => setPhoneTouched(true)}
+          />
+          {formError && formError !== PHONE_INVALID && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
             </Alert>
@@ -396,12 +416,18 @@ export default function ClientsPage() {
 
       {/* Edit Client Dialog */}
       <Dialog open={!!editTarget} onOpenChange={open => { if (!open) setEditTarget(null) }}>
-        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Client</DialogTitle>
           </DialogHeader>
-          <ClientForm form={form} setForm={setForm} agents={assignableAgents} />
-          {formError && (
+          <ClientForm
+            form={form}
+            setForm={setForm}
+            agents={assignableAgents}
+            phoneInvalid={phoneTouched && !/^\d{11}$/.test(form.contact_number)}
+            onPhoneBlur={() => setPhoneTouched(true)}
+          />
+          {formError && formError !== PHONE_INVALID && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
             </Alert>
@@ -422,9 +448,11 @@ interface ClientFormProps {
   form: ClientFormData
   setForm: React.Dispatch<React.SetStateAction<ClientFormData>>
   agents: Profile[]
+  phoneInvalid: boolean
+  onPhoneBlur: () => void
 }
 
-function ClientForm({ form, setForm, agents }: ClientFormProps) {
+function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: ClientFormProps) {
   function set<K extends keyof ClientFormData>(field: K, value: ClientFormData[K]) {
     setForm(prev => ({ ...prev, [field]: value }))
   }
@@ -483,7 +511,9 @@ function ClientForm({ form, setForm, agents }: ClientFormProps) {
               id="contact_number"
               placeholder="09171234567"
               value={form.contact_number}
-              onChange={e => set('contact_number', e.target.value)}
+              onChange={e => set('contact_number', e.target.value.replace(/\D/g, '').slice(0, 11))}
+              onBlur={onPhoneBlur}
+              aria-invalid={phoneInvalid}
             />
           </div>
           <div className="space-y-1.5">
@@ -504,7 +534,7 @@ function ClientForm({ form, setForm, agents }: ClientFormProps) {
       <div className="rounded-lg border border-border p-4 space-y-4">
         <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Classification &amp; Assignment</p>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label className="text-xs">Customer Type</Label>
             <Select value={form.customer_type} onValueChange={v => set('customer_type', (v as CustomerType | null) ?? 'new')}>
@@ -530,7 +560,7 @@ function ClientForm({ form, setForm, agents }: ClientFormProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label className="text-xs">Status</Label>
             <Select value={form.status} onValueChange={v => set('status', (v as ClientStatus | null) ?? 'active')}>

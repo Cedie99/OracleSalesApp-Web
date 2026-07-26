@@ -9,10 +9,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Pagination } from '@/components/ui/pagination'
+import { DateRangeFilter } from '@/components/ui/date-range-filter'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { usePagination } from '@/lib/hooks/use-pagination'
+import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useMeetings } from '@/lib/hooks/use-meetings'
 import type { Meeting } from '@/types'
-import { Search, CalendarCheck, MapPin, Camera, Video, Users, CheckCircle2, Loader2 } from 'lucide-react'
+import { Search, CalendarCheck, MapPin, Camera, Video, Navigation, Users, CheckCircle2, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
 import { OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS } from '@/lib/status-styles'
 
@@ -52,12 +55,15 @@ function agendaIcon(agenda: string): string {
   return AGENDA_ICONS[normalizeAgenda(agenda)] ?? '•'
 }
 
+type TypeFilter = 'all' | 'f2f' | 'online'
+
 export default function MeetingsPage() {
   const [search, setSearch] = useState('')
   const [outcomeFilter, setOutcomeFilter] = useState<string>('all')
-  const [typeFilter, setTypeFilter] = useState<string>('all')
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [selected, setSelected] = useState<Meeting | null>(null)
   const { meetings, loading, error } = useMeetings()
+  const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
 
   const filtered = meetings.filter(m => {
     const matchSearch =
@@ -66,11 +72,11 @@ export default function MeetingsPage() {
       m.contact_person.toLowerCase().includes(search.toLowerCase())
     const matchOutcome = outcomeFilter === 'all' || m.outcome === outcomeFilter
     const matchType = typeFilter === 'all' || m.meeting_type === typeFilter
-    return matchSearch && matchOutcome && matchType
+    return matchSearch && matchOutcome && matchType && dateFilter.inRange(m.meeting_date)
   })
 
   const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
-    filtered, 10, `${search}|${outcomeFilter}|${typeFilter}`,
+    filtered, 10, `${search}|${outcomeFilter}|${typeFilter}|${dateFilter.key}`,
   )
 
   return (
@@ -101,16 +107,18 @@ export default function MeetingsPage() {
               <SelectItem value="lost_opportunity">Lost</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={typeFilter} onValueChange={v => setTypeFilter(v ?? 'all')}>
-            <SelectTrigger className="w-32 h-9 bg-card border-border">
-              <SelectValue placeholder="Type" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Types</SelectItem>
-              <SelectItem value="f2f">F2F</SelectItem>
-              <SelectItem value="online">Online</SelectItem>
-            </SelectContent>
-          </Select>
+          <Tabs value={typeFilter} onValueChange={v => setTypeFilter(v as TypeFilter)}>
+            <TabsList className="h-9">
+              <TabsTrigger value="all" className="px-3">All</TabsTrigger>
+              <TabsTrigger value="f2f" className="px-3">
+                <Navigation className="w-3.5 h-3.5" /> F2F
+              </TabsTrigger>
+              <TabsTrigger value="online" className="px-3">
+                <Video className="w-3.5 h-3.5" /> Online
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <DateRangeFilter filter={dateFilter} />
         </div>
 
         {/* Table */}
