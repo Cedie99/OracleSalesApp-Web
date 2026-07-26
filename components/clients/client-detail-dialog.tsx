@@ -65,14 +65,16 @@ interface ClientDetailDialogProps {
 }
 
 const MEETING_HISTORY_LIMIT = 5
+const PHOTO_LIMIT = 3
 
 export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = false, onEdit }: ClientDetailDialogProps) {
   const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string; date: string; by: string } | null>(null)
   const [showAllMeetings, setShowAllMeetings] = useState(false)
+  const [showAllPhotos, setShowAllPhotos] = useState(false)
   const [outcomeFilter, setOutcomeFilter] = useState<MeetingOutcome | 'all'>('all')
 
   function handleOpenChange(open: boolean) {
-    if (!open) setShowAllMeetings(false)
+    if (!open) { setShowAllMeetings(false); setShowAllPhotos(false) }
     onOpenChange(open)
   }
 
@@ -143,8 +145,8 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                   <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
                     {/* Left column: client details */}
                     <div className="md:col-span-3 space-y-4">
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <div className="rounded-lg border border-border p-3.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="rounded-lg border border-border p-4">
                           <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Contact Person</p>
                           <div className="flex items-center gap-2 text-sm text-foreground">
                             <User className="w-4 h-4 text-muted-foreground shrink-0" />
@@ -154,20 +156,16 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                             <p className="text-xs text-muted-foreground mt-1 pl-6 truncate">{client.contact_position}</p>
                           )}
                         </div>
-                        <div className="rounded-lg border border-border p-3.5">
+                        <div className="rounded-lg border border-border p-4">
                           <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Phone Number</p>
                           <div className="flex items-center gap-2 text-sm text-foreground">
                             <Phone className="w-4 h-4 text-muted-foreground shrink-0" />
                             <span>{client.contact_number}</span>
                           </div>
                         </div>
-                        <div className="rounded-lg border border-border p-3.5 flex flex-col items-center justify-center text-center">
-                          <p className="text-[11px] font-medium text-muted-foreground mb-1.5 self-start">Progress</p>
-                          <CircularProgress value={progress} size={56} strokeWidth={5} />
-                        </div>
                       </div>
 
-                      <div className="rounded-lg border border-border p-3.5 space-y-3">
+                      <div className="rounded-lg border border-border p-4 space-y-3">
                         <div>
                           <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Office Address</p>
                           <div className="flex items-start gap-2 text-sm text-foreground">
@@ -202,10 +200,63 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                           </div>
                         )}
                       </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                            <Camera className="w-3.5 h-3.5 text-muted-foreground" />
+                            Visit Photos
+                          </p>
+                          {meetingPhotos.length > PHOTO_LIMIT && (
+                            <button
+                              type="button"
+                              onClick={() => setShowAllPhotos(true)}
+                              className="text-[11px] font-medium text-primary hover:underline"
+                            >
+                              See all
+                            </button>
+                          )}
+                        </div>
+                        {meetingPhotos.length > 0 ? (
+                          <div className="grid grid-cols-3 gap-2">
+                            {meetingPhotos.slice(0, PHOTO_LIMIT).map(m => {
+                              const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
+                              const dateLabel = format(new Date(m.meeting_date), 'MMM d, yyyy')
+                              return (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  onClick={() => setLightboxPhoto({ url: m.photo_url!, date: dateLabel, by: submittedBy })}
+                                  className="relative aspect-square rounded-md overflow-hidden border border-border group cursor-pointer"
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img src={m.photo_url!} alt={`Visit on ${dateLabel}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
+                                  <span className="absolute bottom-1 left-1 text-[9px] bg-black/60 text-white rounded px-1 py-0.5">
+                                    {format(new Date(m.meeting_date), 'MMM d')}
+                                  </span>
+                                </button>
+                              )
+                            })}
+                            {Array.from({ length: Math.max(0, PHOTO_LIMIT - meetingPhotos.length) }).map((_, i) => (
+                              <div key={`photo-placeholder-${i}`} className="aspect-square rounded-md border border-border" />
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border p-3.5">
+                            No visit photos yet
+                          </p>
+                        )}
+                      </div>
                     </div>
 
-                    {/* Right column: meeting history + visit photos */}
+                    {/* Right column: progress + meeting history */}
                     <div className="md:col-span-2 space-y-4">
+                      <div className="rounded-lg border border-border p-5 flex flex-col items-center">
+                        <p className="text-[11px] font-medium text-muted-foreground mb-3 self-start">Progress</p>
+                        <CircularProgress value={progress} size={140} strokeWidth={10} />
+                      </div>
+
                       <div>
                         <div className="flex items-center justify-between mb-2">
                           <p className="text-xs font-semibold text-foreground flex items-center gap-1.5">
@@ -232,48 +283,6 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                             </p>
                           )}
                         </div>
-                      </div>
-
-                      <div>
-                        <p className="text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5">
-                          <Camera className="w-3.5 h-3.5 text-muted-foreground" />
-                          Visit Photos
-                        </p>
-                        {meetingPhotos.length > 0 ? (
-                          <div className="grid grid-cols-3 gap-2">
-                            {meetingPhotos.slice(0, 6).map((m, i) => {
-                              const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
-                              const dateLabel = format(new Date(m.meeting_date), 'MMM d, yyyy')
-                              const remaining = meetingPhotos.length - 6
-                              const isLastVisible = i === 5 && remaining > 0
-                              return (
-                                <button
-                                  key={m.id}
-                                  type="button"
-                                  onClick={() => setLightboxPhoto({ url: m.photo_url!, date: dateLabel, by: submittedBy })}
-                                  className="relative aspect-square rounded-md overflow-hidden border border-border group cursor-pointer"
-                                >
-                                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                                  <img src={m.photo_url!} alt={`Visit on ${dateLabel}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
-                                  {isLastVisible ? (
-                                    <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
-                                      <span className="text-xs font-semibold text-white">+{remaining}</span>
-                                    </div>
-                                  ) : (
-                                    <span className="absolute bottom-1 right-1 text-[9px] bg-black/60 text-white rounded px-1 py-0.5">
-                                      {format(new Date(m.meeting_date), 'MMM d')}
-                                    </span>
-                                  )}
-                                </button>
-                              )
-                            })}
-                          </div>
-                        ) : (
-                          <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border p-3.5">
-                            No visit photos yet
-                          </p>
-                        )}
                       </div>
                     </div>
                   </div>
@@ -331,6 +340,46 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                   )}
                 </div>
               </>
+            )
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showAllPhotos} onOpenChange={setShowAllPhotos}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col gap-0 p-0 overflow-hidden">
+          <DialogHeader className="shrink-0 border-b border-border px-5 py-4">
+            <DialogTitle className="text-base">Visit Photos</DialogTitle>
+            {client && <p className="text-xs text-muted-foreground">{client.company_name}</p>}
+          </DialogHeader>
+          {client && (() => {
+            const allPhotos = meetings
+              .filter(m => m.client_id === client.id && m.photo_url)
+              .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
+
+            return (
+              <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
+                <div className="grid grid-cols-3 gap-2">
+                  {allPhotos.map(m => {
+                    const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
+                    const dateLabel = format(new Date(m.meeting_date), 'MMM d, yyyy')
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setLightboxPhoto({ url: m.photo_url!, date: dateLabel, by: submittedBy })}
+                        className="relative aspect-square rounded-md overflow-hidden border border-border group cursor-pointer"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={m.photo_url!} alt={`Visit on ${dateLabel}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
+                        <span className="absolute bottom-1 left-1 text-[9px] bg-black/60 text-white rounded px-1 py-0.5">
+                          {format(new Date(m.meeting_date), 'MMM d')}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
             )
           })()}
         </DialogContent>

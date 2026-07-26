@@ -8,7 +8,9 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Pagination } from '@/components/ui/pagination'
+import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { usePagination } from '@/lib/hooks/use-pagination'
+import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useMeetings } from '@/lib/hooks/use-meetings'
@@ -22,6 +24,7 @@ export default function LostOpportunitiesPage() {
 
   const { clients, loading, error } = useClients()
   const { meetings } = useMeetings()
+  const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
 
   const lostClients = clients.filter(c => c.status === 'lost')
   const selectedClient = lostClients.find(c => c.id === selectedClientId) ?? null
@@ -34,11 +37,12 @@ export default function LostOpportunitiesPage() {
     const matchStatus = statusFilter === 'all' ||
       (statusFilter === 'ready' && isReassignable) ||
       (statusFilter === 'locked' && !isReassignable)
-    return matchSearch && matchStatus
+    const matchDate = c.lost_at ? dateFilter.inRange(c.lost_at) : dateFilter.range === null
+    return matchSearch && matchStatus && matchDate
   })
 
   const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
-    filtered, 9, `${search}|${statusFilter}`,
+    filtered, 9, `${search}|${statusFilter}|${dateFilter.key}`,
   )
 
   return (
@@ -78,6 +82,7 @@ export default function LostOpportunitiesPage() {
               <SelectItem value="locked">Locked</SelectItem>
             </SelectContent>
           </Select>
+          <DateRangeFilter filter={dateFilter} />
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
