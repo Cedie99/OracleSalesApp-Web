@@ -64,7 +64,7 @@ interface ClientDetailDialogProps {
   onEdit?: (client: Client) => void
 }
 
-const MEETING_HISTORY_LIMIT = 5
+const MEETING_HISTORY_LIMIT = 3
 const PHOTO_LIMIT = 3
 
 export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = false, onEdit }: ClientDetailDialogProps) {
@@ -269,7 +269,7 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                               onClick={() => setShowAllMeetings(true)}
                               className="text-[11px] font-medium text-primary hover:underline"
                             >
-                              View all
+                              See all
                             </button>
                           )}
                         </div>
