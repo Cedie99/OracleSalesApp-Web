@@ -79,7 +79,7 @@ export default function DeliveryPage() {
   const { profile } = useCurrentProfile()
 
   const {
-    orders, loading: ordersLoading, error: ordersError, createOrder, removeOrder,
+    orders, loading: ordersLoading, error: ordersError, createOrder, removeOrder, cancelClaim,
   } = usePurchaseOrders()
   const { codRemittances, error: codError } = useCodRemittances()
   const { clients } = useClients()
@@ -199,12 +199,22 @@ export default function DeliveryPage() {
 
   const handleAdd = useCallback(
     async (draft: AddPoDraft) => {
+      // The customer name travels ONTO the row (migration 045) — the driver's
+      // phone can't read `clients`. `area` already comes off the form. Refuse
+      // rather than publish a PO the driver would see with no customer on it.
+      const client = clients.find(c => c.id === draft.clientId)
+      if (!client) {
+        setActionError('That customer could not be found. Refresh and try again.')
+        return
+      }
+
       // Every driver-side column is left to the database defaults: nobody owns
       // the stop, and the GPS fix rides along with the photo taken at it, so a
       // freshly listed PO has no location either.
       const message = await createOrder({
         poNumber: draft.poNumber,
         clientId: draft.clientId,
+        clientName: client.company_name,
         area: draft.area,
         scheduledFor: draft.scheduledFor,
         cod: draft.cod,
@@ -213,7 +223,7 @@ export default function DeliveryPage() {
       })
       setActionError(message ?? '')
     },
-    [createOrder, profile?.id]
+    [createOrder, clients, profile?.id]
   )
 
   /** Only ever called for stops no driver has touched — see TripBoard. */
@@ -223,6 +233,15 @@ export default function DeliveryPage() {
       setActionError(message ?? '')
     },
     [removeOrder]
+  )
+
+  /** Release a driver's hold — the delivery twin of collection's cancel. */
+  const handleCancelClaim = useCallback(
+    async (po: PurchaseOrder) => {
+      const message = await cancelClaim(po.id)
+      setActionError(message ?? '')
+    },
+    [cancelClaim]
   )
 
   const listedByName = selected
@@ -365,6 +384,7 @@ export default function DeliveryPage() {
               onOpenPo={setSelected}
               onAddPo={handleAddPoToList}
               onRemovePo={handleRemovePo}
+              onCancelClaim={handleCancelClaim}
             />
           </TabsContent>
 

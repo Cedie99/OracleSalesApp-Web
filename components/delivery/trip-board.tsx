@@ -4,11 +4,12 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { claimAge, isActiveClaim, isStaleClaim } from '@/lib/claims'
 import { TRIP_CAP, dwellMinutes, hasMissingProof, tripProgress, type TripList } from '@/lib/delivery'
 import { peso } from '@/lib/money'
 import { DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
 import type { PurchaseOrder } from '@/types'
-import { CalendarClock, ImageOff, Plus, Truck, X } from 'lucide-react'
+import { AlertTriangle, CalendarClock, ImageOff, Navigation, Plus, Truck, X } from 'lucide-react'
 import { format, isToday, isTomorrow, isYesterday } from 'date-fns'
 
 /** "Today" reads faster than a date the admin has to compare against a calendar. */
@@ -28,6 +29,8 @@ interface TripBoardProps {
   onOpenPo: (po: PurchaseOrder) => void
   onAddPo: (list: TripList) => void
   onRemovePo: (po: PurchaseOrder) => void
+  /** Release a driver's claim, returning the stop to the shared pool. */
+  onCancelClaim: (po: PurchaseOrder) => void
 }
 
 /**
@@ -39,7 +42,9 @@ interface TripBoardProps {
  * the plate they actually ran — because the list is a shared pool and no stop
  * belongs to anyone until someone drives it.
  */
-export function TripBoard({ lists, onOpenPo, onAddPo, onRemovePo }: TripBoardProps) {
+export function TripBoard({
+  lists, onOpenPo, onAddPo, onRemovePo, onCancelClaim,
+}: TripBoardProps) {
   if (lists.length === 0) {
     return (
       <div className="text-center py-16 text-muted-foreground">
@@ -147,6 +152,7 @@ export function TripBoard({ lists, onOpenPo, onAddPo, onRemovePo }: TripBoardPro
                     stop={stop}
                     onOpen={() => onOpenPo(stop)}
                     onRemove={() => onRemovePo(stop)}
+                    onCancelClaim={() => onCancelClaim(stop)}
                   />
                 ))}
               </div>
@@ -172,13 +178,23 @@ export function TripBoard({ lists, onOpenPo, onAddPo, onRemovePo }: TripBoardPro
 }
 
 function StopRow({
-  stop, onOpen, onRemove,
-}: { stop: PurchaseOrder; onOpen: () => void; onRemove: () => void }) {
+  stop, onOpen, onRemove, onCancelClaim,
+}: {
+  stop: PurchaseOrder
+  onOpen: () => void
+  onRemove: () => void
+  onCancelClaim: () => void
+}) {
   const missingProof = hasMissingProof(stop)
+  // Held right now — the stop is locked to this driver and is using up their
+  // single claim slot.
+  const claimed = isActiveClaim(stop)
+  const stale = isStaleClaim(stop)
   // Only an untouched stop can be pulled back off the list. Once a driver has
   // been there the record is theirs, and removing it would erase captured proof
-  // — or, on a COD stop, captured money.
-  const removable = stop.status === 'pending'
+  // — or, on a COD stop, captured money. A claimed stop is also off limits:
+  // someone is driving to it. Release the claim first.
+  const removable = stop.status === 'pending' && !claimed
 
   return (
     <div className="flex items-center gap-2 px-3 py-2 hover:bg-muted/20 transition-colors">
@@ -228,7 +244,42 @@ function StopRow({
             </span>
           )}
         </div>
+
+        {/* Who is on their way. A live lock, unlike the plate/driver above which
+            are recorded after the stop was actually run. */}
+        {claimed && (
+          <div
+            className={`flex items-center gap-1 mt-1 text-[10px] font-medium ${
+              stale ? TONE_TEXT.red : TONE_TEXT.brand
+            }`}
+          >
+            {stale ? (
+              <AlertTriangle className="w-3 h-3 shrink-0" />
+            ) : (
+              <Navigation className="w-3 h-3 shrink-0" />
+            )}
+            <span className="truncate">
+              {stale ? 'Still held from an earlier day by ' : 'On the way · '}
+              {stop.claimed_by_name ?? 'a driver'}
+            </span>
+            {claimAge(stop) && (
+              <span className="text-muted-foreground tabular-nums shrink-0">{claimAge(stop)}</span>
+            )}
+          </div>
+        )}
       </button>
+
+      {claimed && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`Release ${stop.claimed_by_name ?? 'the driver'}'s claim on ${stop.po_number}`}
+          title="Release claim"
+          onClick={onCancelClaim}
+        >
+          <Navigation className={stale ? TONE_TEXT.red : undefined} />
+        </Button>
+      )}
 
       {removable && (
         <Button

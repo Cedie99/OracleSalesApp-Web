@@ -63,6 +63,22 @@ export type RemittanceStatus = 'submitted' | 'reconciled' | 'variance'
 export interface CollectionVisit {
   id: string
   client_id: string
+  /**
+   * Customer name copied onto the row when the admin published it (migration
+   * 045). Exists because the `collector` role has no RLS read on `clients`, so
+   * the phone cannot resolve `client_id` to a name on its own.
+   *
+   * Web should keep reading `client?.company_name` — that reflects the customer
+   * as they are NOW. This is what the row said on the day it was published, and
+   * the two diverge if a customer is renamed. Null on rows published before 045.
+   */
+  client_name: string | null
+  /**
+   * Locality copied from `clients.city` at publish time, for the same reason as
+   * `client_name`. Collection has no admin-entered area field — unlike delivery,
+   * where the admin types one.
+   */
+  area: string | null
   status: CollectionVisitStatus
 
   // --- Put on the day's list by the Collection Admin (web) ------------------
@@ -88,6 +104,24 @@ export interface CollectionVisit {
    * pending, which is why this can't be an assignment.
    */
   collector_id: string | null
+  /**
+   * The collector currently EN ROUTE to this store (migration 046) — distinct
+   * from `collector_id`, which is who actually worked it. A claim is a hard
+   * lock: nobody else may work the store while this is set. One active claim
+   * per collector, enforced by a partial unique index on pending rows, so
+   * completing a store frees the slot automatically.
+   *
+   * Never expires. Cleared by the claimer or by an admin. Deliberately survives
+   * completion as history — the index predicate already frees the slot.
+   */
+  claimed_by: string | null
+  claimed_at: string | null
+  /**
+   * Claimer's name copied onto the row, for the same reason as `client_name`:
+   * a collector can read only their own `profiles` row (migration 003), so the
+   * phone cannot resolve another collector's `claimed_by` to a name.
+   */
+  claimed_by_name: string | null
   /**
    * Exact amount typed by the collector to match the payment photo. Null when the
    * visit was rescheduled or is still pending. This is the figure reconciled
@@ -179,6 +213,13 @@ export interface PurchaseOrder {
   po_number: string
   client_id: string
   /**
+   * Customer name copied onto the row at publish time (migration 045), because
+   * the `delivery` role has no RLS read on `clients`. Same caveat as
+   * `CollectionVisit.client_name`: point-in-time, so web keeps using
+   * `client?.company_name` for current state. Null on rows published before 045.
+   */
+  client_name: string | null
+  /**
    * Delivery area, e.g. "Balanga". Coarser than an address — no GPS in scope,
    * and with the customer name it is the whole of what the admin lists. There
    * is deliberately no line-items field: the trip ticket carries customer +
@@ -211,6 +252,15 @@ export interface PurchaseOrder {
    * is still waiting, which is why this can't be an assignment.
    */
   driver_id: string | null
+  /**
+   * The driver currently EN ROUTE to this stop (migration 046) — the delivery
+   * twin of `CollectionVisit.claimed_by`, same hard-lock and one-claim rules.
+   * See that field for the full reasoning.
+   */
+  claimed_by: string | null
+  claimed_at: string | null
+  /** Claimer's name, denormalized — drivers can't read other `profiles` rows. */
+  claimed_by_name: string | null
   /**
    * The truck's plate, typed by the driver at the stop. Paired with the customer
    * name, this is the whole of the "trip ticket" data the client asked for — a

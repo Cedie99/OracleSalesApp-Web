@@ -19,8 +19,9 @@ const CLIENT_JOIN = `
 const PROFILE_JOIN = `id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at`
 
 const PO_COLUMNS = `
-  id, po_number, client_id, area, status, scheduled_for, listed_by, listed_at,
-  cod, cod_due, driver_id, truck_plate, sequence_no, receiver_name,
+  id, po_number, client_id, client_name, area, status, scheduled_for, listed_by, listed_at,
+  cod, cod_due, claimed_by, claimed_at, claimed_by_name,
+  driver_id, truck_plate, sequence_no, receiver_name,
   receiver_signature_url, time_in, time_out, proof_url, backload_photo_url,
   gps_lat, gps_lng, remarks, cod_amount, cod_method, cod_photo_url, cod_remitted,
   created_at,
@@ -71,6 +72,12 @@ function normalizeCodRemittance(row: Record<string, unknown>): CodRemittance {
 export interface NewPurchaseOrder {
   poNumber: string
   clientId: string
+  /**
+   * The selected client's `company_name`, denormalized onto the row (migration
+   * 045) because the driver's phone has no RLS read on `clients`.
+   */
+  clientName: string
+  /** Admin-entered on the form — unlike collection, which derives it from the city. */
   area: string
   /** `yyyy-MM-dd` from the date input. */
   scheduledFor: string
@@ -86,6 +93,7 @@ interface UsePurchaseOrdersResult {
   refresh: () => Promise<void>
   createOrder: (draft: NewPurchaseOrder) => Promise<string | null>
   removeOrder: (id: string) => Promise<string | null>
+  cancelClaim: (id: string) => Promise<string | null>
 }
 
 /** Every listed stop, newest delivery day first, with client and driver joined. */
@@ -126,6 +134,8 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
       const { error: insertError } = await supabase.from('purchase_orders').insert({
         po_number: draft.poNumber,
         client_id: draft.clientId,
+        // Denormalized at publish time — see migration 045.
+        client_name: draft.clientName,
         area: draft.area,
         status: 'pending',
         scheduled_for: new Date(`${draft.scheduledFor}T12:00:00`).toISOString(),
@@ -155,7 +165,23 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
     [load]
   )
 
-  return { orders, loading, error, refresh, createOrder, removeOrder }
+  /** Release a driver's claim — the delivery twin of collection's cancelClaim. */
+  const cancelClaim = useCallback(
+    async (id: string): Promise<string | null> => {
+      const supabase = createClient()
+      const { error: updateError } = await supabase
+        .from('purchase_orders')
+        .update({ claimed_by: null, claimed_at: null, claimed_by_name: null })
+        .eq('id', id)
+
+      if (updateError) return updateError.message
+      await load()
+      return null
+    },
+    [load]
+  )
+
+  return { orders, loading, error, refresh, createOrder, removeOrder, cancelClaim }
 }
 
 /** COD handed over by drivers, most recent first. */

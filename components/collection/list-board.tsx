@@ -4,11 +4,12 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { claimAge, isActiveClaim, isStaleClaim } from '@/lib/claims'
 import { dayProgress, hasMissingProof, type CollectionDay } from '@/lib/collection'
 import { peso } from '@/lib/money'
 import { TONE_CLASS, TONE_TEXT, VISIT_STATUS_LABEL, VISIT_STATUS_TONE } from '@/lib/status-styles'
 import type { CollectionVisit } from '@/types'
-import { CalendarClock, ImageOff, Plus, X } from 'lucide-react'
+import { AlertTriangle, CalendarClock, ImageOff, Navigation, Plus, X } from 'lucide-react'
 import { format, isToday, isTomorrow, isYesterday } from 'date-fns'
 
 /** "Today" reads faster than a date the admin has to compare against a calendar. */
@@ -28,6 +29,8 @@ interface ListBoardProps {
   onOpenVisit: (visit: CollectionVisit) => void
   onAddStore: (day: CollectionDay) => void
   onRemoveStore: (visit: CollectionVisit) => void
+  /** Release a collector's claim, returning the store to the shared pool. */
+  onCancelClaim: (visit: CollectionVisit) => void
 }
 
 /**
@@ -39,7 +42,9 @@ interface ListBoardProps {
  * contributors — derived from who actually collected — because the list is a
  * shared pool and no store belongs to anyone until it is worked.
  */
-export function ListBoard({ days, onOpenVisit, onAddStore, onRemoveStore }: ListBoardProps) {
+export function ListBoard({
+  days, onOpenVisit, onAddStore, onRemoveStore, onCancelClaim,
+}: ListBoardProps) {
   if (days.length === 0) {
     return (
       <div className="text-center py-16 text-muted-foreground">
@@ -137,6 +142,7 @@ export function ListBoard({ days, onOpenVisit, onAddStore, onRemoveStore }: List
                     store={store}
                     onOpen={() => onOpenVisit(store)}
                     onRemove={() => onRemoveStore(store)}
+                    onCancelClaim={() => onCancelClaim(store)}
                   />
                 ))}
               </div>
@@ -153,13 +159,28 @@ export function ListBoard({ days, onOpenVisit, onAddStore, onRemoveStore }: List
 }
 
 function StoreRow({
-  store, onOpen, onRemove,
-}: { store: CollectionVisit; onOpen: () => void; onRemove: () => void }) {
+  store, onOpen, onRemove, onCancelClaim,
+}: {
+  store: CollectionVisit
+  onOpen: () => void
+  onRemove: () => void
+  onCancelClaim: () => void
+}) {
   const missingProof = hasMissingProof(store)
   // Only an untouched store can be pulled back off the list. Once a collector
   // has been there, the record is theirs and removing it would erase captured
   // money.
-  const removable = store.status === 'pending'
+  // Held right now — the store is locked to this collector and is using up
+  // their single claim slot.
+  const claimed = isActiveClaim(store)
+  // A claimed store is NOT removable either: someone is driving to it, and
+  // deleting it out from under them is how a collector arrives at a store that
+  // no longer exists. Release the claim first, then remove.
+  const removable = store.status === 'pending' && !claimed
+  // Still held on a day that has already passed. Shouldn't happen under the
+  // whole-day rule, but nothing enforces that rule, and the admin is the only
+  // one who can clear it — so it has to be loud.
+  const stale = isStaleClaim(store)
 
   return (
     <div className="flex items-center gap-2 px-3 py-2 hover:bg-muted/20 transition-colors">
@@ -189,7 +210,44 @@ function StoreRow({
             </span>
           )}
         </div>
+
+        {/* Who is on their way. Distinct from "worked by" above, which is after
+            the fact — this one is a live lock nobody else can work around. */}
+        {claimed && (
+          <div
+            className={`flex items-center gap-1 mt-1 text-[10px] font-medium ${
+              stale ? TONE_TEXT.red : TONE_TEXT.brand
+            }`}
+          >
+            {stale ? (
+              <AlertTriangle className="w-3 h-3 shrink-0" />
+            ) : (
+              <Navigation className="w-3 h-3 shrink-0" />
+            )}
+            <span className="truncate">
+              {stale ? 'Still held from an earlier day by ' : 'On the way · '}
+              {store.claimed_by_name ?? 'a collector'}
+            </span>
+            {claimAge(store) && (
+              <span className="text-muted-foreground tabular-nums shrink-0">
+                {claimAge(store)}
+              </span>
+            )}
+          </div>
+        )}
       </button>
+
+      {claimed && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`Release ${store.claimed_by_name ?? 'the collector'}'s claim on ${store.client?.company_name}`}
+          title="Release claim"
+          onClick={onCancelClaim}
+        >
+          <Navigation className={stale ? TONE_TEXT.red : undefined} />
+        </Button>
+      )}
 
       {removable && (
         <Button
