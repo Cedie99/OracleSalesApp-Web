@@ -356,89 +356,157 @@ export const mockClockRecords: ClockRecord[] = generateClockRecordsFromMeetings(
 // ---------------------------------------------------------------------------
 // Collection module (F-007) — mock only.
 //
-// No collection tables exist in the database (latest migration is 022) and the
-// mobile app has no collector screens yet, so nothing here is wired to anything
-// real. Shapes follow the July 3 client spec in Features.md F-007 and the vault
-// wireframe, so swapping in Supabase later should be a query change, not a
-// redesign.
+// No collection tables exist in the database (latest migration is 024) and the
+// mobile collector screens are still first-draft mock UI, so nothing here is
+// wired to anything real. Shapes follow the July 3 client spec in Features.md
+// F-007 plus the 2026-07-25 revisions, so swapping in Supabase later should be a
+// query change, not a redesign.
 //
 // The data is arranged to exercise the cases an admin actually cares about:
 // a clean reconciled remittance, one with a shortfall, cash/check/GCash spread,
-// and a rescheduled visit that collected nothing.
+// a rescheduled visit that collected nothing, an open list for today with
+// stores nobody has picked up yet, and one collected visit whose delivery
+// receipt never arrived.
 // ---------------------------------------------------------------------------
 
-const collectorById = (id: string) => mockProfiles.find(p => p.id === id)
+/** Optional profile lookup — the collector, driver, or receiver on a row. */
+const staffById = (id: string | null) => (id ? mockProfiles.find(p => p.id === id) : undefined)
 const clientById = (id: string) => mockClients.find(c => c.id === id)
+
+/** Every store below was put on a day's list by the same admin (admin-1). */
+const listedBy = { listed_by: 'admin-1' }
+
+/** The delivery-receipt proof, present — the normal case for a closed visit. */
+function receiptProof(seed: string) {
+  return { delivery_receipt_photo_url: `https://picsum.photos/seed/${seed}dr/400/300` }
+}
+
+/** Nothing captured yet — pending and rescheduled stops have no proofs at all. */
+const noProofs = {
+  payment_photo_url: null,
+  delivery_receipt_photo_url: null,
+}
 
 const collectionVisitSeed: Omit<CollectionVisit, 'client' | 'collector'>[] = [
   {
     id: 'cv-1', collector_id: 'col-1', client_id: 'client-1', status: 'collected',
+    ...listedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
     amount_due: 9800, amount_collected: 9800, payment_method: 'cash',
-    photo_url: 'https://picsum.photos/seed/cv1/400/300', gps_lat: 14.8006, gps_lng: 120.5372,
-    remarks: null, rescheduled_to: null, visited_at: daysAgo(1, 9, 41), created_at: daysAgo(1, 9, 41),
+    payment_photo_url: 'https://picsum.photos/seed/cv1/400/300', ...receiptProof('cv1'),
+    gps_lat: 14.8006, gps_lng: 120.5372,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(1, 9, 41), created_at: daysAgo(2, 16, 30),
   },
   {
-    id: 'cv-2', collector_id: 'col-1', client_id: 'client-2', status: 'collected',
+    // Same day's list as cv-1/cv-3 but a different collector — the point of a
+    // shared pool is that two people can work one list.
+    id: 'cv-2', collector_id: 'col-2', client_id: 'client-2', status: 'collected',
+    ...listedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
     amount_due: 18000, amount_collected: 18000, payment_method: 'check',
-    photo_url: 'https://picsum.photos/seed/cv2/400/300', gps_lat: 14.4198, gps_lng: 121.0409,
-    remarks: 'Check dated next week', rescheduled_to: null, visited_at: daysAgo(1, 11, 15), created_at: daysAgo(1, 11, 15),
+    payment_photo_url: 'https://picsum.photos/seed/cv2/400/300', ...receiptProof('cv2'),
+    gps_lat: 14.4198, gps_lng: 121.0409,
+    remarks: 'Check dated next week', rescheduled_to: null, visited_at: daysAgo(1, 11, 15), created_at: daysAgo(2, 16, 30),
   },
   {
+    // Delivery receipt never came through. It is required before the phone will
+    // accept "✓ Collected", so this row is the one the admin has to chase.
     id: 'cv-3', collector_id: 'col-1', client_id: 'client-3', status: 'collected',
+    ...listedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
     amount_due: 12000, amount_collected: 12000, payment_method: 'gcash',
-    photo_url: 'https://picsum.photos/seed/cv3/400/300', gps_lat: 14.6760, gps_lng: 120.5401,
-    remarks: null, rescheduled_to: null, visited_at: daysAgo(1, 14, 5), created_at: daysAgo(1, 14, 5),
+    payment_photo_url: 'https://picsum.photos/seed/cv3/400/300',
+    delivery_receipt_photo_url: null,
+    gps_lat: 14.6760, gps_lng: 120.5401,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(1, 14, 5), created_at: daysAgo(2, 16, 30),
   },
   {
-    // Short payment — the store paid less than due. Drives the variance case below.
+    // Store paid less than the office expected. The collector never saw the due
+    // amount (2026-07-25 rule), so this is a store-side partial, not a miscount.
     id: 'cv-4', collector_id: 'col-2', client_id: 'client-4', status: 'collected',
+    ...listedBy, scheduled_for: daysAgo(2, 8), listed_at: daysAgo(3, 16, 0),
     amount_due: 15000, amount_collected: 13500, payment_method: 'cash',
-    photo_url: 'https://picsum.photos/seed/cv4/400/300', gps_lat: 14.6507, gps_lng: 121.1029,
-    remarks: 'Partial — balance next visit', rescheduled_to: null, visited_at: daysAgo(2, 10, 20), created_at: daysAgo(2, 10, 20),
+    payment_photo_url: 'https://picsum.photos/seed/cv4/400/300', ...receiptProof('cv4'),
+    gps_lat: 14.6507, gps_lng: 121.1029,
+    remarks: 'Partial — balance next visit', rescheduled_to: null, visited_at: daysAgo(2, 10, 20), created_at: daysAgo(3, 16, 0),
   },
   {
+    // Paid over the counter — 'counter' became a payment method on 2026-07-26,
+    // and the shared payment photo is the counter receipt.
     id: 'cv-5', collector_id: 'col-2', client_id: 'client-5', status: 'collected',
-    amount_due: 7400, amount_collected: 7400, payment_method: 'cash',
-    photo_url: 'https://picsum.photos/seed/cv5/400/300', gps_lat: 14.2117, gps_lng: 121.1644,
-    remarks: null, rescheduled_to: null, visited_at: daysAgo(2, 13, 30), created_at: daysAgo(2, 13, 30),
+    ...listedBy, scheduled_for: daysAgo(2, 8), listed_at: daysAgo(3, 16, 0),
+    amount_due: 7400, amount_collected: 7400, payment_method: 'counter',
+    payment_photo_url: 'https://picsum.photos/seed/cv5/400/300', ...receiptProof('cv5'),
+    gps_lat: 14.2117, gps_lng: 121.1644,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(2, 13, 30), created_at: daysAgo(3, 16, 0),
   },
   {
-    // Collection-day reschedule — nothing collected, no photo, no amount.
+    // Collection-day reschedule — nothing collected, no proofs, no amount.
     id: 'cv-6', collector_id: 'col-2', client_id: 'client-6', status: 'rescheduled',
-    amount_due: 22000, amount_collected: null, payment_method: null,
-    photo_url: null, gps_lat: 14.4126, gps_lng: 121.0410,
-    remarks: 'Owner out of town', rescheduled_to: daysAgo(-3, 9, 0), visited_at: daysAgo(2, 15, 45), created_at: daysAgo(2, 15, 45),
+    ...listedBy, scheduled_for: daysAgo(2, 8), listed_at: daysAgo(3, 16, 0),
+    amount_due: 22000, amount_collected: null, payment_method: null, ...noProofs,
+    gps_lat: 14.4126, gps_lng: 121.0410,
+    remarks: 'Owner out of town', rescheduled_to: daysAgo(-3, 9, 0), visited_at: daysAgo(2, 15, 45), created_at: daysAgo(3, 16, 0),
   },
   {
     // Collected today and not yet remitted — this is what "Still held" reports.
     id: 'cv-7', collector_id: 'col-1', client_id: 'client-7', status: 'collected',
+    ...listedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 45),
     amount_due: 5600, amount_collected: 5600, payment_method: 'cash',
-    photo_url: 'https://picsum.photos/seed/cv7/400/300', gps_lat: 14.2786, gps_lng: 121.1257,
-    remarks: null, rescheduled_to: null, visited_at: daysAgo(0, 10, 5), created_at: daysAgo(0, 10, 5),
+    payment_photo_url: 'https://picsum.photos/seed/cv7/400/300', ...receiptProof('cv7'),
+    gps_lat: 14.2786, gps_lng: 121.1257,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(0, 10, 5), created_at: daysAgo(1, 16, 45),
   },
   // Earlier cycle, both handed over at a bayad center (rm-3).
   {
     id: 'cv-9', collector_id: 'col-1', client_id: 'client-9', status: 'collected',
+    ...listedBy, scheduled_for: daysAgo(4, 8), listed_at: daysAgo(5, 15, 30),
     amount_due: 8200, amount_collected: 8200, payment_method: 'cash',
-    photo_url: 'https://picsum.photos/seed/cv9/400/300', gps_lat: 14.5764, gps_lng: 121.0851,
-    remarks: null, rescheduled_to: null, visited_at: daysAgo(4, 9, 30), created_at: daysAgo(4, 9, 30),
+    payment_photo_url: 'https://picsum.photos/seed/cv9/400/300', ...receiptProof('cv9'),
+    gps_lat: 14.5764, gps_lng: 121.0851,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(4, 9, 30), created_at: daysAgo(5, 15, 30),
   },
   {
     id: 'cv-10', collector_id: 'col-1', client_id: 'client-1', status: 'collected',
+    ...listedBy, scheduled_for: daysAgo(4, 8), listed_at: daysAgo(5, 15, 30),
     amount_due: 6000, amount_collected: 6000, payment_method: 'check',
-    photo_url: 'https://picsum.photos/seed/cv10/400/300', gps_lat: 14.5547, gps_lng: 121.0244,
-    remarks: null, rescheduled_to: null, visited_at: daysAgo(4, 13, 15), created_at: daysAgo(4, 13, 15),
+    payment_photo_url: 'https://picsum.photos/seed/cv10/400/300', ...receiptProof('cv10'),
+    gps_lat: 14.5547, gps_lng: 121.0244,
+    remarks: null, rescheduled_to: null, visited_at: daysAgo(4, 13, 15), created_at: daysAgo(5, 15, 30),
+  },
+  // --- Today's list: published this morning, still being worked ------------
+  // No collector on these: they are on the shared list and belong to nobody
+  // until someone actually collects them.
+  {
+    id: 'cv-8', collector_id: null, client_id: 'client-8', status: 'pending',
+    ...listedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 45),
+    amount_due: 11200, amount_collected: null, payment_method: null, ...noProofs,
+    gps_lat: null, gps_lng: null,
+    remarks: null, rescheduled_to: null, visited_at: null, created_at: daysAgo(1, 16, 45),
   },
   {
-    id: 'cv-8', collector_id: 'col-2', client_id: 'client-8', status: 'pending',
-    amount_due: 11200, amount_collected: null, payment_method: null,
-    photo_url: null, gps_lat: null, gps_lng: null,
-    remarks: null, rescheduled_to: null, visited_at: null, created_at: daysAgo(0, 8, 0),
+    id: 'cv-11', collector_id: null, client_id: 'client-10', status: 'pending',
+    ...listedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 45),
+    amount_due: 4300, amount_collected: null, payment_method: null, ...noProofs,
+    gps_lat: null, gps_lng: null,
+    remarks: null, rescheduled_to: null, visited_at: null, created_at: daysAgo(1, 16, 45),
+  },
+  {
+    id: 'cv-12', collector_id: null, client_id: 'client-11', status: 'pending',
+    ...listedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 45),
+    amount_due: 15700, amount_collected: null, payment_method: null, ...noProofs,
+    gps_lat: null, gps_lng: null,
+    remarks: null, rescheduled_to: null, visited_at: null, created_at: daysAgo(1, 16, 45),
+  },
+  // --- Tomorrow's list: published ahead, nothing started -------------------
+  {
+    id: 'cv-13', collector_id: null, client_id: 'client-12', status: 'pending',
+    ...listedBy, scheduled_for: daysAgo(-1, 8), listed_at: daysAgo(0, 9, 15),
+    amount_due: 7250, amount_collected: null, payment_method: null, ...noProofs,
+    gps_lat: null, gps_lng: null,
+    remarks: null, rescheduled_to: null, visited_at: null, created_at: daysAgo(0, 9, 15),
   },
 ]
 
 export const mockCollectionVisits: CollectionVisit[] = collectionVisitSeed.map(v => ({
-  ...v, client: clientById(v.client_id), collector: collectorById(v.collector_id),
+  ...v, client: clientById(v.client_id), collector: staffById(v.collector_id),
 }))
 
 const remittanceSeed: Omit<Remittance, 'collector'>[] = [
@@ -470,7 +538,7 @@ const remittanceSeed: Omit<Remittance, 'collector'>[] = [
 ]
 
 export const mockRemittances: Remittance[] = remittanceSeed.map(r => ({
-  ...r, collector: collectorById(r.collector_id),
+  ...r, collector: staffById(r.collector_id),
 }))
 
 // ---------------------------------------------------------------------------
@@ -544,5 +612,5 @@ const purchaseOrderSeed: Omit<PurchaseOrder, 'client' | 'assignee'>[] = [
 ]
 
 export const mockPurchaseOrders: PurchaseOrder[] = purchaseOrderSeed.map(po => ({
-  ...po, client: clientById(po.client_id), assignee: collectorById(po.assigned_to),
+  ...po, client: clientById(po.client_id), assignee: staffById(po.assigned_to),
 }))
