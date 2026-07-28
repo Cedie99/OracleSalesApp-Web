@@ -236,17 +236,29 @@ export const REMITTANCE_DESTINATION_LABEL: Record<RemittanceDestination, string>
 
 // --- Delivery (F-007) ------------------------------------------------------
 
+/**
+ * Failed is red, and it is the only red on this page: under the one-day rule a
+ * failed delivery is the single outcome that needs someone in the office to act
+ * — the goods are back in the warehouse and nothing re-lists itself.
+ */
 export const DELIVERY_STATUS_TONE: Record<DeliveryStatus, BadgeTone> = {
   delivered: 'brand',
-  followup: 'amber',
+  failed: 'red',
   pending: 'navy',
 }
 
 export const DELIVERY_STATUS_LABEL: Record<DeliveryStatus, string> = {
   delivered: 'Delivered',
-  followup: 'Follow-up',
+  failed: 'Failed delivery',
   pending: 'Pending',
 }
+
+/**
+ * The payment tiles a driver sees on a COD stop. Collection's fourth method,
+ * 'counter', is deliberately absent — it means the customer paid at their own
+ * counter, which has no meaning when goods are being handed over at the door.
+ */
+export const COD_METHODS: PaymentMethod[] = ['cash', 'check', 'gcash']
 
 /**
  * Catch-all label lookup used by the client page's edit-request diffs, where the

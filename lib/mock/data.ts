@@ -1,5 +1,5 @@
 import { startOfMonth, subMonths, addDays, subDays } from 'date-fns'
-import type { Profile, Client, Meeting, MeetingOutcome, ClockRecord, ClientEditRequest, CollectionVisit, Remittance, PurchaseOrder } from '@/types'
+import type { Profile, Client, Meeting, MeetingOutcome, ClockRecord, ClientEditRequest, CollectionVisit, Remittance, PurchaseOrder, CodRemittance } from '@/types'
 import { TEAM_1_ID, TEAM_2_ID, TEAM_RSR_1_ID, TEAM_RSR_2_ID } from '@/lib/teams'
 
 // Meeting dates below are anchored to "today" (not hardcoded to a fixed
@@ -544,73 +544,280 @@ export const mockRemittances: Remittance[] = remittanceSeed.map(r => ({
 // ---------------------------------------------------------------------------
 // Delivery module (F-007) — mock only.
 //
-// Seeded from the PO fixtures in the delivery wireframe
-// (Wireframe-Collection-Delivery-BizLink.html), which is the spec of record for
-// this flow. Clients are mapped onto the existing mock roster where the names
-// differ, so the Delivery tab joins against real client rows.
+// No delivery tables exist in the database (latest migration is 024) and the
+// driver screens on mobile are a read-only first draft (`app/(delivery)/pos.tsx`,
+// commit f294b79 — the Deliver-PO flow itself is explicitly not built there yet).
 //
-// Covers the cases an admin needs to see: plain pending POs, a follow-up on its
-// last day before auto-delete, one earlier in the window, and delivered POs with
-// receiver + proof. No GPS anywhere — that is per confirmed scope, not an omission.
+// Shapes follow the paper "TRIP REPORT" the office runs today (photo, 2026-07-27)
+// plus that day's corrections: SEQ / COMPANY NAME / LOCATION / TIME-IN /
+// TIME-OUT / COMPANY REPRESENTATIVE'S SIGNATURE, 20 pre-printed rows with ~15
+// used, no items column and no PO column on the sheet at all. A PO lives for one
+// delivery day — delivered, or failed with the goods riding back. The 3-day
+// follow-up in the wireframes and in mobile's first draft is not a delivery rule;
+// see the note on DeliveryStatus.
+//
+// Dwell times below mirror the real sheet: 5–13 minutes at most stops. Arranged
+// to exercise what an admin opens this page for — a trip list half-run with the
+// driver's own sequence numbers, a failed delivery that came back yesterday and
+// was re-listed by hand for today, COD still in a driver's hands, a reconciled
+// remittance and one short, a delivered PO whose proof photo never arrived, and
+// stops signed and unsigned.
+//
+// Coordinates sit in the Bataan municipality each stop's `area` names, so a
+// day's run reads as a real route across the province rather than a cloud of
+// points. Only worked stops carry them — the fix rides along with the stop's
+// photo, so a stop nobody reached has no photo and no location (2026-07-27; see
+// the GPS-reversal note on PurchaseOrder).
 // ---------------------------------------------------------------------------
 
-const purchaseOrderSeed: Omit<PurchaseOrder, 'client' | 'assignee'>[] = [
+/** Every PO below was put on a delivery day's list by the same admin (admin-1). */
+const poListedBy = { listed_by: 'admin-1' }
+
+/** A PO with no money on it: the plain proof-of-delivery flow. */
+const noCod = {
+  cod: false,
+  cod_due: null,
+  cod_amount: null,
+  cod_method: null,
+  cod_photo_url: null,
+  cod_remitted: false,
+} as const
+
+/** Nobody has reached this stop yet, so no driver-side field exists on it. */
+const unrun = {
+  driver_id: null,
+  truck_plate: null,
+  sequence_no: null,
+  time_in: null,
+  time_out: null,
+  receiver_name: null,
+  receiver_signature_url: null,
+  proof_url: null,
+  backload_photo_url: null,
+  // No photo taken yet, so no fix — an unrun stop is absent from the trip line
+  // rather than sitting on it at the wrong place.
+  gps_lat: null,
+  gps_lng: null,
+} as const
+
+/** The representative's signature, the way every row on the paper sheet carries one. */
+const signed = (seed: string) => `https://picsum.photos/seed/${seed}/400/160`
+
+const purchaseOrderSeed: Omit<PurchaseOrder, 'client' | 'driver'>[] = [
+  // --- Today's trip list: published last night, half run ---------------------
   {
-    id: 'po-1', po_number: 'PO-2091', client_id: 'client-7', area: 'Balanga',
-    items: '12 × Engine Oil 1L · 4 × Gear Oil 500ml', status: 'pending', followup_day: null,
-    receiver_name: null, proof_url: null, delivered_at: null, remarks: null,
-    assigned_to: 'del-1', created_at: daysAgo(0, 7, 30),
+    // Stop 1 of Dennis's run. The sequence came from the order he actually
+    // drove, not from anything the office set in advance.
+    id: 'po-1', po_number: 'PO-2085', client_id: 'client-9', area: 'Mariveles',
+    status: 'delivered',
+    ...poListedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 40),
+    driver_id: 'del-1', truck_plate: 'NGP 4021', sequence_no: 1,
+    time_in: daysAgo(0, 8, 32), time_out: daysAgo(0, 8, 40),
+    receiver_name: 'J. Ramos', receiver_signature_url: signed('posig1'),
+    proof_url: 'https://picsum.photos/seed/po1/400/300', backload_photo_url: null,
+    gps_lat: 14.4361, gps_lng: 120.4879,
+    remarks: 'Delivered', ...noCod,
+    created_at: daysAgo(1, 16, 40),
   },
   {
-    // Day 3 of 3 — auto-deletes if it isn't delivered today.
-    id: 'po-2', po_number: 'PO-2087', client_id: 'client-3', area: 'Dinalupihan',
-    items: '4 drums · Diesel additive', status: 'followup', followup_day: 3,
-    receiver_name: null, proof_url: null, delivered_at: null,
-    remarks: 'Second failed attempt — consignee closed',
-    assigned_to: 'del-1', created_at: daysAgo(3, 8, 0),
+    // COD stop, money still in Dennis's hands — this is what "Held by drivers"
+    // reports. Nobody signed for it either, which the proof grid says plainly.
+    id: 'po-2', po_number: 'PO-2082', client_id: 'client-2', area: 'Hermosa',
+    status: 'delivered',
+    ...poListedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 40),
+    driver_id: 'del-1', truck_plate: 'NGP 4021', sequence_no: 2,
+    time_in: daysAgo(0, 9, 2), time_out: daysAgo(0, 9, 10),
+    receiver_name: 'M. dela Cruz', receiver_signature_url: null,
+    proof_url: 'https://picsum.photos/seed/po2/400/300', backload_photo_url: null,
+    gps_lat: 14.8302, gps_lng: 120.5044,
+    remarks: 'Delivered',
+    cod: true, cod_due: 9700, cod_amount: 9700, cod_method: 'cash',
+    cod_photo_url: 'https://picsum.photos/seed/po2cod/400/300', cod_remitted: false,
+    created_at: daysAgo(1, 16, 40),
   },
   {
-    id: 'po-3', po_number: 'PO-2093', client_id: 'client-1', area: 'Orani',
-    items: '6 × Hydraulic Oil 4L', status: 'pending', followup_day: null,
-    receiver_name: null, proof_url: null, delivered_at: null, remarks: null,
-    assigned_to: 'del-1', created_at: daysAgo(0, 7, 30),
+    // Failed today: the customer wouldn't take the load, so it rode back on
+    // Marlon's truck. Their rep still signed the sheet for the refusal.
+    id: 'po-3', po_number: 'PO-2096', client_id: 'client-11', area: 'Balanga',
+    status: 'failed',
+    ...poListedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 40),
+    driver_id: 'del-2', truck_plate: 'TXR 8890', sequence_no: 1,
+    time_in: daysAgo(0, 10, 14), time_out: daysAgo(0, 10, 25),
+    receiver_name: null, receiver_signature_url: signed('posig3'), proof_url: null,
+    backload_photo_url: 'https://picsum.photos/seed/po3bl/400/300',
+    // Failed stops carry a fix too — it comes off the backload photo, so the map
+    // still shows where the truck was turned away.
+    gps_lat: 14.6788, gps_lng: 120.5402,
+    remarks: 'Wrong pack size — whole load refused, backloaded', ...noCod,
+    created_at: daysAgo(1, 16, 40),
   },
   {
-    id: 'po-4', po_number: 'PO-2094', client_id: 'client-8', area: 'Abucay',
-    items: '2 boxes · Grease tubs', status: 'pending', followup_day: null,
-    receiver_name: null, proof_url: null, delivered_at: null, remarks: null,
-    assigned_to: 'del-2', created_at: daysAgo(0, 7, 30),
+    // Re-listed by hand after failing yesterday (po-13). Same PO number, new
+    // day, fresh attempt — nothing rolled it forward automatically.
+    id: 'po-4', po_number: 'PO-2087', client_id: 'client-3', area: 'Dinalupihan',
+    status: 'pending',
+    ...poListedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(0, 7, 15),
+    ...unrun, remarks: 'Re-listed after Jul 26 backload',
+    cod: true, cod_due: 15400, cod_amount: null, cod_method: null,
+    cod_photo_url: null, cod_remitted: false,
+    created_at: daysAgo(0, 7, 15),
   },
   {
     id: 'po-5', po_number: 'PO-2088', client_id: 'client-5', area: 'Hermosa',
-    items: '10 × Coolant 4L', status: 'followup', followup_day: 1,
-    receiver_name: null, proof_url: null, delivered_at: null,
-    remarks: 'Nobody at the delivery point',
-    assigned_to: 'del-2', created_at: daysAgo(1, 8, 0),
+    status: 'pending',
+    ...poListedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 40),
+    ...unrun, remarks: null, ...noCod,
+    created_at: daysAgo(1, 16, 40),
   },
   {
-    id: 'po-6', po_number: 'PO-2085', client_id: 'client-9', area: 'Mariveles',
-    items: '20 × Gear Oil 1L', status: 'delivered', followup_day: null,
-    receiver_name: 'J. Ramos', proof_url: 'https://picsum.photos/seed/po5/400/300',
-    delivered_at: daysAgo(0, 8, 40), remarks: null,
-    assigned_to: 'del-1', created_at: daysAgo(1, 8, 0),
+    id: 'po-6', po_number: 'PO-2091', client_id: 'client-7', area: 'Balanga',
+    status: 'pending',
+    ...poListedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 40),
+    ...unrun, remarks: null,
+    cod: true, cod_due: 8200, cod_amount: null, cod_method: null,
+    cod_photo_url: null, cod_remitted: false,
+    created_at: daysAgo(1, 16, 40),
   },
   {
-    id: 'po-7', po_number: 'PO-2082', client_id: 'client-2', area: 'Hermosa',
-    items: '8 × Engine Oil 4L', status: 'delivered', followup_day: null,
-    receiver_name: 'M. dela Cruz', proof_url: 'https://picsum.photos/seed/po6/400/300',
-    delivered_at: daysAgo(0, 9, 10), remarks: null,
-    assigned_to: 'del-2', created_at: daysAgo(1, 8, 0),
+    id: 'po-7', po_number: 'PO-2093', client_id: 'client-1', area: 'Orani',
+    status: 'pending',
+    ...poListedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 40),
+    ...unrun, remarks: null, ...noCod,
+    created_at: daysAgo(1, 16, 40),
   },
   {
-    id: 'po-8', po_number: 'PO-2079', client_id: 'client-6', area: 'Orani',
-    items: '5 × Brake Fluid 1L', status: 'delivered', followup_day: null,
-    receiver_name: 'A. Santiago', proof_url: 'https://picsum.photos/seed/po8/400/300',
-    delivered_at: daysAgo(2, 14, 25), remarks: null,
-    assigned_to: 'del-1', created_at: daysAgo(3, 8, 0),
+    id: 'po-8', po_number: 'PO-2094', client_id: 'client-8', area: 'Abucay',
+    status: 'pending',
+    ...poListedBy, scheduled_for: daysAgo(0, 8), listed_at: daysAgo(1, 16, 40),
+    ...unrun, remarks: null,
+    cod: true, cod_due: 3100, cod_amount: null, cod_method: null,
+    cod_photo_url: null, cod_remitted: false,
+    created_at: daysAgo(1, 16, 40),
+  },
+
+  // --- Yesterday's list: fully run, COD already handed over ------------------
+  {
+    id: 'po-9', po_number: 'PO-2079', client_id: 'client-6', area: 'Orani',
+    status: 'delivered',
+    ...poListedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
+    driver_id: 'del-1', truck_plate: 'NGP 4021', sequence_no: 1,
+    time_in: daysAgo(1, 8, 57), time_out: daysAgo(1, 9, 5),
+    receiver_name: 'A. Santiago', receiver_signature_url: signed('posig9'),
+    proof_url: 'https://picsum.photos/seed/po9/400/300', backload_photo_url: null,
+    gps_lat: 14.7975, gps_lng: 120.5368,
+    remarks: 'Delivered', ...noCod,
+    created_at: daysAgo(2, 16, 30),
+  },
+  {
+    id: 'po-10', po_number: 'PO-2081', client_id: 'client-4', area: 'Hermosa',
+    status: 'delivered',
+    ...poListedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
+    driver_id: 'del-1', truck_plate: 'NGP 4021', sequence_no: 2,
+    time_in: daysAgo(1, 13, 27), time_out: daysAgo(1, 13, 40),
+    receiver_name: 'R. Ilagan', receiver_signature_url: signed('posig10'),
+    proof_url: 'https://picsum.photos/seed/po10/400/300', backload_photo_url: null,
+    gps_lat: 14.8357, gps_lng: 120.4971,
+    remarks: 'Delivered',
+    cod: true, cod_due: 12500, cod_amount: 12500, cod_method: 'check',
+    cod_photo_url: 'https://picsum.photos/seed/po10cod/400/300', cod_remitted: true,
+    created_at: daysAgo(2, 16, 30),
+  },
+  {
+    // Signed for, but the rep wouldn't give a name — the exact case the paper
+    // sheet shows, and why the signature carries the proof rather than the name.
+    id: 'po-11', po_number: 'PO-2083', client_id: 'client-5', area: 'Abucay',
+    status: 'delivered',
+    ...poListedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
+    driver_id: 'del-2', truck_plate: 'TXR 8890', sequence_no: 1,
+    time_in: daysAgo(1, 10, 42), time_out: daysAgo(1, 10, 50),
+    receiver_name: null, receiver_signature_url: signed('posig11'),
+    proof_url: 'https://picsum.photos/seed/po11/400/300', backload_photo_url: null,
+    gps_lat: 14.7233, gps_lng: 120.5341,
+    remarks: 'Delivered — receiver declined to give a name',
+    cod: true, cod_due: 6800, cod_amount: 6800, cod_method: 'gcash',
+    cod_photo_url: 'https://picsum.photos/seed/po11cod/400/300', cod_remitted: true,
+    created_at: daysAgo(2, 16, 30),
+  },
+  {
+    // The proof photo never came through. The driver's app blocks "Delivered"
+    // without one, so this row is the hole an admin has to chase.
+    id: 'po-12', po_number: 'PO-2084', client_id: 'client-10', area: 'Orani',
+    status: 'delivered',
+    ...poListedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
+    driver_id: 'del-2', truck_plate: 'TXR 8890', sequence_no: 2,
+    time_in: daysAgo(1, 15, 4), time_out: daysAgo(1, 15, 15),
+    receiver_name: 'L. Domingo', receiver_signature_url: signed('posig12'),
+    proof_url: null, backload_photo_url: null,
+    // No photo means no fix, so this stop is missing from the trip line as well
+    // as from the proof grid — one missing capture, both consequences.
+    gps_lat: null, gps_lng: null,
+    remarks: 'Delivered', ...noCod,
+    created_at: daysAgo(2, 16, 30),
+  },
+  {
+    // Failed yesterday and re-listed for today as po-4 — the same PO number on
+    // two trip tickets, which is what a second attempt looks like. Shop was shut,
+    // so there was nobody to sign.
+    id: 'po-13', po_number: 'PO-2087', client_id: 'client-3', area: 'Dinalupihan',
+    status: 'failed',
+    ...poListedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
+    driver_id: 'del-2', truck_plate: 'TXR 8890', sequence_no: 3,
+    time_in: daysAgo(1, 15, 52), time_out: daysAgo(1, 16, 5),
+    receiver_name: null, receiver_signature_url: null, proof_url: null,
+    backload_photo_url: 'https://picsum.photos/seed/po13bl/400/300',
+    gps_lat: 14.8821, gps_lng: 120.4688,
+    remarks: 'Consignee closed — full load came back',
+    // COD, but nothing was handed over so nothing was collected — the amount
+    // rides along to the re-listed attempt (po-4) untouched.
+    cod: true, cod_due: 15400, cod_amount: null, cod_method: null,
+    cod_photo_url: null, cod_remitted: false,
+    created_at: daysAgo(2, 16, 30),
+  },
+
+  // --- Tomorrow's list: published ahead, nothing run yet ---------------------
+  {
+    id: 'po-14', po_number: 'PO-2098', client_id: 'client-12', area: 'Balanga',
+    status: 'pending',
+    ...poListedBy, scheduled_for: daysAgo(-1, 8), listed_at: daysAgo(0, 9, 20),
+    ...unrun, remarks: null,
+    cod: true, cod_due: 5400, cod_amount: null, cod_method: null,
+    cod_photo_url: null, cod_remitted: false,
+    created_at: daysAgo(0, 9, 20),
+  },
+  {
+    id: 'po-15', po_number: 'PO-2099', client_id: 'client-3', area: 'Dinalupihan',
+    status: 'pending',
+    ...poListedBy, scheduled_for: daysAgo(-1, 8), listed_at: daysAgo(0, 9, 20),
+    ...unrun, remarks: null, ...noCod,
+    created_at: daysAgo(0, 9, 20),
   },
 ]
 
 export const mockPurchaseOrders: PurchaseOrder[] = purchaseOrderSeed.map(po => ({
-  ...po, client: clientById(po.client_id), assignee: staffById(po.assigned_to),
+  ...po, client: clientById(po.client_id), driver: staffById(po.driver_id),
+}))
+
+// COD remittances. Office-only by design (2026-07-25, Addendum 4) — the driver's
+// Remit screen dropped the 7-11 and bank-deposit destinations, so there is no
+// destination to record and the receiver's signature is always required.
+const codRemittanceSeed: Omit<CodRemittance, 'driver'>[] = [
+  {
+    id: 'cd-1', driver_id: 'del-1',
+    amount_remitted: 12500, amount_collected: 12500, status: 'reconciled',
+    receiver_name: 'Grace Villanueva',
+    receiver_signature_url: signed('cdsig1'),
+    po_ids: ['po-10'], submitted_at: daysAgo(1, 17, 20), created_at: daysAgo(1, 17, 20),
+  },
+  {
+    // Short by ₱500 — the one row an admin must not miss, so variance sorts first.
+    id: 'cd-2', driver_id: 'del-2',
+    amount_remitted: 6300, amount_collected: 6800, status: 'variance',
+    receiver_name: 'Grace Villanueva',
+    receiver_signature_url: signed('cdsig2'),
+    po_ids: ['po-11'], submitted_at: daysAgo(1, 17, 45), created_at: daysAgo(1, 17, 45),
+  },
+]
+
+export const mockCodRemittances: CodRemittance[] = codRemittanceSeed.map(r => ({
+  ...r, driver: staffById(r.driver_id),
 }))
