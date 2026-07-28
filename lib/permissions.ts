@@ -97,6 +97,43 @@ export function homeRouteForScope(scope: AdminScope): string {
   return scope === 'all' ? '/dashboard' : SCOPE_ROUTES[scope][0]
 }
 
+// --- Business modules ------------------------------------------------------
+//
+// SCOPE_ROUTES above answers "may this admin open this page?". This answers the
+// question the three SHARED pages ask instead — Dashboard, Maps, and Reports are
+// reachable by every scope, so the guard lets everyone through and each page has
+// to decide what to actually *show*. Before this existed they showed the sales
+// view to all three admins, which is what made the roles feel decorative.
+//
+// A module is one lens on those pages. A narrowed admin gets exactly theirs; the
+// unrestricted admin and the superadmin get all three and pick between them.
+
+export type AdminModule = Exclude<AdminScope, 'all'>
+
+/** In the order they appear in a module switcher. */
+export const ADMIN_MODULES: AdminModule[] = ['sales', 'collection', 'delivery']
+
+export const MODULE_LABEL: Record<AdminModule, string> = {
+  sales: 'Sales',
+  collection: 'Collection',
+  delivery: 'Delivery',
+}
+
+/**
+ * The lenses this admin may switch between on a shared page.
+ *
+ * One entry means no choice to offer — a Collection Admin's dashboard is the
+ * collection dashboard, full stop, and a switcher with a single option is noise.
+ * Pages should hide their switcher when this has length 1.
+ */
+export function visibleModules(
+  role: UserRole | null | undefined,
+  scope: AdminScope | null | undefined
+): AdminModule[] {
+  const effective = adminScope(role, scope)
+  return effective === 'all' ? ADMIN_MODULES : [effective]
+}
+
 export const ROLE_LABEL: Record<UserRole, string> = {
   superadmin: 'Super Admin',
   admin: 'Admin',

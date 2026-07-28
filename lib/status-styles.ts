@@ -180,10 +180,19 @@ export const CLOCK_TYPE_LABEL: Record<ClockType, string> = {
 
 // --- Collection (F-007) ----------------------------------------------------
 
+/** Every payment method, in the order the collector's app tiles them. */
+export const PAYMENT_METHODS: PaymentMethod[] = ['cash', 'check', 'gcash', 'counter']
+
+/**
+ * 'counter' means the customer paid over the counter and the collector
+ * photographed that receipt — it became a payment method on 2026-07-26, having
+ * previously been a separate proof capture. See the note on PaymentMethod.
+ */
 export const PAYMENT_METHOD_LABEL: Record<PaymentMethod, string> = {
   cash: 'Cash',
   check: 'Check',
   gcash: 'GCash',
+  counter: 'Counter',
 }
 
 /** Payment method is a taxonomy like sales channel, so it stays neutral. */
@@ -191,6 +200,7 @@ export const PAYMENT_METHOD_TONE: Record<PaymentMethod, BadgeTone> = {
   cash: 'neutral',
   check: 'neutral',
   gcash: 'neutral',
+  counter: 'neutral',
 }
 
 export const VISIT_STATUS_TONE: Record<CollectionVisitStatus, BadgeTone> = {

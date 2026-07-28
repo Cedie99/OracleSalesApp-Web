@@ -18,16 +18,40 @@ export type ClockAction = 'in' | 'out'
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
 
 /**
- * Collection module (F-007). Spec'd with the client at the 2026-07-03 meeting;
- * see Features.md F-007 and Wireframe-Collection-Delivery-BizLink.html in the vault.
+ * Collection module (F-007). Spec'd with the client at the 2026-07-03 meeting,
+ * revised 2026-07-25, and revised again 2026-07-26; see Features.md F-007,
+ * Meeting-2026-07-25-Collection-Delivery.md, and
+ * Wireframe-Collection-Delivery-BizLink.html in the vault.
  *
- * These types describe what the *mobile* collector captures. Web is an oversight
- * surface only — superadmin/admin reconcile and export, they never record a
- * collection. Nothing here is in the database yet (no collection tables exist as
- * of migration 022) and no collector screens exist in the mobile app, so this
- * currently backs mock data only.
+ * A CollectionVisit spans both halves of the module, because it is one record
+ * with two authors:
+ *
+ *  - the **Collection Admin**, on web, creates it — picks the store, the
+ *    collection day, and the amount due, publishing the "daily electronic
+ *    collection list" of the July 3 spec. Crucially the admin does NOT pick a
+ *    collector: the list is a shared pool, not a per-person route.
+ *  - the **collector**, on the phone, closes it — takes the store off the list
+ *    and records payment method, the amount actually received, two proof
+ *    photos, GPS, timestamp. Their identity lands on the row at that moment.
+ *
+ * `amount_due` is the clearest expression of that split: the admin sets it here
+ * and it is deliberately NOT shown on the collector's Collect Payment screen
+ * (2026-07-25 anchoring-bias decision — collectors were matching the displayed
+ * figure instead of counting what was handed over). Web keeps it because
+ * reconciling received-against-owed is exactly the admin's job.
+ *
+ * ⚠️ The vault currently disagrees with itself about Counter. The BizLink
+ * wireframe (2026-07-26, vault PR #6) made it a payment METHOD and deleted the
+ * dedicated `c-counterPhoto` slot; the spec-of-record wireframe, Features.md
+ * F-007, and the planned-schema notes in Database.md all still describe it as a
+ * separate required photo. We follow the newer wireframe per the vault's
+ * newest-wins convention. If Ced reconciles the other three the other way, this
+ * reverts to a `counter_photo_url` field and a third required capture.
+ *
+ * Nothing here is in the database yet — no collection tables exist as of
+ * migration 024 — so this currently backs mock data only.
  */
-export type PaymentMethod = 'cash' | 'check' | 'gcash'
+export type PaymentMethod = 'cash' | 'check' | 'gcash' | 'counter'
 
 /** Where a collector hands off the money they're holding. */
 export type RemittanceDestination = 'office' | 'bayad_center' | 'bank_deposit'
@@ -38,11 +62,32 @@ export type RemittanceStatus = 'submitted' | 'reconciled' | 'variance'
 
 export interface CollectionVisit {
   id: string
-  collector_id: string
   client_id: string
   status: CollectionVisitStatus
-  /** Amount due at the store for this visit, in PHP. */
+
+  // --- Put on the day's list by the Collection Admin (web) ------------------
+
+  /** The collection day this store sits on. Drives the collector's daily list. */
+  scheduled_for: string
+  /** Admin profile who put this store on the list. */
+  listed_by: string | null
+  listed_at: string
+  /**
+   * What the store owes, in PHP, as known to the office. Admin-entered and
+   * withheld from the collector — see the module note above.
+   */
   amount_due: number
+
+  // --- Captured by the collector on the phone -------------------------------
+
+  /**
+   * Who actually worked this store — recorded when they collect, NOT chosen in
+   * advance. The daily list is a shared pool: the admin publishes the stores and
+   * their amounts, and any collector works it down (the mobile wireframe's
+   * `cStores` carries no collector field at all). Null while the store is still
+   * pending, which is why this can't be an assignment.
+   */
+  collector_id: string | null
   /**
    * Exact amount typed by the collector to match the payment photo. Null when the
    * visit was rescheduled or is still pending. This is the figure reconciled
@@ -50,8 +95,21 @@ export interface CollectionVisit {
    */
   amount_collected: number | null
   payment_method: PaymentMethod | null
-  /** Camera-only capture, compressed <=3MB per spec. */
-  photo_url: string | null
+  /**
+   * Photo of however the payment arrived — cash, check, GCash confirmation
+   * screen, or the counter receipt. Camera-only, <=3MB. One slot whose meaning
+   * follows `payment_method`, which is why Counter needs no photo field of its
+   * own (2026-07-26 wireframe change).
+   */
+  payment_photo_url: string | null
+  /**
+   * Proof the receipt was handed to the customer, added 2026-07-25 (Addendum 3)
+   * and still its own capture after the 2026-07-26 change. Required before the
+   * collector's app will accept "✓ Collected", so a collected visit missing it
+   * means the record predates the rule or reached us through a path that
+   * skipped it — either way the admin needs to see the hole, not a blank space.
+   */
+  delivery_receipt_photo_url: string | null
   gps_lat: number | null
   gps_lng: number | null
   remarks: string | null

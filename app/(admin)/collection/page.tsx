@@ -1,69 +1,125 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Header } from '@/components/header'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Pagination } from '@/components/ui/pagination'
 import { usePagination } from '@/lib/hooks/use-pagination'
-import { mockCollectionVisits, mockRemittances, mockProfiles } from '@/lib/mock/data'
+import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
+import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
+import { useClients } from '@/lib/hooks/use-clients'
+import { useProfiles } from '@/lib/hooks/use-profiles'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { AddStoreDialog, type AddStoreDraft } from '@/components/collection/add-store-dialog'
+import { ListBoard } from '@/components/collection/list-board'
+import { VisitDetailDialog } from '@/components/collection/visit-detail-dialog'
+import { buildDays, hasMissingProof, remittanceVariance, type CollectionDay } from '@/lib/collection'
+import { peso, pesoDelta } from '@/lib/money'
 import {
-  PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE,
+  PAYMENT_METHODS, PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE,
   REMITTANCE_DESTINATION_LABEL, REMITTANCE_STATUS_LABEL, REMITTANCE_STATUS_TONE,
   TONE_CLASS, TONE_TEXT, VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
-import type { CollectionVisit, PaymentMethod, Remittance } from '@/types'
+import type { CollectionVisit, PaymentMethod } from '@/types'
 import {
-  Search, Wallet, MapPin, Camera, PenLine, AlertTriangle, Banknote, Clock,
+  Search, Wallet, MapPin, Camera, PenLine, AlertTriangle, Banknote, Clock, ImageOff, Plus,
+  Loader2,
 } from 'lucide-react'
 import { format } from 'date-fns'
 
 /**
- * Collection oversight (F-007).
+ * Collection Admin (F-007).
  *
- * Read-only by design. Collectors capture payments on the phone; web is where
- * superadmin/admin reconcile what was collected against what was remitted. There
- * is deliberately no way to record or edit a collection here — same stance the
- * app already takes on Meetings.
+ * The admin owns both ends of this module. They *publish* the work — one
+ * collection list per day, every store with what it owes — and that list only
+ * comes into existence here, because the collector's app is mobile-only with no
+ * way to add a store (July 3 spec: "daily electronic collection list"). Then
+ * they *reconcile* it: what came back against what was owed, and what was
+ * remitted against what was collected.
  *
- * Backed by mock data: no collection tables exist in the database (latest
- * migration is 022) and the mobile app has no collector screens yet.
+ * What the admin does NOT do is pick who collects what. The list is a shared
+ * pool — the mobile wireframe's store rows carry no collector field at all, and
+ * a collector simply works the list down, their name landing on a row when they
+ * collect it. So this page groups by collection DAY, never by collector, and
+ * shows collectors only as after-the-fact contributors.
+ *
+ * That is the answer to the July 3 meeting's OQ-4, "who assigns collection
+ * routes/stores to collectors?" — nobody does, confirmed by Adrian 2026-07-27.
+ * The question is closed; don't reintroduce per-collector assignment.
+ *
+ * The amount due lives on the office side of that split. It is entered here
+ * and, per the 2026-07-25 anchoring-bias decision, deliberately withheld from
+ * the collector's Collect Payment screen — they type what was actually handed
+ * over, with no figure on screen to drift toward. So a gap between due and
+ * collected is information about the store, not an accusation about the
+ * collector, and this page words it that way.
+ *
+ * Backed by the live `collection_visits` and `remittances` tables (migration
+ * 025). A store listed here is immediately visible to the collector's phone,
+ * which is the whole point — this page is where a day's work comes into
+ * existence.
  */
 
-/** Philippine peso, no decimals — amounts in this domain are always whole pesos. */
-function peso(n: number): string {
-  return `₱${n.toLocaleString('en-PH')}`
-}
-
-function variance(r: Remittance): number {
-  return r.amount_remitted - r.amount_collected
-}
-
 export default function CollectionPage() {
+  const { profile } = useCurrentProfile()
+
+  const {
+    visits, loading: visitsLoading, error: visitsError, createVisit, removeVisit,
+  } = useCollectionVisits()
+  const { remittances: allRemittances, error: remittancesError } = useRemittances()
+  const { clients } = useClients()
+  const { profiles, byRole } = useProfiles()
+  // Surfaces the reason a publish failed — an RLS rejection or a constraint
+  // violation would otherwise look like the dialog simply not working.
+  const [actionError, setActionError] = useState('')
+
   const [search, setSearch] = useState('')
   const [collectorFilter, setCollectorFilter] = useState<string>('all')
   const [methodFilter, setMethodFilter] = useState<string>('all')
   const [selectedVisit, setSelectedVisit] = useState<CollectionVisit | null>(null)
+  const [addOpen, setAddOpen] = useState(false)
+  const [addDefaults, setAddDefaults] = useState<{ scheduledFor?: string } | undefined>(undefined)
+  // Bumped on every opening so the dialog remounts with fresh fields — see the
+  // note on AddStoreDialog about why this isn't an effect.
+  const [addSession, setAddSession] = useState(0)
 
-  const collectors = useMemo(() => mockProfiles.filter(p => p.role === 'collector'), [])
+  const collectors = useMemo(() => byRole(['collector']), [byRole])
 
-  const visits = useMemo(() => {
-    return mockCollectionVisits.filter(v => {
+  const filteredVisits = useMemo(() => {
+    const needle = search.toLowerCase()
+    return visits.filter(v => {
       const matchSearch =
-        (v.client?.company_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
-        (v.collector?.full_name ?? '').toLowerCase().includes(search.toLowerCase())
+        (v.client?.company_name ?? '').toLowerCase().includes(needle) ||
+        (v.collector?.full_name ?? '').toLowerCase().includes(needle)
       const matchCollector = collectorFilter === 'all' || v.collector_id === collectorFilter
       const matchMethod = methodFilter === 'all' || v.payment_method === methodFilter
       return matchSearch && matchCollector && matchMethod
     })
-  }, [search, collectorFilter, methodFilter])
+  }, [visits, search, collectorFilter, methodFilter])
+
+  /**
+   * The daily lists honour the search box but ignore the collector and method
+   * filters. Both of those only have a value once a store has been collected,
+   * so filtering by either would silently drop every store still waiting to be
+   * picked up — which is the main thing an admin opens this tab to see.
+   */
+  const days = useMemo(() => {
+    const needle = search.toLowerCase()
+    const scoped = visits.filter(
+      v =>
+        (v.client?.company_name ?? '').toLowerCase().includes(needle) ||
+        (v.collector?.full_name ?? '').toLowerCase().includes(needle)
+    )
+    return buildDays(scoped)
+  }, [visits, search])
 
   const remittances = useMemo(() => {
-    const scoped = mockRemittances.filter(
+    const scoped = allRemittances.filter(
       r => collectorFilter === 'all' || r.collector_id === collectorFilter
     )
     // Variance first — a shortfall is the only row that needs someone to act.
@@ -72,43 +128,101 @@ export default function CollectionPage() {
       if (b.status === 'variance' && a.status !== 'variance') return 1
       return new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime()
     })
-  }, [collectorFilter])
+  }, [allRemittances, collectorFilter])
 
-  const visitsPage = usePagination(visits, 10, `${search}|${collectorFilter}|${methodFilter}`)
+  const visitsPage = usePagination(filteredVisits, 10, `${search}|${collectorFilter}|${methodFilter}`)
   const remittancesPage = usePagination(remittances, 9, collectorFilter)
 
   const stats = useMemo(() => {
-    const collected = visits
-      .filter(v => v.status === 'collected')
-      .reduce((sum, v) => sum + (v.amount_collected ?? 0), 0)
+    const collectedVisits = filteredVisits.filter(v => v.status === 'collected')
+    const collected = collectedVisits.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0)
 
-    const byMethod = { cash: 0, check: 0, gcash: 0 } as Record<PaymentMethod, number>
-    visits.forEach(v => {
-      if (v.status === 'collected' && v.payment_method) {
-        byMethod[v.payment_method] += v.amount_collected ?? 0
-      }
+    const byMethod = { cash: 0, check: 0, gcash: 0, counter: 0 } as Record<PaymentMethod, number>
+    collectedVisits.forEach(v => {
+      if (v.payment_method) byMethod[v.payment_method] += v.amount_collected ?? 0
     })
 
     const remitted = remittances.reduce((sum, r) => sum + r.amount_remitted, 0)
-    const totalVariance = remittances.reduce((sum, r) => sum + variance(r), 0)
 
     return {
       collected,
       byMethod,
       remitted,
-      totalVariance,
+      totalVariance: remittances.reduce((sum, r) => sum + remittanceVariance(r), 0),
       // Money the collector is still holding: collected but not yet handed over.
       unremitted: collected - remitted,
-      pending: visits.filter(v => v.status === 'pending').length,
-      rescheduled: visits.filter(v => v.status === 'rescheduled').length,
+      // Listed but not yet picked up — the outstanding exposure on the lists.
+      outstanding: filteredVisits
+        .filter(v => v.status === 'pending')
+        .reduce((sum, v) => sum + v.amount_due, 0),
+      pending: filteredVisits.filter(v => v.status === 'pending').length,
+      missingProof: filteredVisits.filter(hasMissingProof).length,
     }
-  }, [visits, remittances])
+  }, [filteredVisits, remittances])
+
+  const openAdd = useCallback((defaults?: { scheduledFor?: string }) => {
+    setAddDefaults(defaults)
+    setAddSession(n => n + 1)
+    setAddOpen(true)
+  }, [])
+
+  const handleAddStoreToDay = useCallback(
+    (day: CollectionDay) => openAdd({ scheduledFor: format(day.day, 'yyyy-MM-dd') }),
+    [openAdd]
+  )
+
+  const handleAdd = useCallback(
+    async (draft: AddStoreDraft) => {
+      // Everything the collector fills in is left to the database defaults —
+      // the store belongs to nobody until someone actually works it.
+      const message = await createVisit({
+        clientId: draft.clientId,
+        scheduledFor: draft.scheduledFor,
+        amountDue: draft.amountDue,
+        listedBy: profile?.id ?? null,
+      })
+      setActionError(message ?? '')
+    },
+    [createVisit, profile?.id]
+  )
+
+  /** Only ever called for stores no collector has touched — see ListBoard. */
+  const handleRemoveStore = useCallback(
+    async (visit: CollectionVisit) => {
+      const message = await removeVisit(visit.id)
+      setActionError(message ?? '')
+    },
+    [removeVisit]
+  )
+
+  const listedByName = selectedVisit
+    ? profiles.find(p => p.id === selectedVisit.listed_by)?.full_name ??
+      (selectedVisit.listed_by === profile?.id ? profile?.full_name ?? null : null)
+    : null
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Collection" subtitle={`${visits.length} visits · ${remittances.length} remittances`} />
+      <Header
+        title="Collection"
+        subtitle={`${days.length} lists · ${filteredVisits.length} stores · ${remittances.length} remittances`}
+      />
 
       <div className="flex-1 p-6 space-y-4">
+        {(visitsError || remittancesError || actionError) && (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">
+              {actionError || visitsError || remittancesError}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {visitsLoading && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            Loading collection data…
+          </div>
+        )}
+
         {/* Money summary */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <Card>
@@ -118,8 +232,12 @@ export default function CollectionPage() {
                 <Wallet className="w-4 h-4 text-primary" />
               </div>
               <p className="text-2xl font-semibold tabular-nums">{peso(stats.collected)}</p>
+              {/* Four methods no longer fit on one line, so empty buckets drop
+                  out rather than padding the row with zeroes. */}
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                Cash {peso(stats.byMethod.cash)} · Check {peso(stats.byMethod.check)} · GCash {peso(stats.byMethod.gcash)}
+                {PAYMENT_METHODS.filter(m => stats.byMethod[m] > 0)
+                  .map(m => `${PAYMENT_METHOD_LABEL[m]} ${peso(stats.byMethod[m])}`)
+                  .join(' · ') || 'Nothing collected yet'}
               </p>
             </CardContent>
           </Card>
@@ -127,22 +245,26 @@ export default function CollectionPage() {
           <Card>
             <CardContent className="px-4">
               <div className="flex items-center justify-between mb-1">
-                <p className="text-xs text-muted-foreground">Remitted</p>
-                <Banknote className="w-4 h-4 text-muted-foreground" />
+                <p className="text-xs text-muted-foreground">Still out</p>
+                <Clock className="w-4 h-4 text-muted-foreground" />
               </div>
-              <p className="text-2xl font-semibold tabular-nums">{peso(stats.remitted)}</p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">Handed over to office / bayad center</p>
+              <p className="text-2xl font-semibold tabular-nums">{peso(stats.outstanding)}</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                {stats.pending} listed {stats.pending === 1 ? 'store' : 'stores'} not yet collected
+              </p>
             </CardContent>
           </Card>
 
           <Card>
             <CardContent className="px-4">
               <div className="flex items-center justify-between mb-1">
-                <p className="text-xs text-muted-foreground">Still held</p>
-                <Clock className="w-4 h-4 text-muted-foreground" />
+                <p className="text-xs text-muted-foreground">Held by collectors</p>
+                <Banknote className="w-4 h-4 text-muted-foreground" />
               </div>
               <p className="text-2xl font-semibold tabular-nums">{peso(stats.unremitted)}</p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">Collected, not yet remitted</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Collected, not yet remitted · {peso(stats.remitted)} handed over
+              </p>
             </CardContent>
           </Card>
 
@@ -157,7 +279,7 @@ export default function CollectionPage() {
               <p
                 className={`text-2xl font-semibold tabular-nums ${stats.totalVariance !== 0 ? TONE_TEXT.red : ''}`}
               >
-                {stats.totalVariance === 0 ? peso(0) : `${stats.totalVariance > 0 ? '+' : '−'}${peso(Math.abs(stats.totalVariance))}`}
+                {pesoDelta(stats.totalVariance)}
               </p>
               <p className="text-[11px] text-muted-foreground mt-0.5">Remitted minus collected</p>
             </CardContent>
@@ -192,20 +314,34 @@ export default function CollectionPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Methods</SelectItem>
-              <SelectItem value="cash">Cash</SelectItem>
-              <SelectItem value="check">Check</SelectItem>
-              <SelectItem value="gcash">GCash</SelectItem>
+              {PAYMENT_METHODS.map(m => (
+                <SelectItem key={m} value={m}>{PAYMENT_METHOD_LABEL[m]}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
+          <Button className="h-9" onClick={() => openAdd()}>
+            <Plus /> Add store
+          </Button>
         </div>
 
-        <Tabs defaultValue="visits">
+        <Tabs defaultValue="lists">
           <TabsList>
-            <TabsTrigger value="visits">Store Visits ({visits.length})</TabsTrigger>
+            <TabsTrigger value="lists">Collection Lists ({days.length})</TabsTrigger>
+            <TabsTrigger value="visits">Store Visits ({filteredVisits.length})</TabsTrigger>
             <TabsTrigger value="remittances">Remittances ({remittances.length})</TabsTrigger>
           </TabsList>
 
-          {/* --- Store visits --- */}
+          {/* --- Collection lists: the admin's own work --- */}
+          <TabsContent value="lists" className="mt-4 space-y-4">
+            <ListBoard
+              days={days}
+              onOpenVisit={setSelectedVisit}
+              onAddStore={handleAddStoreToDay}
+              onRemoveStore={handleRemoveStore}
+            />
+          </TabsContent>
+
+          {/* --- Store visits: what came back --- */}
           <TabsContent value="visits" className="mt-4">
             <Card className="overflow-hidden">
               <div className="overflow-x-auto">
@@ -224,8 +360,8 @@ export default function CollectionPage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {visitsPage.pageItems.map(v => {
-                      const short =
-                        v.amount_collected !== null && v.amount_collected < v.amount_due
+                      const short = v.amount_collected !== null && v.amount_collected < v.amount_due
+                      const proofGap = hasMissingProof(v)
                       return (
                         <tr
                           key={v.id}
@@ -240,7 +376,11 @@ export default function CollectionPage() {
                               {v.client?.office_address}
                             </p>
                           </td>
-                          <td className="px-4 py-3 text-foreground">{v.collector?.full_name}</td>
+                          <td className="px-4 py-3 text-foreground">
+                            {v.collector?.full_name ?? (
+                              <span className="text-xs text-muted-foreground">Unclaimed</span>
+                            )}
+                          </td>
                           <td className="px-4 py-3">
                             <Badge variant="tone" className={TONE_CLASS[VISIT_STATUS_TONE[v.status]]}>
                               {VISIT_STATUS_LABEL[v.status]}
@@ -258,16 +398,24 @@ export default function CollectionPage() {
                           <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
                             {peso(v.amount_due)}
                           </td>
-                          <td className={`px-4 py-3 text-right tabular-nums font-medium ${short ? TONE_TEXT.red : ''}`}>
+                          <td className={`px-4 py-3 text-right tabular-nums font-medium ${short ? TONE_TEXT.amber : ''}`}>
                             {v.amount_collected === null ? '—' : peso(v.amount_collected)}
                           </td>
                           <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
                             {v.visited_at ? format(new Date(v.visited_at), 'MMM d, h:mm a') : '—'}
                           </td>
                           <td className="px-4 py-3">
-                            <div className="flex gap-1.5">
+                            <div className="flex items-center gap-1.5">
                               {v.gps_lat !== null && <MapPin className="w-3.5 h-3.5 text-primary" />}
-                              {v.photo_url && <Camera className="w-3.5 h-3.5 text-primary" />}
+                              {v.payment_photo_url && <Camera className="w-3.5 h-3.5 text-primary" />}
+                              {proofGap && (
+                                <span
+                                  className={`inline-flex items-center gap-1 text-[10px] font-medium ${TONE_TEXT.red}`}
+                                  title="A required capture never arrived"
+                                >
+                                  <ImageOff className="w-3.5 h-3.5" /> missing
+                                </span>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -276,7 +424,7 @@ export default function CollectionPage() {
                   </tbody>
                 </table>
 
-                {visits.length === 0 && (
+                {filteredVisits.length === 0 && (
                   <div className="text-center py-16 text-muted-foreground">
                     <Wallet className="w-8 h-8 mx-auto mb-2 opacity-40" />
                     <p className="text-sm">No collection visits found</p>
@@ -284,6 +432,22 @@ export default function CollectionPage() {
                 )}
               </div>
             </Card>
+
+            <p className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
+              A collected amount under the due figure is a partial payment by the
+              store, not a collector shortfall — the collector&apos;s app never shows
+              them what was owed.
+              {stats.missingProof > 0 && (
+                <>
+                  {' '}
+                  <span className={TONE_TEXT.red}>
+                    {stats.missingProof} collected {stats.missingProof === 1 ? 'visit is' : 'visits are'} missing
+                    a required capture (payment photo or delivery receipt).
+                  </span>
+                </>
+              )}
+            </p>
+
             <Pagination
               className="mt-4"
               page={visitsPage.page} pageCount={visitsPage.pageCount} onPageChange={visitsPage.setPage}
@@ -295,7 +459,7 @@ export default function CollectionPage() {
           <TabsContent value="remittances" className="mt-4">
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {remittancesPage.pageItems.map(r => {
-                const delta = variance(r)
+                const delta = remittanceVariance(r)
                 // Office remittances require an in-app receiver signature before
                 // submit; anything else legitimately has none.
                 const signatureRequired = r.destination === 'office'
@@ -327,9 +491,7 @@ export default function CollectionPage() {
                         {delta !== 0 && (
                           <div className={`flex items-center justify-between text-xs font-semibold ${TONE_TEXT.red}`}>
                             <span>Variance</span>
-                            <span className="tabular-nums">
-                              {delta > 0 ? '+' : '−'}{peso(Math.abs(delta))}
-                            </span>
+                            <span className="tabular-nums">{pesoDelta(delta)}</span>
                           </div>
                         )}
                       </div>
@@ -372,84 +534,21 @@ export default function CollectionPage() {
         </Tabs>
       </div>
 
-      {/* Visit detail */}
-      <Dialog open={!!selectedVisit} onOpenChange={open => !open && setSelectedVisit(null)}>
-        <DialogContent className="max-w-md">
-          {selectedVisit && (
-            <>
-              <DialogHeader>
-                <DialogTitle>{selectedVisit.client?.company_name}</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-3 text-sm">
-                <div className="flex items-center gap-2">
-                  <Badge variant="tone" className={TONE_CLASS[VISIT_STATUS_TONE[selectedVisit.status]]}>
-                    {VISIT_STATUS_LABEL[selectedVisit.status]}
-                  </Badge>
-                  {selectedVisit.payment_method && (
-                    <Badge variant="tone" className={TONE_CLASS[PAYMENT_METHOD_TONE[selectedVisit.payment_method]]}>
-                      {PAYMENT_METHOD_LABEL[selectedVisit.payment_method]}
-                    </Badge>
-                  )}
-                </div>
+      <AddStoreDialog
+        key={addSession}
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        clients={clients}
+        visits={visits}
+        defaults={addDefaults}
+        onAdd={handleAdd}
+      />
 
-                <div className="rounded-xl bg-muted/50 p-3 space-y-1.5 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Amount due</span>
-                    <span className="tabular-nums font-medium">{peso(selectedVisit.amount_due)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Amount collected</span>
-                    <span className="tabular-nums font-medium">
-                      {selectedVisit.amount_collected === null ? '—' : peso(selectedVisit.amount_collected)}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5 text-xs text-muted-foreground">
-                  <p className="font-medium text-foreground">Auto-captured</p>
-                  <p className="flex items-center gap-1.5">
-                    <MapPin className="w-3.5 h-3.5 shrink-0" />
-                    {selectedVisit.gps_lat !== null
-                      ? `${selectedVisit.gps_lat.toFixed(4)}° N, ${selectedVisit.gps_lng?.toFixed(4)}° E`
-                      : 'No GPS captured'}
-                  </p>
-                  <p className="flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5 shrink-0" />
-                    {selectedVisit.visited_at
-                      ? format(new Date(selectedVisit.visited_at), 'MMM d, yyyy · h:mm a')
-                      : 'Not yet visited'}
-                  </p>
-                </div>
-
-                {selectedVisit.rescheduled_to && (
-                  <p className="text-xs">
-                    <span className="text-muted-foreground">Rescheduled to </span>
-                    <span className="font-medium">
-                      {format(new Date(selectedVisit.rescheduled_to), 'MMM d, yyyy')}
-                    </span>
-                  </p>
-                )}
-
-                {selectedVisit.remarks && (
-                  <p className="text-xs">
-                    <span className="text-muted-foreground">Remarks: </span>
-                    {selectedVisit.remarks}
-                  </p>
-                )}
-
-                {selectedVisit.photo_url && (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img
-                    src={selectedVisit.photo_url}
-                    alt="Payment proof"
-                    className="w-full rounded-xl border border-border"
-                  />
-                )}
-              </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+      <VisitDetailDialog
+        visit={selectedVisit}
+        onOpenChange={open => !open && setSelectedVisit(null)}
+        listedByName={listedByName}
+      />
     </div>
   )
 }
