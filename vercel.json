@@ -1,0 +1,7 @@
+{
+  "crons": [
+    { "path": "/api/cron/prospect-cleanup", "schedule": "0 1 * * *" },
+    { "path": "/api/cron/lost-opportunity-sweep", "schedule": "0 2 * * *" },
+    { "path": "/api/cron/promote-new-clients", "schedule": "1 0 1 1 *" }
+  ]
+}

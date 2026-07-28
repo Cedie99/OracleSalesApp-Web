@@ -84,7 +84,13 @@ export default function ClientsPage() {
   const assignableAgents = byRole(ASSIGNABLE_ROLES)
   const canEditClient = (client: Client) => isAdmin || profile?.id === client.assigned_agent_id
 
-  const filtered = clients.filter(c => {
+  // Deleted clients (see app/api/cron/prospect-cleanup) are gone from this
+  // page entirely — there's no "Deleted" option in the Status filter, so
+  // "All Status" must not silently include them. They're only surfaced via
+  // the header's notification bell.
+  const visibleClients = clients.filter(c => c.status !== 'deleted')
+
+  const filtered = visibleClients.filter(c => {
     const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
       c.contact_person.toLowerCase().includes(search.toLowerCase()) ||
       (c.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase())
@@ -217,7 +223,7 @@ export default function ClientsPage() {
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Clients" subtitle={`${filtered.length} of ${clients.length} clients`} />
+      <Header title="Clients" subtitle={`${filtered.length} of ${visibleClients.length} clients`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Filters */}
@@ -373,7 +379,7 @@ export default function ClientsPage() {
           <div className="text-center py-16 text-muted-foreground">
             <Building2 className="w-8 h-8 mx-auto mb-2 opacity-40" />
             <p className="text-sm">
-              {clients.length === 0 ? 'No clients yet' : 'No clients match these filters'}
+              {visibleClients.length === 0 ? 'No clients yet' : 'No clients match these filters'}
             </p>
           </div>
         )}

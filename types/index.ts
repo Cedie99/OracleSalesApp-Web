@@ -415,6 +415,18 @@ export interface Client {
   normalized_company_name?: string | null
 }
 
+export interface Notification {
+  id: string
+  /** Free-form event key, e.g. 'prospect_auto_deleted'. */
+  type: string
+  title: string
+  message: string
+  client_id: string | null
+  /** Global read state — set once any admin has opened the panel, not per-admin. */
+  read_at: string | null
+  created_at: string
+}
+
 export interface ClientEditRequest {
   id: string
   client_id: string

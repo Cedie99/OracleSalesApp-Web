@@ -105,5 +105,9 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
+  // `api/` is excluded here because API routes authenticate themselves (see
+  // lib/cron-secret.ts for the cron routes) — this proxy only guards pages,
+  // and Vercel Cron's bearer-token requests carry no Supabase session cookie
+  // for it to check anyway.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|api/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
 }
