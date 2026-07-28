@@ -23,9 +23,16 @@ interface HeaderProps {
   pendingApprovals?: number
   /** "Viewing as" control for filtering the dashboard to a specific team. Omit to hide it. */
   viewSwitcher?: ViewSwitcherProps
+  /**
+   * Page-level control rendered ahead of the view switcher — currently the
+   * Sales/Collection/Delivery module switcher an unrestricted admin gets on the
+   * shared pages. Narrowed admins have one module, so they pass nothing and the
+   * header stays as it was.
+   */
+  action?: React.ReactNode
 }
 
-export function Header({ title, subtitle, pendingApprovals = 0, viewSwitcher }: HeaderProps) {
+export function Header({ title, subtitle, pendingApprovals = 0, viewSwitcher, action }: HeaderProps) {
   return (
     <header className="flex items-center justify-between px-6 h-[61px] border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
       <div>
@@ -33,6 +40,7 @@ export function Header({ title, subtitle, pendingApprovals = 0, viewSwitcher }: 
         {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
       </div>
       <div className="flex items-center gap-2">
+        {action}
         {viewSwitcher && (
           <DropdownMenu>
             <DropdownMenuTrigger className="flex items-center gap-1.5 px-3 h-8 rounded-full text-xs font-medium text-muted-foreground border border-border hover:bg-accent hover:text-foreground transition-colors">
