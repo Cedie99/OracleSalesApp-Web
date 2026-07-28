@@ -16,7 +16,7 @@ interface UseNotificationsResult {
 const NOTIFICATION_COLUMNS = 'id, type, title, message, client_id, read_at, created_at'
 const NOTIFICATION_LIMIT = 50
 
-/** Admin notification feed (bell icon in the header). See migration 045. */
+/** Admin notification feed (bell icon in the header). See migration 047. */
 export function useNotifications(): UseNotificationsResult {
   const [notifications, setNotifications] = useState<Notification[]>([])
   const [loading, setLoading] = useState(true)

@@ -45,7 +45,7 @@ export async function GET(request: Request) {
 
   // Best-effort: the deletion above already succeeded, so a failure here
   // shouldn't read as the job having failed — it only means the admin bell
-  // won't show this batch. See migration 045 for the notifications table.
+  // won't show this batch. See migration 047 for the notifications table.
   let notificationError: string | undefined
   if (data && data.length > 0) {
     const { error: notifyError } = await supabase.from('notifications').insert(

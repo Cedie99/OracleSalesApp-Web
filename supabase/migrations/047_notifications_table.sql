@@ -1,5 +1,5 @@
 -- ============================================================================
--- 045 — Admin notifications (prospect auto-delete alert)
+-- 047 — Admin notifications (prospect auto-delete alert)
 --
 -- WHY: app/api/cron/prospect-cleanup soft-deletes (status='deleted') a
 -- prospect once its 1-month details deadline passes with nothing filled in.
