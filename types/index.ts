@@ -123,43 +123,197 @@ export interface CollectionVisit {
 
 /**
  * Delivery module (F-007). Modelled on the delivery screens in
- * Wireframe-Collection-Delivery-BizLink.html, which is the spec of record for
- * this flow — the vault's Features.md still lists delivery as open question
- * OQ-5, but that doc is stale; the flow was agreed with the client.
+ * Wireframe-Collection-Delivery-BizLink.html and revised by the 2026-07-25
+ * session (Meeting-2026-07-25-Collection-Delivery.md and its five addenda).
  *
- * Deliberately unlike Collection in one respect: there is NO GPS capture here.
- * The wireframe states it outright — "Walang GPS sa delivery module (per
- * confirmed scope) — timestamp + proof photo lang." Do not add GPS fields.
+ * Structurally this is Collection with different nouns, and deliberately so —
+ * one record, two authors:
+ *
+ *  - the **Delivery Admin**, on web, lists the PO for a delivery day (customer,
+ *    area, items, and whether it is COD). That is the trip list.
+ *  - the **driver**, on the phone, closes it — plate number, proof photo, an
+ *    outcome, and the COD payment if there is one. Their name, their truck's
+ *    plate, and the stop's sequence number all land on the row at that moment.
+ *
+ * Two things separate it from Collection:
+ *
+ *  1. **The COD amount IS shown to the driver**, the exact opposite of the
+ *     anchoring-bias rule that hides `amount_due` from collectors. A COD figure
+ *     is the fixed price of goods being handed over, not a negotiable balance
+ *     (2026-07-25 COD addendum, flagged there as a judgment call).
+ *  2. **Proof is lighter.** A photo plus a "Delivered" remark is enough;
+ *     receiver name and signature are both optional, because customers often
+ *     refuse to give a name.
+ *
+ * ⚠️ GPS reversal (2026-07-27). Earlier passes of this file said outright "no
+ * GPS in the delivery module — do not add GPS fields; their absence is the
+ * decision, not a gap", sourced from the wireframe's "Walang GPS sa delivery
+ * module (per confirmed scope)". That is superseded: the latest meeting asked
+ * for Collection AND Delivery maps so the office can trace a collector's or
+ * driver's trip across a day. The coordinates ride along with the image capture
+ * that already happens at every stop, so this costs the driver no extra step —
+ * which is why it was cheap enough to reverse.
+ *
+ * Nothing here is in the database — no delivery tables exist as of migration
+ * 024 — so this backs mock data only.
  */
-export type DeliveryStatus = 'pending' | 'followup' | 'delivered'
+
+/**
+ * A PO lives for exactly one delivery day (2026-07-27, direct instruction).
+ * Either the driver hands it over that day, or the goods come back on the truck
+ * and it is a failed delivery — there is no multi-day follow-up countdown.
+ *
+ * ⚠️ The wireframes and the mobile first draft still model a 3-day follow-up
+ * window plus a separate `backload` status. Both are wrong here. The only
+ * "3-day rule" the vault can source is Meeting-2026-06-24's CLIENT-lifecycle
+ * auto-delete, which Meeting-2026-07-03 superseded with the 1-month rule — it
+ * was never a delivery rule and leaked into the delivery screens. And a failed
+ * delivery IS a backload: nothing was accepted, so the goods ride back. They are
+ * one outcome, not two, which is why `backload_photo_url` is a capture on a
+ * failed row rather than a status of its own.
+ */
+export type DeliveryStatus = 'pending' | 'delivered' | 'failed'
 
 export interface PurchaseOrder {
   id: string
   po_number: string
   client_id: string
-  /** Delivery area, e.g. "Balanga". Coarser than an address — no GPS in scope. */
-  area: string
-  /** Free-text line items as captured on the PO, e.g. "12 × Engine Oil 1L". */
-  items: string
-  status: DeliveryStatus
   /**
-   * Which day of the 3-day follow-up window this PO is on, 1-3. Set only when
-   * status is 'followup'. A failed delivery attempt starts the countdown and
-   * each subsequent failure advances it; an undelivered PO is auto-deleted once
-   * the window expires, so day 3 is the last chance to act.
+   * Delivery area, e.g. "Balanga". Coarser than an address — no GPS in scope,
+   * and with the customer name it is the whole of what the admin lists. There
+   * is deliberately no line-items field: the trip ticket carries customer +
+   * plate, not an itemised manifest (2026-07-25 "kept deliberately simple",
+   * confirmed 2026-07-27 for the admin side).
    */
-  followup_day: number | null
-  /** Name of whoever signed for the goods. Required to mark delivered. */
+  area: string
+  status: DeliveryStatus
+
+  // --- Put on a delivery day's trip list by the Delivery Admin (web) ---------
+
+  /** The delivery day this PO sits on. Drives the driver's PO list. */
+  scheduled_for: string
+  /** Admin profile who put this PO on the list. */
+  listed_by: string | null
+  listed_at: string
+  /**
+   * Cash on delivery, a per-PO toggle rather than a mode the whole module runs
+   * in (2026-07-25). Non-COD deliveries skip the payment step entirely.
+   */
+  cod: boolean
+  /** What the driver collects on a COD stop. Null on non-COD POs. */
+  cod_due: number | null
+
+  // --- Captured by the driver on the phone ----------------------------------
+
+  /**
+   * Who actually ran this stop — recorded when they deliver, NOT chosen in
+   * advance, exactly as with `CollectionVisit.collector_id`. Null while the PO
+   * is still waiting, which is why this can't be an assignment.
+   */
+  driver_id: string | null
+  /**
+   * The truck's plate, typed by the driver at the stop. Paired with the customer
+   * name, this is the whole of the "trip ticket" data the client asked for — a
+   * full itemised trip ticket with a PO reference was explicitly deferred.
+   */
+  truck_plate: string | null
+  /**
+   * Position in the day's run, 1-based. Assigned at the moment of delivery from
+   * the order the driver actually visits stops, mirroring the paper process —
+   * it is NOT a pre-planned route the office hands down.
+   */
+  sequence_no: number | null
+  /**
+   * Who took the goods. Optional since 2026-07-25 — many customers refuse to
+   * give a name, which is exactly why the signature below carries the weight.
+   */
   receiver_name: string | null
+  /**
+   * The receiving party's signature, taken on the driver's phone. This is the
+   * paper Trip Report's "COMPANY REPRESENTATIVE'S SIGNATURE" column, which is
+   * signed on every row — so treat it as the expected proof that a human at the
+   * customer took delivery, not an extra. Still never blocking on the phone.
+   */
+  receiver_signature_url: string | null
+  /**
+   * Arrival and departure at the stop, straight off the paper Trip Report's
+   * TIME-IN / TIME-OUT columns — the driver writes both today, so the app has to
+   * capture both. The gap between them is the dwell at the customer (5–15
+   * minutes in the sheets we've seen) and it is the only measure of how long a
+   * stop actually took.
+   *
+   * Both are set on a failed delivery too: the truck still arrived, waited, and
+   * left. `time_out` doubles as the moment the stop closed out.
+   */
+  time_in: string | null
+  time_out: string | null
   /** Camera-only capture of the delivered items / signed DR, compressed <=3MB. */
   proof_url: string | null
-  delivered_at: string | null
+  /**
+   * Camera-only capture of the goods riding back, required before the driver's
+   * app will log a failed delivery at all — it documents what actually returned.
+   * So a failed row without one arrived through a path that skipped the rule,
+   * and the admin needs to see the hole rather than a blank space.
+   */
+  backload_photo_url: string | null
+  /**
+   * Where the truck actually stood when the driver captured the stop's photo —
+   * the proof photo on a delivered stop, the backload photo on a failed one.
+   * Added 2026-07-27 with the delivery map (see the GPS-reversal note above);
+   * the fix comes free with the capture the driver already makes.
+   *
+   * Null on any stop nobody has reached, which is the same reason
+   * `CollectionVisit.gps_lat` is null on a pending store: no photo, no fix. A
+   * closed-out stop missing coordinates came through a path that skipped the
+   * capture, and reads on the map as "no location" rather than as a gap in the
+   * route.
+   */
+  gps_lat: number | null
+  gps_lng: number | null
   remarks: string | null
-  /** Assigned delivery personnel — a profile with the `delivery` role (migration 023). */
-  assigned_to: string
+
+  // --- COD payment, captured at the stop when `cod` is set -------------------
+  //
+  // The same payment step Collection uses: method tile, camera-only photo, exact
+  // amount. 'counter' is not offered here — that method belongs to a store
+  // paying at its own counter, which has no meaning on a delivery.
+
+  cod_amount: number | null
+  cod_method: PaymentMethod | null
+  cod_photo_url: string | null
+  /** True once this PO's COD money has been handed over in a remittance. */
+  cod_remitted: boolean
+
   created_at: string
   client?: Client
-  assignee?: Profile
+  driver?: Profile
+}
+
+/**
+ * A driver handing over the COD money they are holding.
+ *
+ * Reuses Collection's remittance pattern rather than inventing a second one, but
+ * OFFICE-ONLY (2026-07-25, Addendum 4): the 7-11 and bank-deposit destinations
+ * were removed from the driver's Remit screen, so there is no `destination`
+ * field to choose and the receiver's in-app signature is always required —
+ * unlike `Remittance`, where it is required for office only.
+ */
+export interface CodRemittance {
+  id: string
+  driver_id: string
+  /** Total the driver declared they are handing over. */
+  amount_remitted: number
+  /** Sum of the COD payments this covers — variance = remitted - collected. */
+  amount_collected: number
+  status: RemittanceStatus
+  /** Receiving officer at the office. */
+  receiver_name: string
+  /** Signature pad capture. Required — Office is the only destination. */
+  receiver_signature_url: string | null
+  po_ids: string[]
+  submitted_at: string
+  created_at: string
+  driver?: Profile
 }
 
 export interface Remittance {
