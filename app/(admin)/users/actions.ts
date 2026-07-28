@@ -2,7 +2,7 @@
 
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
-import { canManageUsers } from '@/lib/permissions'
+import { canManageUsers, PASSWORD_MIN_LENGTH } from '@/lib/permissions'
 import { AVATAR_ACCEPTED_TYPES } from '@/lib/avatar'
 import { adminScope } from '@/lib/permissions'
 import type { AdminScope, UserRole } from '@/types'
@@ -99,6 +99,32 @@ export async function updateUser(profileId: string, data: UpdateUserPayload): Pr
 
   const supabase = createAdminClient()
 
+  // profiles.email is only a display copy — the address someone actually signs
+  // in with lives in auth.users, so an edit has to move both or the account
+  // silently keeps accepting the old address.
+  const { data: existing, error: lookupError } = await supabase
+    .from('profiles')
+    .select('user_id, email')
+    .eq('id', profileId)
+    .single()
+
+  if (lookupError || !existing?.user_id) {
+    return { error: lookupError?.message ?? 'User not found.' }
+  }
+
+  if (existing.email !== data.email) {
+    // Auth first: it is the half that can reject (address already taken), and
+    // failing before the profiles write leaves the two in sync.
+    // email_confirm skips the confirmation mail — these are admin-issued
+    // accounts on addresses that often have no real mailbox, matching
+    // createUser above.
+    const { error: emailError } = await supabase.auth.admin.updateUserById(
+      existing.user_id,
+      { email: data.email, email_confirm: true }
+    )
+    if (emailError) return { error: emailError.message }
+  }
+
   const { error } = await supabase
     .from('profiles')
     .update({
@@ -109,6 +135,43 @@ export async function updateUser(profileId: string, data: UpdateUserPayload): Pr
       team_id: data.team_id || null,
     })
     .eq('id', profileId)
+
+  return { error: error?.message ?? null }
+}
+
+/**
+ * Sets a new password on someone else's account.
+ *
+ * There is no self-service reset flow: field staff are issued credentials by a
+ * superadmin at creation and often have no reachable mailbox, so recovery is
+ * the same channel — an admin sets it here and passes it on directly.
+ */
+export async function resetUserPassword(
+  profileId: string,
+  password: string
+): Promise<{ error: string | null }> {
+  const permError = await requireCallerIsSuperadmin()
+  if (permError) return { error: permError }
+
+  // Mirrors the create form's rule, re-checked here because the action is
+  // reachable without going through it.
+  if (password.length < PASSWORD_MIN_LENGTH) {
+    return { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters.` }
+  }
+
+  const supabase = createAdminClient()
+
+  const { data: profile, error: lookupError } = await supabase
+    .from('profiles')
+    .select('user_id')
+    .eq('id', profileId)
+    .single()
+
+  if (lookupError || !profile?.user_id) {
+    return { error: lookupError?.message ?? 'User not found.' }
+  }
+
+  const { error } = await supabase.auth.admin.updateUserById(profile.user_id, { password })
 
   return { error: error?.message ?? null }
 }
