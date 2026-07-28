@@ -17,6 +17,7 @@ import {
   Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
   MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
   Monitor, Smartphone, Truck, CircleHelp, ImagePlus, Trash2, KeyRound,
+  ArrowUp, ArrowDown, ArrowUpDown,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -102,6 +103,45 @@ interface UserFormData {
   team_id: string
 }
 
+type SortKey = 'user' | 'role' | 'platform' | 'team' | 'created' | 'status'
+
+interface SortState {
+  key: SortKey
+  dir: 'asc' | 'desc'
+}
+
+/**
+ * Role column order — seniority, not the alphabet. Sorting by role is a
+ * question about the org chart ("show me the admins"), and A-Z would open on
+ * Collector and bury Super Admin in the middle.
+ */
+const ROLE_ORDER: UserRole[] = [
+  'superadmin', 'admin', 'sales_manager', 'sales_specialist', 'rsr', 'collector', 'delivery',
+]
+
+/**
+ * Roles this build has no definition for sort last rather than crashing or
+ * landing at the top — profiles.role is shared with the mobile repo, which has
+ * shipped a role web didn't know about before (see roleLabel).
+ */
+function roleRank(role: string): number {
+  const i = ROLE_ORDER.indexOf(role as UserRole)
+  return i === -1 ? ROLE_ORDER.length : i
+}
+
+/**
+ * Which direction a column opens on first click. Dates read newest-first
+ * everywhere else in the app, so Created matches; the rest start A-Z.
+ */
+const DEFAULT_SORT_DIR: Record<SortKey, SortState['dir']> = {
+  user: 'asc',
+  role: 'asc',
+  platform: 'asc',
+  team: 'asc',
+  created: 'desc',
+  status: 'asc',
+}
+
 const EMPTY_FORM: UserFormData = {
   full_name: '',
   email: '',
@@ -123,6 +163,9 @@ export default function UsersPage() {
   const [roleFilter, setRoleFilter] = useState<string>('all')
   const [platformFilter, setPlatformFilter] = useState<string>('all')
   const [teams, setTeams] = useState<TeamRow[]>([])
+  // Matches the query's own .order('created_at', desc), so the first paint is
+  // sorted the same way with or without a click.
+  const [sort, setSort] = useState<SortState>({ key: 'created', dir: 'desc' })
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<UserRow | null>(null)
@@ -269,8 +312,66 @@ export default function UsersPage() {
     return matchSearch && matchRole && matchPlatform
   })
 
+  function toggleSort(key: SortKey) {
+    setSort(prev =>
+      prev.key === key
+        ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: DEFAULT_SORT_DIR[key] }
+    )
+  }
+
+  const sorted = [...filtered].sort((a, b) => {
+    const dir = sort.dir === 'asc' ? 1 : -1
+    // Every column falls back to name so equal rows keep a stable, readable
+    // order instead of shuffling between renders.
+    const byName = a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' })
+
+    switch (sort.key) {
+      case 'user':
+        return dir * byName
+
+      case 'role': {
+        const rank = roleRank(a.role) - roleRank(b.role)
+        if (rank) return dir * rank
+        // Only admins differ on the second key — keeps Collection/Delivery/
+        // Sales Admin grouped rather than interleaved by name.
+        const scope = roleScopeLabel(a.role, a.admin_scope)
+          .localeCompare(roleScopeLabel(b.role, b.admin_scope))
+        return scope ? dir * scope : byName
+      }
+
+      case 'platform': {
+        const platform = platformForRole(a.role).localeCompare(platformForRole(b.role))
+        return platform ? dir * platform : byName
+      }
+
+      case 'team': {
+        const at = teams.find(t => t.id === a.team_id)?.name ?? ''
+        const bt = teams.find(t => t.id === b.team_id)?.name ?? ''
+        // Unassigned sinks to the bottom in BOTH directions — most users here
+        // have no team, and a screen of dashes is never what someone sorting
+        // by team is looking for.
+        if (!at || !bt) return at ? -1 : bt ? 1 : byName
+        // numeric, so Team 10 follows Team 9 rather than Team 1.
+        const team = at.localeCompare(bt, undefined, { numeric: true, sensitivity: 'base' })
+        return team ? dir * team : byName
+      }
+
+      case 'created': {
+        const created = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        return created ? dir * created : byName
+      }
+
+      case 'status': {
+        // Active first when ascending.
+        const status = Number(b.is_active) - Number(a.is_active)
+        return status ? dir * status : byName
+      }
+    }
+  })
+
   const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
-    filtered, 10, `${search}|${roleFilter}|${platformFilter}`,
+    sorted, 10, `${search}|${roleFilter}|${platformFilter}|${sort.key}|${sort.dir}`,
   )
 
   const counts = {
@@ -505,12 +606,12 @@ export default function UsersPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-xs text-muted-foreground">
-                    <th className="text-left px-5 py-3 font-medium">User</th>
-                    <th className="text-left px-5 py-3 font-medium">Role</th>
-                    <th className="text-left px-5 py-3 font-medium">Platform</th>
-                    <th className="text-left px-5 py-3 font-medium hidden md:table-cell">Team</th>
-                    <th className="text-left px-5 py-3 font-medium hidden lg:table-cell">Created</th>
-                    <th className="text-left px-5 py-3 font-medium">Status</th>
+                    <SortHeader label="User" sortKey="user" sort={sort} onSort={toggleSort} />
+                    <SortHeader label="Role" sortKey="role" sort={sort} onSort={toggleSort} />
+                    <SortHeader label="Platform" sortKey="platform" sort={sort} onSort={toggleSort} />
+                    <SortHeader label="Team" sortKey="team" sort={sort} onSort={toggleSort} className="hidden md:table-cell" />
+                    <SortHeader label="Created" sortKey="created" sort={sort} onSort={toggleSort} className="hidden lg:table-cell" />
+                    <SortHeader label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
                     <th className="px-5 py-3" />
                   </tr>
                 </thead>
@@ -755,6 +856,42 @@ export default function UsersPage() {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+/**
+ * A clickable column header. Carries a faint neutral arrow when idle so the
+ * column reads as sortable before anyone hovers it, and a solid directional
+ * arrow once it is the active sort.
+ */
+function SortHeader({
+  label, sortKey, sort, onSort, className,
+}: {
+  label: string
+  sortKey: SortKey
+  sort: SortState
+  onSort: (key: SortKey) => void
+  className?: string
+}) {
+  const active = sort.key === sortKey
+  const Icon = !active ? ArrowUpDown : sort.dir === 'asc' ? ArrowUp : ArrowDown
+
+  return (
+    <th
+      className={`text-left px-5 py-3 font-medium ${className ?? ''}`}
+      aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`inline-flex items-center gap-1.5 transition-colors hover:text-foreground ${
+          active ? 'text-foreground' : ''
+        }`}
+      >
+        {label}
+        <Icon className={`w-3.5 h-3.5 ${active ? '' : 'opacity-40'}`} />
+      </button>
+    </th>
   )
 }
 
