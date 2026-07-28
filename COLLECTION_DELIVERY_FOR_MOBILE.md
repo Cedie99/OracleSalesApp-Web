@@ -6,9 +6,11 @@
 
 ## Read this first
 
-**The tables now exist as migrations, but are NOT deployed yet.**
+**Status, 2026-07-28: 043/044 are merged to main and deployed.** Commit `9c40364`; CI's `db push` ran on merge. The paragraph below describes the pre-merge state and is kept for the numbering rationale, which still applies.
 
-`043_collection_module.sql` and `044_delivery_module.sql` are written and sitting on this branch unmerged. Verified against the live project on 2026-07-27: `collection_visits`, `remittances`, `purchase_orders` and `cod_remittances` do **not** exist there yet, so nothing below conflicts with anything deployed.
+**045 is now taken** by `045_denormalize_client_on_lists.sql` — see §4a. The location-pings proposal in §7 that reserved the name `045_location_pings.sql` moves to **046** if it is ever approved.
+
+`043_collection_module.sql` and `044_delivery_module.sql` were written and sat on a branch unmerged. Verified against the live project on 2026-07-27: `collection_visits`, `remittances`, `purchase_orders` and `cod_remittances` did **not** exist there yet, so nothing below conflicted with anything deployed.
 
 **Why 043/044 and not 025/026.** These were first written as 025/026 — the next free numbers in web's own folder, which stops at 024. That was wrong. The vault's `Migration-0NN-Report.md` files show 025–042 are already claimed by the mobile side, and **every one of them is applied live**: 025–027 on 2026-07-23, 028–034 on 2026-07-26, and 035–040 plus 042 on 2026-07-27. Only 041 is free, and only because it was reserved as a numbering placeholder and never used. Web's folder jumping from 024 to 043 is correct, not a mistake — don't "tidy" it.
 
@@ -100,6 +102,32 @@ From `lib/collection-delivery-data.ts` on mobile `main`, against `types/index.ts
 | *(none)* | `payment_photo_url`, `delivery_receipt_photo_url` | Two required captures on a collected visit. Web flags a collected row missing either as "missing proof" for the admin to chase. |
 | *(none)* | `gps_lat`, `gps_lng` | Already agreed for collection; just absent from the draft. |
 | `due: number` | `amount_due` | Mobile's comment is exactly right — never show it on the Collect Payment screen (anchoring bias). Keep hiding it; web shows it to admins only. |
+
+---
+
+## 4a. The customer name is on the row now (migration 045) — 2026-07-28
+
+Answers mobile's `WEB_FIXES_NEEDED_FOR_SYNC.md`. **This was the only thing blocking Phase 1 read, and it is done.**
+
+**The problem.** `collection_visits` and `purchase_orders` referenced the customer only by `client_id`. Migration 031 dropped the broad `"Authenticated read clients"` policy, and the scoped SELECT policies that replaced it (030) cover agents, managers, executives and tag-along participants — **not `collector` or `delivery`**. A phone logged in as a collector or driver could read the list row but could not resolve its `client_id` to a name, so every row rendered blank.
+
+**The fix — new columns, not a new RLS policy on `clients`.** Deliberate: field roles have no business reading the customer master — contacts, assigned agent, lifecycle status — just to put a name on a stop. The admin already knows the name when they publish, so the name travels on the row and 030's scoping stays intact.
+
+| Table | Added | Source at publish time |
+| --- | --- | --- |
+| `collection_visits` | `client_name TEXT` | `clients.company_name` |
+| `collection_visits` | `area TEXT` | `clients.city` — collection has no admin-entered area field |
+| `purchase_orders` | `client_name TEXT` | `clients.company_name` |
+
+`purchase_orders.area` already existed (044) and is admin-entered on the form — untouched.
+
+Both are **nullable and staying that way**: mobile pushes rows through its offline outbox, and NOT NULL would turn a missing denormalized field into a failed insert rather than a visibly incomplete row. Rows published before 045 are backfilled by the migration.
+
+**Caveat mobile should know.** These are a point-in-time copy, not a live mirror. A customer renamed in `clients` afterwards keeps the old name on rows already published — correct for a trip ticket, which should say what it said on the day it was worked. Web keeps reading the joined `clients` row for anything current-state.
+
+**Deployment.** Committed as `045_denormalize_client_on_lists.sql`; CI's `db push` applies it on merge to main. No hand-running in the SQL Editor is needed — and the file is idempotent (`ADD COLUMN IF NOT EXISTS`, backfill UPDATEs safe to repeat) if it ends up applied twice.
+
+**Not blocking sync:** the "On the way" / claimed-en-route indicator is mock-only on mobile and has no schema behind it yet. The rules are now decided and specced for 046 — see §11.
 
 ---
 
@@ -300,7 +328,7 @@ This is a genuinely good fit for offline: a full day out of signal is ~60 KB buf
 
 ### Why there's no migration yet
 
-Web's `.github/workflows/deploy-migrations.yml` runs `supabase db push` against the **shared** Supabase project on merge to main. Committing `045_location_pings.sql` speculatively would deploy a table to the live database that nothing writes to and nobody agreed on. The SQL above is ready; it becomes a migration the day the plan is approved.
+Web's `.github/workflows/deploy-migrations.yml` runs `supabase db push` against the **shared** Supabase project on merge to main. Committing a location-pings migration speculatively would deploy a table to the live database that nothing writes to and nobody agreed on. The SQL above is ready; it becomes a migration the day the plan is approved — as **046**, since 045 went to the denormalization in §4a.
 
 ---
 
@@ -362,3 +390,82 @@ On step 4: "Add Store" and "Add PO" now insert real rows via `lib/hooks/use-coll
 3. **Can a collector or driver see their own trail on the phone?** Changes the RLS policy set. Currently specced as no.
 4. **How long are trails kept?** Nobody has asked, which means nobody has thought about it. I'd suggest 90 days.
 5. **Are trails for verification or route optimisation?** If optimisation, the odometer/fuel block on the paper Trip Report (still unmodelled) matters more than metre-accurate trails.
+
+*(The claimed-state questions that sat here are settled — see §11.)*
+
+---
+
+## 11. The "On the way" claimed state — built, migration 046
+
+Mobile's list screens show an en-route indicator that was mock-only; nothing in 043/044 backed it. Decisions below are from Dev2 + the business on **2026-07-28**, and `046_claim_stops.sql` implements them. **Mobile can now write real claims** — see "What mobile does" at the end of this section.
+
+### The rules
+
+| Question | Decision |
+| --- | --- |
+| Soft hint or hard lock? | **Hard lock.** A claimed stop cannot be worked by anyone else. |
+| How many claims per person? | **Exactly one.** No multiple claims, no hoarding. |
+| Does a claim expire? | **No.** Claims do not time out. |
+| Who can cancel? | **The claimer, and any admin.** Nobody else. |
+| Does the admin see who claimed what? | **Yes** — on the day list, alongside the row. |
+
+**Why a hard lock doesn't break the shared-list rule.** The concern was that locking turns the published pool into back-door assignment. The one-claim limit is what prevents that: you cannot reserve the profitable half of the list, so a claim means only "I am driving to this one stop right now" — which is what the indicator always meant. The pool stays shared.
+
+### Schema
+
+**A new `claimed_by` / `claimed_at`, NOT a reuse of `collector_id` / `driver_id`.** This is deliberate and it keeps 043/044 intact: `collection_visits_pending_is_unworked` names `collector_id`, `amount_collected`, `visited_at`, so a new column isn't covered by it and **the constraint does not need relaxing** (contrary to the original sketch in mobile's `WEB_FIXES_NEEDED_FOR_SYNC.md`). `collector_id` keeps meaning *who worked it*; `claimed_by` means *who is en route*. One column, one meaning.
+
+One claim per person is enforced by the database, not by app logic:
+
+```sql
+CREATE UNIQUE INDEX collection_visits_one_active_claim
+  ON collection_visits (claimed_by)
+  WHERE claimed_by IS NOT NULL AND status = 'pending';
+
+CREATE UNIQUE INDEX purchase_orders_one_active_claim
+  ON purchase_orders (claimed_by)
+  WHERE claimed_by IS NOT NULL AND status = 'pending';
+```
+
+Two things fall out of that predicate for free:
+
+- **Races resolve correctly without realtime.** Two phones claiming the same stop: one wins, the other gets a unique violation to handle. The lock is correct even if the other phone doesn't hear about it until its next refresh. Worth knowing that there is currently **no realtime anywhere in the web repo** — no `.channel()`, no `postgres_changes` — so treating it as a later UX improvement rather than a prerequisite saves building that machinery now.
+- **Completion frees the slot automatically.** Scoping to `status = 'pending'` means the row drops out of the index the moment it becomes `collected`/`delivered`/`failed`. No release logic on the happy path.
+
+### RLS
+
+Today any field-role user may update any unclaimed row. That becomes:
+
+- **Claim:** a collector/driver may set `claimed_by` to themselves on a `pending` row where `claimed_by IS NULL`.
+- **Work:** only `claimed_by = self` may write the outcome columns on a claimed row.
+- **Cancel:** `claimed_by = self`, or an admin (who may clear anyone's).
+
+### The one edge case, and why it's acceptable
+
+The business rule is **whole-day only** — a stop is collected, rescheduled or failed *that day*; a failed delivery is a backload, not a follow-up. So a claim outliving its day shouldn't arise.
+
+Worth being precise, though: nothing enforces that in the data. There is no `pg_cron` job and no scheduled function anywhere in the migrations, so a row *can* sit at `status = 'pending'` past its `scheduled_for` if someone claims a stop at 4pm and simply goes home. Under "one claim, no expiry" that person cannot claim anything the next morning until the stale one is cleared.
+
+This does not need an expiry rule to fix — admin cancellation already covers it, and because the admin now sees claims on the day list they will see it. The only ask: **the web board should visually flag a claim on a past-dated pending row**, so clearing it is obvious rather than something an admin has to go looking for. UI, not schema.
+
+### A third column mobile must know about: `claimed_by_name`
+
+Same trap as 045's `client_name`, and it would have bitten in exactly the same way. A collector can read only their **own** `profiles` row (migration 003) — there is no policy letting field roles read each other. So `claimed_by` alone is unresolvable on the phone: a stop held by someone else would read "taken by ?".
+
+046 therefore denormalizes `claimed_by_name` alongside `claimed_by`/`claimed_at`, written at claim time. A CHECK constraint keeps the three in step — all set, or all null. If mobile only ever needs "mine vs somebody else's", compare `claimed_by` to your own profile id and ignore the name.
+
+### What mobile does
+
+**To claim:** on a `pending` row where `claimed_by IS NULL`, set all three of `claimed_by` (self), `claimed_at` (now), `claimed_by_name` (own full name).
+
+**Handle the unique violation.** If two phones claim the same stop, the loser gets Postgres error **23505** on `collection_visits_one_active_claim` / `purchase_orders_one_active_claim`. That is not a bug to retry blindly — it means either someone beat you to this stop, or **you already hold a different one**. The second case is the one worth a clear message, because it is the one-claim rule doing its job: "Finish or release your current stop first."
+
+**To release:** null all three. RLS allows the claimer; the admin can clear anyone's from the web board.
+
+**Completion needs no release.** Writing the outcome (`collected` / `delivered` / `failed`) drops the row out of the index and frees your slot automatically. Leave `claimed_by` populated — it is kept as history on purpose.
+
+**Offline note:** a claim is a normal row update and rides the existing outbox. Be aware it can therefore fail on flush, long after the tap, if someone else claimed the stop while the phone was out of signal. That is inherent to a hard lock plus offline — worth a visible "your claim didn't stick" path rather than a silent revert.
+
+### Sequencing
+
+045 and 046 land together. 046 is the first feature riding on top of the sync, so if a claim misbehaves, confirm the plain read works first — that isolates it fast.

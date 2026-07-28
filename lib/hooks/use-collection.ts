@@ -21,7 +21,8 @@ const CLIENT_JOIN = `
 const PROFILE_JOIN = `id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at`
 
 const VISIT_COLUMNS = `
-  id, client_id, status, scheduled_for, listed_by, listed_at, amount_due,
+  id, client_id, client_name, area, status, scheduled_for, listed_by, listed_at, amount_due,
+  claimed_by, claimed_at, claimed_by_name,
   collector_id, amount_collected, payment_method, payment_photo_url,
   delivery_receipt_photo_url, gps_lat, gps_lng, remarks, rescheduled_to,
   visited_at, created_at,
@@ -80,6 +81,14 @@ function normalizeRemittance(row: Record<string, unknown>): Remittance {
 /** What the admin fills in when putting a store on a day's list. */
 export interface NewCollectionVisit {
   clientId: string
+  /**
+   * The selected client's `company_name`, denormalized onto the row (migration
+   * 045). Not looked up here: the collector's phone can't read `clients`, so
+   * the name has to be written at publish time by the admin, who has it.
+   */
+  clientName: string
+  /** The selected client's `city`, denormalized for the same reason. */
+  area: string | null
   /** `yyyy-MM-dd` from the date input. */
   scheduledFor: string
   amountDue: number
@@ -94,6 +103,7 @@ interface UseCollectionVisitsResult {
   refresh: () => Promise<void>
   createVisit: (draft: NewCollectionVisit) => Promise<string | null>
   removeVisit: (id: string) => Promise<string | null>
+  cancelClaim: (id: string) => Promise<string | null>
 }
 
 /**
@@ -143,6 +153,10 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
       const supabase = createClient()
       const { error: insertError } = await supabase.from('collection_visits').insert({
         client_id: draft.clientId,
+        // Denormalized at publish time — the phone can't resolve client_id
+        // itself. See migration 045.
+        client_name: draft.clientName,
+        area: draft.area,
         status: 'pending',
         // Midday, so the store lands on the intended day whatever timezone the
         // browser is in — a bare date string would drift a day either side.
@@ -175,7 +189,33 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
     [load]
   )
 
-  return { visits, loading, error, refresh, createVisit, removeVisit }
+  /**
+   * Release a collector's claim so the store returns to the shared pool
+   * (migration 046). Admin-only in practice — RLS lets the claimer clear their
+   * own, but web is only ever used by admins.
+   *
+   * The main reason this exists: claims never expire, so a store claimed at 4pm
+   * and never worked stays locked, and with one claim per person that collector
+   * can't take anything the next morning until someone clears it.
+   */
+  const cancelClaim = useCallback(
+    async (id: string): Promise<string | null> => {
+      const supabase = createClient()
+      // All three together — `collection_visits_claim_complete` rejects a
+      // partial claim.
+      const { error: updateError } = await supabase
+        .from('collection_visits')
+        .update({ claimed_by: null, claimed_at: null, claimed_by_name: null })
+        .eq('id', id)
+
+      if (updateError) return updateError.message
+      await load()
+      return null
+    },
+    [load]
+  )
+
+  return { visits, loading, error, refresh, createVisit, removeVisit, cancelClaim }
 }
 
 /** Money handed over by collectors, most recent first. */
