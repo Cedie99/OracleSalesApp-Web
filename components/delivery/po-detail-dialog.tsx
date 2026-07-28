@@ -1,0 +1,242 @@
+'use client'
+
+import { Badge } from '@/components/ui/badge'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { dwellMinutes, poProofs } from '@/lib/delivery'
+import { peso } from '@/lib/money'
+import {
+  DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE,
+  TONE_CLASS, TONE_TEXT,
+} from '@/lib/status-styles'
+import type { PurchaseOrder } from '@/types'
+import { AlertTriangle, Camera, Clock, MapPin, PackageX, PenLine, Truck, UserCog } from 'lucide-react'
+
+import { format } from 'date-fns'
+
+interface PoDetailDialogProps {
+  po: PurchaseOrder | null
+  onOpenChange: (open: boolean) => void
+  /** Name of the admin who put the PO on the list, resolved by the caller. */
+  listedByName: string | null
+}
+
+/**
+ * One PO, from the moment it was listed through to what the driver who took it
+ * brought back — including whether the required captures arrived.
+ */
+export function PoDetailDialog({ po, onOpenChange, listedByName }: PoDetailDialogProps) {
+  return (
+    <Dialog open={!!po} onOpenChange={open => !open && onOpenChange(false)}>
+      <DialogContent className="max-w-md">
+        {po && <PoDetail po={po} listedByName={listedByName} />}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function PoDetail({ po, listedByName }: { po: PurchaseOrder; listedByName: string | null }) {
+  const proofs = poProofs(po)
+  const missing = proofs.filter(p => p.required && !p.url)
+  const run = po.driver_id !== null
+  const dwell = dwellMinutes(po)
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>{po.po_number}</DialogTitle>
+      </DialogHeader>
+
+      <div className="space-y-3 text-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="tone" className={TONE_CLASS[DELIVERY_STATUS_TONE[po.status]]}>
+            {DELIVERY_STATUS_LABEL[po.status]}
+          </Badge>
+          {po.cod_method && (
+            <Badge variant="tone" className={TONE_CLASS[PAYMENT_METHOD_TONE[po.cod_method]]}>
+              COD · {PAYMENT_METHOD_LABEL[po.cod_method]}
+            </Badge>
+          )}
+        </div>
+
+        <div>
+          <p className="font-medium text-foreground">{po.client?.company_name}</p>
+          <p className="text-xs text-muted-foreground">{po.area}</p>
+        </div>
+
+        {/* Published by the office */}
+        <div className="rounded-xl bg-muted/50 p-3 space-y-1.5 text-xs">
+          <p className="font-medium text-foreground flex items-center gap-1.5">
+            <UserCog className="w-3.5 h-3.5" /> Listed
+          </p>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Delivery day</span>
+            <span className="font-medium">{format(new Date(po.scheduled_for), 'MMM d, yyyy')}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Listed by</span>
+            <span className="font-medium">{listedByName ?? '—'}</span>
+          </div>
+          {po.cod && (
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">COD due</span>
+              <span className="tabular-nums font-medium">{peso(po.cod_due ?? 0)}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Brought back by whichever driver took it */}
+        <div className="rounded-xl bg-muted/50 p-3 space-y-1.5 text-xs">
+          <p className="font-medium text-foreground flex items-center gap-1.5">
+            <Truck className="w-3.5 h-3.5" /> Run
+          </p>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Delivered by</span>
+            <span className="font-medium">{po.driver?.full_name ?? 'Not yet taken'}</span>
+          </div>
+          {run && (
+            <>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Truck plate</span>
+                <span className="font-medium">{po.truck_plate ?? '—'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Stop in the run</span>
+                <span className="tabular-nums font-medium">
+                  {po.sequence_no ? `#${po.sequence_no}` : '—'}
+                </span>
+              </div>
+              {/* The trip report's TIME-IN / TIME-OUT pair, and what it adds up to. */}
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Time in — out</span>
+                <span className="tabular-nums font-medium">
+                  {po.time_in ? format(new Date(po.time_in), 'h:mm a') : '—'}
+                  {' — '}
+                  {po.time_out ? format(new Date(po.time_out), 'h:mm a') : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Time at the stop</span>
+                <span className="tabular-nums font-medium">
+                  {dwell === null ? '—' : `${dwell} min`}
+                </span>
+              </div>
+            </>
+          )}
+          {po.cod && (
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">COD collected</span>
+              <span className="tabular-nums font-medium">
+                {po.cod_amount === null ? '—' : peso(po.cod_amount)}
+              </span>
+            </div>
+          )}
+          {po.cod && po.cod_amount !== null && (
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">COD remitted</span>
+              <span className={`font-medium ${po.cod_remitted ? '' : TONE_TEXT.amber}`}>
+                {po.cod_remitted ? 'Handed over' : 'Still with the driver'}
+              </span>
+            </div>
+          )}
+          {/* Optional since 2026-07-25 — customers often refuse to give a name,
+              so an empty one is the expected case, not a hole. */}
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Received by</span>
+            <span className="font-medium">
+              {po.receiver_name ?? <span className="text-muted-foreground">Not given (optional)</span>}
+            </span>
+          </div>
+        </div>
+
+        {po.status === 'failed' && (
+          <div className="rounded-xl bg-[var(--badge-red-bg)] p-3">
+            <p className={`text-xs font-semibold ${TONE_TEXT.red} flex items-center gap-1.5`}>
+              <PackageX className="w-3.5 h-3.5 shrink-0" />
+              Backloaded — waiting on a decision
+            </p>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Nothing was handed over, so the goods rode back on the truck. The PO
+              belongs to its delivery day and ends there — no countdown, and the
+              driver cannot re-open it. To try again, someone here lists it on a
+              later day.
+            </p>
+          </div>
+        )}
+
+        {proofs.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-foreground">Proof captures</p>
+            {missing.length > 0 && (
+              <p className={`flex items-center gap-1.5 text-[11px] font-medium ${TONE_TEXT.red}`}>
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                {missing.length === 1 ? '1 required capture is' : `${missing.length} required captures are`} missing
+              </p>
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              {proofs.map(proof => {
+                const isSignature = proof.label === 'Receiver signature'
+                return (
+                  <div key={proof.label} className="space-y-1">
+                    {proof.url ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img
+                        src={proof.url}
+                        alt={proof.label}
+                        className={`w-full aspect-4/3 rounded-lg border border-border ${
+                          // A signature is a thin wide strip; cropping it to fill
+                          // the tile cuts the loops off.
+                          isSignature ? 'object-contain bg-muted/30 p-1' : 'object-cover'
+                        }`}
+                      />
+                    ) : (
+                      <div
+                        className={`w-full aspect-4/3 rounded-lg border border-dashed flex items-center justify-center ${
+                          proof.required ? 'border-destructive/40' : 'border-border'
+                        }`}
+                      >
+                        {isSignature ? (
+                          <PenLine className="w-4 h-4 text-muted-foreground opacity-50" />
+                        ) : (
+                          <Camera className="w-4 h-4 text-muted-foreground opacity-50" />
+                        )}
+                      </div>
+                    )}
+                    <p className="text-[10px] text-muted-foreground leading-tight">
+                      {proof.label}
+                      {!proof.required && !proof.url && ' — not signed'}
+                    </p>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-1.5 text-xs text-muted-foreground">
+          <p className="font-medium text-foreground">Auto-captured</p>
+          <p className="flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            {po.time_out
+              ? format(new Date(po.time_out), 'MMM d, yyyy · h:mm a')
+              : 'Not yet closed out'}
+          </p>
+          {/* Delivery gained GPS on 2026-07-27; the fix rides along with the
+              stop's photo, so a stop with no photo has no location either. */}
+          <p className="flex items-center gap-1.5">
+            <MapPin className="w-3.5 h-3.5 shrink-0" />
+            {po.gps_lat !== null
+              ? `${po.gps_lat.toFixed(4)}° N, ${po.gps_lng?.toFixed(4)}° E`
+              : 'No GPS captured'}
+          </p>
+        </div>
+
+        {po.remarks && (
+          <p className="text-xs">
+            <span className="text-muted-foreground">Remarks: </span>
+            {po.remarks}
+          </p>
+        )}
+      </div>
+    </>
+  )
+}
