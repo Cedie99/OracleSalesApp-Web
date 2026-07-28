@@ -387,7 +387,46 @@ const noProofs = {
   delivery_receipt_photo_url: null,
 }
 
-const collectionVisitSeed: Omit<CollectionVisit, 'client' | 'collector'>[] = [
+/**
+ * Who is currently EN ROUTE (migration 046), keyed by row id. Kept out of the
+ * seed literals so the claim state reads as one list you can scan, rather than
+ * three fields buried in thirty rows — and because the claimer's NAME is
+ * denormalized onto the row in production, so it's derived here too.
+ *
+ * Exercises both cases the board renders: a live claim on today's list, and a
+ * stale one left on yesterday's unworked store.
+ *
+ * Every claimer here is distinct, because they must be: the partial unique
+ * index in 046 permits one ACTIVE (pending) claim per person, and every row
+ * below is pending. Reusing a collector would encode a state the database
+ * rejects.
+ */
+const CLAIMS: Record<string, { by: string; at: string }> = {
+  'cv-12': { by: 'col-2', at: daysAgo(0, 10, 5) },
+  'cv-14': { by: 'col-1', at: daysAgo(1, 15, 50) },
+  'po-14': { by: 'del-1', at: daysAgo(0, 8, 40) },
+  'po-15': { by: 'del-2', at: daysAgo(0, 9, 30) },
+}
+
+/** The claim triplet for a row — all three columns or all three null. */
+function claimFor(id: string) {
+  const claim = CLAIMS[id]
+  if (!claim) return { claimed_by: null, claimed_at: null, claimed_by_name: null }
+  return {
+    claimed_by: claim.by,
+    claimed_at: claim.at,
+    claimed_by_name: staffById(claim.by)?.full_name ?? null,
+  }
+}
+
+// `client_name`/`area` are omitted from the seed and derived at map time below,
+// which is exactly what the real insert does — they are a copy of the client
+// taken when the admin publishes the row (migration 045), not hand-authored.
+// The claim fields are omitted for the same reason — see CLAIMS above.
+const collectionVisitSeed: Omit<
+  CollectionVisit,
+  'client' | 'collector' | 'client_name' | 'area' | 'claimed_by' | 'claimed_at' | 'claimed_by_name'
+>[] = [
   {
     id: 'cv-1', collector_id: 'col-1', client_id: 'client-1', status: 'collected',
     ...listedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
@@ -503,11 +542,29 @@ const collectionVisitSeed: Omit<CollectionVisit, 'client' | 'collector'>[] = [
     gps_lat: null, gps_lng: null,
     remarks: null, rescheduled_to: null, visited_at: null, created_at: daysAgo(0, 9, 15),
   },
+  // Yesterday's list, never closed out — and still claimed (see CLAIMS below).
+  // The whole-day rule says this shouldn't exist; nothing enforces it, so the
+  // admin board has to surface it. Exercises the stale-claim path.
+  {
+    id: 'cv-14', collector_id: null, client_id: 'client-6', status: 'pending',
+    ...listedBy, scheduled_for: daysAgo(1, 8), listed_at: daysAgo(2, 16, 30),
+    amount_due: 6400, amount_collected: null, payment_method: null, ...noProofs,
+    gps_lat: null, gps_lng: null,
+    remarks: null, rescheduled_to: null, visited_at: null, created_at: daysAgo(2, 16, 30),
+  },
 ]
 
-export const mockCollectionVisits: CollectionVisit[] = collectionVisitSeed.map(v => ({
-  ...v, client: clientById(v.client_id), collector: staffById(v.collector_id),
-}))
+export const mockCollectionVisits: CollectionVisit[] = collectionVisitSeed.map(v => {
+  const client = clientById(v.client_id)
+  return {
+    ...v,
+    client_name: client?.company_name ?? null,
+    area: client?.city ?? null,
+    ...claimFor(v.id),
+    client,
+    collector: staffById(v.collector_id),
+  }
+})
 
 const remittanceSeed: Omit<Remittance, 'collector'>[] = [
   {
@@ -603,7 +660,13 @@ const unrun = {
 /** The representative's signature, the way every row on the paper sheet carries one. */
 const signed = (seed: string) => `https://picsum.photos/seed/${seed}/400/160`
 
-const purchaseOrderSeed: Omit<PurchaseOrder, 'client' | 'driver'>[] = [
+// `client_name` and the claim fields are derived at map time — see the notes on
+// collectionVisitSeed and CLAIMS. `area` stays hand-authored here: on delivery
+// the admin types it on the form.
+const purchaseOrderSeed: Omit<
+  PurchaseOrder,
+  'client' | 'driver' | 'client_name' | 'claimed_by' | 'claimed_at' | 'claimed_by_name'
+>[] = [
   // --- Today's trip list: published last night, half run ---------------------
   {
     // Stop 1 of Dennis's run. The sequence came from the order he actually
@@ -793,9 +856,16 @@ const purchaseOrderSeed: Omit<PurchaseOrder, 'client' | 'driver'>[] = [
   },
 ]
 
-export const mockPurchaseOrders: PurchaseOrder[] = purchaseOrderSeed.map(po => ({
-  ...po, client: clientById(po.client_id), driver: staffById(po.driver_id),
-}))
+export const mockPurchaseOrders: PurchaseOrder[] = purchaseOrderSeed.map(po => {
+  const client = clientById(po.client_id)
+  return {
+    ...po,
+    client_name: client?.company_name ?? null,
+    ...claimFor(po.id),
+    client,
+    driver: staffById(po.driver_id),
+  }
+})
 
 // COD remittances. Office-only by design (2026-07-25, Addendum 4) — the driver's
 // Remit screen dropped the 7-11 and bank-deposit destinations, so there is no

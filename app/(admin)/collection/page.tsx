@@ -69,7 +69,7 @@ export default function CollectionPage() {
   const { profile } = useCurrentProfile()
 
   const {
-    visits, loading: visitsLoading, error: visitsError, createVisit, removeVisit,
+    visits, loading: visitsLoading, error: visitsError, createVisit, removeVisit, cancelClaim,
   } = useCollectionVisits()
   const { remittances: allRemittances, error: remittancesError } = useRemittances()
   const { clients } = useClients()
@@ -173,17 +173,29 @@ export default function CollectionPage() {
 
   const handleAdd = useCallback(
     async (draft: AddStoreDraft) => {
+      // The name and city travel ONTO the row (migration 045): the collector's
+      // phone has no RLS read on `clients`, so a store published without them
+      // shows up blank on the list. Refuse rather than publish a nameless row —
+      // the admin can only have got here by picking from this same list.
+      const client = clients.find(c => c.id === draft.clientId)
+      if (!client) {
+        setActionError('That customer could not be found. Refresh and try again.')
+        return
+      }
+
       // Everything the collector fills in is left to the database defaults —
       // the store belongs to nobody until someone actually works it.
       const message = await createVisit({
         clientId: draft.clientId,
+        clientName: client.company_name,
+        area: client.city ?? null,
         scheduledFor: draft.scheduledFor,
         amountDue: draft.amountDue,
         listedBy: profile?.id ?? null,
       })
       setActionError(message ?? '')
     },
-    [createVisit, profile?.id]
+    [createVisit, clients, profile?.id]
   )
 
   /** Only ever called for stores no collector has touched — see ListBoard. */
@@ -193,6 +205,19 @@ export default function CollectionPage() {
       setActionError(message ?? '')
     },
     [removeVisit]
+  )
+
+  /**
+   * Release a collector's hold so the store goes back in the pool. Claims never
+   * expire, and a collector may only hold one at a time, so a claim left on an
+   * unworked store blocks that person entirely until an admin clears it.
+   */
+  const handleCancelClaim = useCallback(
+    async (visit: CollectionVisit) => {
+      const message = await cancelClaim(visit.id)
+      setActionError(message ?? '')
+    },
+    [cancelClaim]
   )
 
   const listedByName = selectedVisit
@@ -338,6 +363,7 @@ export default function CollectionPage() {
               onOpenVisit={setSelectedVisit}
               onAddStore={handleAddStoreToDay}
               onRemoveStore={handleRemoveStore}
+              onCancelClaim={handleCancelClaim}
             />
           </TabsContent>
 
