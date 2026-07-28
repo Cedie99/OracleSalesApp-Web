@@ -17,6 +17,21 @@ export function canManageUsers(role: UserRole | null | undefined): boolean {
   return role === 'superadmin'
 }
 
+/**
+ * Shortest password a superadmin may issue, on both create and reset. Lives
+ * here rather than beside the actions because a 'use server' module can only
+ * export async functions, and the form validates against the same number.
+ */
+export const PASSWORD_MIN_LENGTH = 8
+
+/**
+ * Pre-filled into the create and reset password fields so the common case is
+ * one click and the admin always knows what to read out. It is a starting
+ * value, not a rule — the field stays editable, and anyone issuing credentials
+ * to an account that matters should type something else.
+ */
+export const DEFAULT_PASSWORD = 'Opc1985!'
+
 // --- Admin scope (migration 024) -------------------------------------------
 
 export const ADMIN_SCOPES: AdminScope[] = ['all', 'sales', 'collection', 'delivery']

@@ -16,20 +16,22 @@ import { usePagination } from '@/lib/hooks/use-pagination'
 import {
   Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
   MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
-  Monitor, Smartphone, Truck, CircleHelp, ImagePlus, Trash2,
+  Monitor, Smartphone, Truck, CircleHelp, ImagePlus, Trash2, KeyRound,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { createClient } from '@/lib/supabase/client'
-import { createUser, updateUser, toggleUserStatus, uploadUserAvatar, removeUserAvatar } from './actions'
+import {
+  createUser, updateUser, toggleUserStatus, uploadUserAvatar, removeUserAvatar, resetUserPassword,
+} from './actions'
 import {
   AVATAR_ACCEPT_ATTR, AVATAR_ACCEPTED_TYPES, AVATAR_MAX_SOURCE_BYTES, resizeAvatar,
 } from '@/lib/avatar'
 import {
   ADMIN_SCOPES, ADMIN_SCOPE_DESCRIPTION, ADMIN_SCOPE_LABEL, adminScope,
-  canManageUsers, platformForRole, roleScopeLabel,
+  canManageUsers, platformForRole, roleScopeLabel, PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD,
 } from '@/lib/permissions'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { teamIdsForRole } from '@/lib/teams'
@@ -103,7 +105,8 @@ interface UserFormData {
 const EMPTY_FORM: UserFormData = {
   full_name: '',
   email: '',
-  password: '',
+  // Pre-filled, not forced — the admin can overwrite it before saving.
+  password: DEFAULT_PASSWORD,
   role: 'sales_specialist',
   admin_scope: 'all',
   team_id: '',
@@ -127,6 +130,15 @@ export default function UsersPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  // Password reset keeps its own state: it is a separate dialog from the
+  // create/edit form and must not inherit a half-filled UserFormData.
+  const [resetTarget, setResetTarget] = useState<UserRow | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
+  const [resetConfirm, setResetConfirm] = useState('')
+  const [showResetPassword, setShowResetPassword] = useState(false)
+  const [resetError, setResetError] = useState('')
 
   // Avatar lives outside UserFormData because it is a File, not a text field.
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
@@ -301,7 +313,9 @@ export default function UsersPage() {
     if (!form.email.trim()) return 'Email is required.'
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return 'Enter a valid email address.'
     if (isCreate && !form.password) return 'Password is required.'
-    if (isCreate && form.password.length < 8) return 'Password must be at least 8 characters.'
+    if (isCreate && form.password.length < PASSWORD_MIN_LENGTH) {
+      return `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`
+    }
     return ''
   }
 
@@ -354,6 +368,39 @@ export default function UsersPage() {
     if (!error) loadUsers()
   }
 
+  function openReset(user: UserRow) {
+    // Pre-filled with the default so the usual "they forgot it" case is one
+    // click, and visible by default so the admin can read it out as-is.
+    setResetPassword(DEFAULT_PASSWORD)
+    setResetConfirm(DEFAULT_PASSWORD)
+    setShowResetPassword(true)
+    setResetError('')
+    setNotice('')
+    setResetTarget(user)
+  }
+
+  async function handleReset() {
+    if (!resetTarget) return
+    if (resetPassword.length < PASSWORD_MIN_LENGTH) {
+      setResetError(`Password must be at least ${PASSWORD_MIN_LENGTH} characters.`)
+      return
+    }
+    // The admin reads this out to the agent, so a typo here locks them out of
+    // an account that reports itself as reset. Confirm before sending.
+    if (resetPassword !== resetConfirm) {
+      setResetError('The two passwords do not match.')
+      return
+    }
+
+    setSaving(true)
+    const { error } = await resetUserPassword(resetTarget.id, resetPassword)
+    setSaving(false)
+    if (error) { setResetError(error); return }
+
+    setNotice(`Password updated for ${resetTarget.full_name}. Give it to them directly — they will not receive an email.`)
+    setResetTarget(null)
+  }
+
   return (
     <div className="flex flex-col flex-1">
       <Header title="User Management" subtitle={`${counts.active} active · ${counts.total} total users`} />
@@ -363,6 +410,12 @@ export default function UsersPage() {
         {fetchError && (
           <Alert variant="destructive">
             <AlertDescription>{fetchError}</AlertDescription>
+          </Alert>
+        )}
+
+        {notice && (
+          <Alert>
+            <AlertDescription>{notice}</AlertDescription>
           </Alert>
         )}
 
@@ -551,6 +604,10 @@ export default function UsersPage() {
                                     <Pencil className="w-3.5 h-3.5" />
                                     Edit
                                   </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => openReset(user)} className="gap-2">
+                                    <KeyRound className="w-3.5 h-3.5" />
+                                    Reset Password
+                                  </DropdownMenuItem>
                                   <DropdownMenuItem
                                     onClick={() => handleToggleStatus(user)}
                                     className={`gap-2 ${user.is_active ? 'text-destructive focus:text-destructive' : ''}`}
@@ -626,6 +683,73 @@ export default function UsersPage() {
             <Button variant="outline" onClick={() => setEditTarget(null)} disabled={saving}>Cancel</Button>
             <Button onClick={handleEdit} disabled={saving}>
               {saving ? 'Saving…' : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reset Password Dialog */}
+      <Dialog open={!!resetTarget} onOpenChange={open => { if (!saving && !open) setResetTarget(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reset Password</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Sets a new password for{' '}
+              <span className="font-medium text-foreground">{resetTarget?.full_name}</span>{' '}
+              ({resetTarget?.email}). They are not notified — pass it on directly.
+            </p>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="reset-password">New Password</Label>
+              <div className="relative">
+                <Input
+                  id="reset-password"
+                  type={showResetPassword ? 'text' : 'password'}
+                  placeholder={`Min. ${PASSWORD_MIN_LENGTH} characters`}
+                  value={resetPassword}
+                  onChange={e => { setResetPassword(e.target.value); setResetError('') }}
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowResetPassword(!showResetPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showResetPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {resetPassword === DEFAULT_PASSWORD && (
+                <p className="text-xs text-muted-foreground">
+                  This is the shared default. Type a different one for admin accounts.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="reset-confirm">Confirm Password</Label>
+              <Input
+                id="reset-confirm"
+                type={showResetPassword ? 'text' : 'password'}
+                placeholder="Re-enter the password"
+                value={resetConfirm}
+                onChange={e => { setResetConfirm(e.target.value); setResetError('') }}
+              />
+            </div>
+          </div>
+
+          {resetError && (
+            <Alert variant="destructive" className="py-2">
+              <AlertDescription className="text-xs">{resetError}</AlertDescription>
+            </Alert>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResetTarget(null)} disabled={saving}>Cancel</Button>
+            <Button onClick={handleReset} disabled={saving}>
+              {saving ? 'Resetting…' : 'Reset Password'}
             </Button>
           </DialogFooter>
         </DialogContent>
