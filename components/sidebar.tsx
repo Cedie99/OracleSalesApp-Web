@@ -34,10 +34,17 @@ interface NavGroup {
 /**
  * Grouped by what the sections actually mean to an admin, not by page count.
  *
- * SALES holds the entity spine (Clients -> Meetings) plus its two lenses: Maps is
- * those same clients plotted geographically, and Lost Opportunities is literally
- * `clients.filter(status === 'lost')` with the 14-day reassignment rule layered on.
- * They sit beside Clients because that is what they are views of.
+ * DASHBOARD and MAPS lead, unheadered, because they are the two pages every
+ * scope reaches — each one renders its own function's data (see
+ * `useAdminModules`). Maps used to sit inside SALES, which was true when it only
+ * plotted client meetings but stopped being true once Collection and Delivery
+ * got trip tracking; worse, it left a Collection Admin staring at a "SALES"
+ * header with a single Maps link under it, since every other item in that group
+ * was filtered away. Leading the nav is what it actually is now.
+ *
+ * SALES is the entity spine (Clients -> Meetings) plus Lost Opportunities, which
+ * is literally `clients.filter(status === 'lost')` with the 14-day reassignment
+ * rule layered on — it sits beside Clients because that is what it is a view of.
  *
  * MANAGEMENT is the oversight surface — the things an admin acts on or exports,
  * rather than the records themselves. ADMIN is account administration only.
@@ -46,14 +53,16 @@ function buildNavGroups(pendingApprovals: number): NavGroup[] {
   return [
     {
       label: null,
-      items: [{ href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard }],
+      items: [
+        { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+        { href: '/maps', label: 'Maps', icon: Map },
+      ],
     },
     {
       label: 'Sales',
       items: [
         { href: '/clients', label: 'Clients', icon: Users },
         { href: '/meetings', label: 'Meetings', icon: CalendarCheck },
-        { href: '/maps', label: 'Maps', icon: Map },
         { href: '/lost-opportunities', label: 'Lost Opportunities', icon: AlertTriangle },
       ],
     },

@@ -1,4 +1,4 @@
-import type { Client, ClientStatus, CustomerType, Meeting, MeetingOutcome, MeetingType } from '@/types'
+import type { Client, ClientStatus, CustomerType, Meeting, MeetingOutcome } from '@/types'
 
 export type MapStatus = CustomerType | Extract<ClientStatus, 'lost'>
 
@@ -85,22 +85,21 @@ export const TILE_LAYERS = {
 export type MapTileType = keyof typeof TILE_LAYERS
 
 /**
- * How each meeting mode reads on the meetings-tracking map. A meeting only earns
- * a pin when it was captured face-to-face WITH GPS; online meetings are recorded
- * from wherever the agent dialled in, so they carry no location and stay in the
- * list rather than on the map.
+ * A meeting we can drop a pin for: one carrying real coordinates.
+ *
+ * Meeting mode is deliberately NOT part of this test. Mobile gates every save on
+ * a GPS fix with no branch on mode (`app/(tabs)/meetings/record.tsx` — "GPS
+ * Required") and writes it unconditionally (`lib/meeting-service.ts`), typing
+ * its own `gps_lat` as a non-nullable number. Online meetings therefore DO carry
+ * coordinates: wherever the agent dialled in from.
+ *
+ * Caveat that matters when reading the map: a pin marks where the AGENT stood,
+ * which for an online meeting is not the client's premises. Do not reuse these
+ * coordinates as a client's location — see the note on `Client.office_lat` in
+ * types/index.ts, and the office-map boundary in the 2026-07-25 sales meeting.
  */
-export const MEETING_TYPE_META: Record<
-  MeetingType,
-  { label: string; plottable: boolean }
-> = {
-  f2f: { label: 'Face-to-face', plottable: true },
-  online: { label: 'Online', plottable: false },
-}
-
-/** A meeting we can drop a pin for: face-to-face and carrying real coordinates. */
 export function isPlottableMeeting(m: Meeting): boolean {
-  return m.meeting_type === 'f2f' && m.gps_lat != null && m.gps_lng != null
+  return m.gps_lat != null && m.gps_lng != null
 }
 
 /**
