@@ -61,6 +61,17 @@ $$;
 
 -- AFTER INSERT (not BEFORE): client_cycles.client_id has a FK to clients.id,
 -- so the clients row must already exist before we can insert the child row.
+--
+-- DROP IF EXISTS first: this trigger is already live on production (applied
+-- by hand 2026-07-29, see header note above), so a straight CREATE TRIGGER
+-- fails with "already exists" (SQLSTATE 42710) the moment CI tries to
+-- back-fill this file via `supabase db push` against a database that
+-- already has it. Dropping and recreating the identical trigger definition
+-- is a no-op in effect (same function, same timing, same table) and makes
+-- this migration safely re-runnable without a manual `migration repair`
+-- step, unlike the CREATE OR REPLACE FUNCTION statement above which was
+-- already idempotent on its own.
+drop trigger if exists open_cycle_on_client_insert on public.clients;
 create trigger open_cycle_on_client_insert
   after insert on public.clients
   for each row execute function public.trg_open_cycle_on_client_insert();
