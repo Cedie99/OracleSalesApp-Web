@@ -1,4 +1,4 @@
-import type { UserRole } from '@/types'
+import type { Profile, UserRole } from '@/types'
 
 /**
  * Fixed team IDs shared between the seed migrations (004_seed_teams.sql,
@@ -31,4 +31,15 @@ export function teamIdsForRole(role: UserRole): string[] {
   if (role === 'sales_specialist') return SALES_TEAM_IDS
   if (role === 'rsr') return RSR_TEAM_IDS
   return []
+}
+
+/**
+ * The sales_manager profile leading a team — a team's manager isn't a
+ * separate role, just the active sales_manager who shares that `team_id`
+ * (see migration 010: the old rsr_manager role was folded into sales_manager,
+ * with team_id deciding whether they lead a sales or RSR team).
+ */
+export function managerForTeam(teamId: string | null | undefined, managers: Profile[]): Profile | undefined {
+  if (!teamId) return undefined
+  return managers.find(m => m.team_id === teamId && m.is_active !== false)
 }

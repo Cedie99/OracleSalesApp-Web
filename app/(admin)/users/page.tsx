@@ -35,7 +35,7 @@ import {
   canManageUsers, platformForRole, roleScopeLabel, PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD,
 } from '@/lib/permissions'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import { teamIdsForRole } from '@/lib/teams'
+import { teamIdsForRole, managerForTeam } from '@/lib/teams'
 import type { AdminScope, UserRole } from '@/types'
 import { PLATFORM_TONE, ROLE_TONE, TONE_CLASS, TONE_TEXT, roleTone } from '@/lib/status-styles'
 
@@ -751,7 +751,7 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Create New User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} canCreateAdmins={canManage}
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} users={users} canCreateAdmins={canManage}
             avatarPreview={avatarPreview} onAvatarPick={handleAvatarPick} onAvatarClear={handleAvatarClear} />
           {formError && (
             <Alert variant="destructive" className="py-2">
@@ -773,7 +773,7 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} canCreateAdmins={canManage}
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} users={users} canCreateAdmins={canManage}
             avatarPreview={avatarPreview} onAvatarPick={handleAvatarPick} onAvatarClear={handleAvatarClear} />
           {formError && (
             <Alert variant="destructive" className="py-2">
@@ -902,6 +902,7 @@ interface UserFormProps {
   setShowPassword: (v: boolean) => void
   isCreate: boolean
   teams: TeamRow[]
+  users: UserRow[]
   canCreateAdmins: boolean
   avatarPreview: string | null
   onAvatarPick: (file: File) => void
@@ -909,7 +910,7 @@ interface UserFormProps {
 }
 
 function UserForm({
-  form, setForm, showPassword, setShowPassword, isCreate, teams, canCreateAdmins,
+  form, setForm, showPassword, setShowPassword, isCreate, teams, users, canCreateAdmins,
   avatarPreview, onAvatarPick, onAvatarClear,
 }: UserFormProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -931,6 +932,13 @@ function UserForm({
   }
 
   const availableTeams = teams.filter(t => teamIdsForRole(form.role).includes(t.id))
+  const managers = users.filter(u => u.role === 'sales_manager')
+
+  function managerNameForTeam(teamId: string): string | undefined {
+    return managerForTeam(teamId, managers)?.full_name
+  }
+
+  const selectedTeamManager = form.team_id ? managerNameForTeam(form.team_id) : undefined
 
   return (
     <div className="space-y-4 py-2">
@@ -1089,16 +1097,28 @@ function UserForm({
           onValueChange={v => set('team_id', v === 'none' ? '' : (v ?? ''))}
           disabled={availableTeams.length === 0}
         >
-          <SelectTrigger>
+          <SelectTrigger className="w-full">
             <SelectValue placeholder={availableTeams.length === 0 ? 'This role has no teams' : 'No team'} />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className="min-w-[280px]">
             <SelectItem value="none">No team</SelectItem>
-            {availableTeams.map(t => (
-              <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-            ))}
+            {availableTeams.map(t => {
+              const manager = managerNameForTeam(t.id)
+              return (
+                <SelectItem key={t.id} value={t.id}>
+                  {`${t.name} — ${manager ?? 'No manager assigned'}`}
+                </SelectItem>
+              )
+            })}
           </SelectContent>
         </Select>
+        {form.team_id && (
+          <p className="text-xs text-muted-foreground">
+            {selectedTeamManager
+              ? <>Managed by <span className="text-foreground font-medium">{selectedTeamManager}</span></>
+              : 'No manager is currently assigned to this team.'}
+          </p>
+        )}
       </div>
     </div>
   )
