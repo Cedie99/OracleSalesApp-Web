@@ -68,6 +68,10 @@ create index if not exists idx_client_edit_requests_requester_status
 create index if not exists idx_client_edit_requests_status_created
   on public.client_edit_requests (status, created_at desc);
 
+create index if not exists idx_client_edit_requests_reviewed_by
+  on public.client_edit_requests (reviewed_by)
+  where reviewed_by is not null;
+
 comment on column public.client_edit_requests.review_note is
   'Manager''s reason/comment on decision. Singular, matches po_confirmation_requests.decision_note naming (ADR-052).';
 comment on column public.client_edit_requests.base_updated_at is

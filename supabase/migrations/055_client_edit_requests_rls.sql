@@ -31,14 +31,27 @@
 -- below) so the Manager Approvals page can display eligible requests.
 -- ============================================================================
 
--- P1 — Requester (sales_specialist/rsr/sales_manager) creates own request
--- for a client currently assigned to them, not lost.
+-- P1 — Requester (sales_specialist/rsr only -- ADR-052 decision 1: a
+-- sales_manager editing their own client always uses the direct-apply path
+-- (updateClientInfo()) and must never create a client_edit_requests row.
+-- Without this check, a sales_manager could INSERT a self-request and then
+-- approve it via decide_client_edit_request(), since
+-- is_manager_of_profile(own_id) trivially returns true for a manager
+-- checking themselves -- that helper has no self-check exclusion. The role
+-- check below closes that gap at the RLS layer instead of relying solely on
+-- the app-layer branch in app/(tabs)/clients/complete.tsx. Creates own
+-- request for a client currently assigned to them, not lost.
 drop policy if exists "Requester creates own client edit request" on public.client_edit_requests;
 create policy "Requester creates own client edit request" on public.client_edit_requests
   for insert with check (
     requested_by = public.current_profile_id()
     and status = 'pending'
     and base_updated_at is not null
+    and exists (
+      select 1 from public.profiles p
+      where p.id = requested_by
+        and p.role in ('sales_specialist', 'rsr')
+    )
     and exists (
       select 1 from public.clients c
       where c.id = client_id
