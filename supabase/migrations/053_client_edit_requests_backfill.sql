@@ -40,6 +40,24 @@ set base_updated_at = c.updated_at
 from public.clients c
 where r.client_id = c.id and r.base_updated_at is null;
 
+-- Fallback for any row the join above couldn't reach (e.g. an orphaned
+-- client_id with no matching live clients row) -- ADR-052 specifies
+-- base_updated_at TIMESTAMPTZ NOT NULL, and a null here would silently break
+-- decide_client_edit_request()'s base-conflict comparison (a null IS
+-- DISTINCT FROM comparison is well-defined in Postgres, but we don't want to
+-- depend on that subtlety for correctness). now() is a safe fallback: it
+-- guarantees any future clients.updated_at will differ from it, so an
+-- orphaned/unmatched row correctly falls into the base_conflict path instead
+-- of silently passing or failing the check. Flagging this choice rather than
+-- applying it silently, per instruction -- this only fires if the data has
+-- pre-existing orphan rows, which have not been confirmed to exist.
+update public.client_edit_requests
+set base_updated_at = now()
+where base_updated_at is null;
+
+alter table public.client_edit_requests
+  alter column base_updated_at set not null;
+
 create unique index if not exists uq_client_edit_requests_one_pending
   on public.client_edit_requests (client_id)
   where status = 'pending';

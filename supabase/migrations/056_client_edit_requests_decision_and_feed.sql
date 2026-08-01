@@ -9,6 +9,16 @@
 -- spec (plain TEXT status code), not decide_po_confirmation()'s jsonb
 -- {ok, code} shape -- see Batch 6 migration report for that deviation.
 --
+-- decide_client_edit_request() relies solely on being SECURITY DEFINER to
+-- perform its UPDATEs on client_edit_requests/clients -- it runs with the
+-- function owner's privileges and bypasses RLS, so it needs neither a
+-- caller-facing UPDATE RLS policy nor an explicit GRANT UPDATE on either
+-- table. Matches decide_po_confirmation() (039_po_confirmation_requests.sql),
+-- which likewise has no manager UPDATE policy and no table-level UPDATE
+-- GRANT -- only EXECUTE on the function itself is granted to `authenticated`
+-- (migration 055 intentionally has no manager UPDATE policy for the same
+-- reason).
+--
 -- get_manager_approval_feed() / get_my_request_statuses() (both defined in
 -- 042_manager_approval_feed_rpcs.sql) gain a third UNION ALL branch for
 -- client_edit_requests, column-for-column identical to the existing
