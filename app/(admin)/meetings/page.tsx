@@ -15,6 +15,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useMeetings } from '@/lib/hooks/use-meetings'
+import { useProfiles } from '@/lib/hooks/use-profiles'
 import type { Meeting, MeetingOutcome } from '@/types'
 import {
   Search, CalendarCheck, MapPin, Camera, Video, Navigation, Users, CheckCircle2, Loader2,
@@ -22,7 +23,7 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
-import { CATEGORY_LABEL, categoryForAgent, type TeamCategory } from '@/lib/teams'
+import { managerForTeam } from '@/lib/teams'
 
 /**
  * Keys are normalised (see `agendaIcon`) rather than written as the mobile app
@@ -88,10 +89,18 @@ export default function MeetingsPage() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [selected, setSelected] = useState<Meeting | null>(null)
   const [sort, setSort] = useState<SortState>({ key: 'date', dir: 'desc' })
-  const [expandedCategory, setExpandedCategory] = useState<TeamCategory | null>(null)
+  const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const { meetings, loading, error } = useMeetings()
+  const { byRole } = useProfiles()
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+
+  // The actual managers, so the top of the hierarchy lists real people instead
+  // of a generic RSR/Sales bucket — same rule as the Clients page.
+  const managers = useMemo(
+    () => [...byRole(['sales_manager'])].sort((a, b) => a.full_name.localeCompare(b.full_name)),
+    [byRole],
+  )
 
   const counts = {
     total: meetings.length,
@@ -117,8 +126,8 @@ export default function MeetingsPage() {
   })
 
   // Group meetings by agent so the table isn't a wall of every agent's rows at
-  // once — same Teams -> agents -> records drill-down as the Clients page.
-  interface AgentGroup { agentId: string; agentName: string; category: TeamCategory; meetings: Meeting[] }
+  // once — same manager -> agents -> records drill-down as the Clients page.
+  interface AgentGroup { agentId: string; agentName: string; managerKey: string; meetings: Meeting[] }
   const groups = useMemo(() => {
     const map = new Map<string, AgentGroup>()
     for (const m of filtered) {
@@ -126,23 +135,32 @@ export default function MeetingsPage() {
       const agentName = m.agent?.full_name ?? 'Unassigned'
       let group = map.get(agentId)
       if (!group) {
-        group = { agentId, agentName, category: categoryForAgent(m.agent), meetings: [] }
+        const managerKey = managerForTeam(m.agent?.team_id, managers)?.id ?? 'unassigned'
+        group = { agentId, agentName, managerKey, meetings: [] }
         map.set(agentId, group)
       }
       group.meetings.push(m)
     }
     return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
-  }, [filtered])
+  }, [filtered, managers])
 
-  const categories = useMemo(() => {
-    return (['rsr', 'sales', 'other'] as const)
-      .map(category => {
-        const catGroups = groups.filter(g => g.category === category)
-        const meetingCount = catGroups.reduce((sum, g) => sum + g.meetings.length, 0)
-        return { category, agentCount: catGroups.length, meetingCount }
+  const managerBuckets = useMemo(() => {
+    const buckets = managers.map(m => {
+      const managerGroups = groups.filter(g => g.managerKey === m.id)
+      const meetingCount = managerGroups.reduce((sum, g) => sum + g.meetings.length, 0)
+      return { key: m.id, label: m.full_name, agentCount: managerGroups.length, meetingCount }
+    })
+    const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
+    if (unassignedGroups.length > 0) {
+      buckets.push({
+        key: 'unassigned',
+        label: 'Unassigned',
+        agentCount: unassignedGroups.length,
+        meetingCount: unassignedGroups.reduce((sum, g) => sum + g.meetings.length, 0),
       })
-      .filter(c => c.category !== 'other' || c.agentCount > 0)
-  }, [groups])
+    }
+    return buckets
+  }, [managers, groups])
 
   const selectedGroup = selectedAgentId ? groups.find(g => g.agentId === selectedAgentId) ?? null : null
 
@@ -280,19 +298,19 @@ export default function MeetingsPage() {
 
         {!loading && !error && !selectedGroup && (
           <>
-            {/* Teams — click a manager to drop down its agents right below it */}
+            {/* Managers — click one to drop down their team's agents right below it */}
             <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-              Teams
+              Managers
             </p>
             <div className="space-y-3">
-              {categories.map(({ category, agentCount, meetingCount }) => {
-                const isOpen = expandedCategory === category
-                const catGroups = groups.filter(g => g.category === category)
+              {managerBuckets.map(({ key, label, agentCount, meetingCount }) => {
+                const isOpen = expandedManagerKey === key
+                const bucketGroups = groups.filter(g => g.managerKey === key)
                 return (
-                  <div key={category} className="rounded-lg border border-border bg-card overflow-hidden">
+                  <div key={key} className="rounded-lg border border-border bg-card overflow-hidden">
                     <button
                       type="button"
-                      onClick={() => setExpandedCategory(isOpen ? null : category)}
+                      onClick={() => setExpandedManagerKey(isOpen ? null : key)}
                       aria-expanded={isOpen}
                       className="w-full flex items-center justify-between gap-3 p-4 text-left hover:bg-muted/50 transition-colors"
                     >
@@ -301,7 +319,7 @@ export default function MeetingsPage() {
                           <Users className="w-4 h-4 text-primary" />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-sm font-semibold text-foreground truncate">{CATEGORY_LABEL[category]}</p>
+                          <p className="text-sm font-semibold text-foreground truncate">{label}</p>
                           <p className="text-xs text-muted-foreground">
                             {agentCount} agent{agentCount === 1 ? '' : 's'} · {meetingCount} meeting{meetingCount === 1 ? '' : 's'}
                           </p>
@@ -313,9 +331,9 @@ export default function MeetingsPage() {
                     {isOpen && (
                       <div className="bg-muted/40 border-t border-border p-4 pl-6 space-y-2.5">
                         <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                          Agents under {CATEGORY_LABEL[category]}
+                          Agents under {label}
                         </p>
-                        {catGroups.map(group => (
+                        {bucketGroups.map(group => (
                           <button
                             key={group.agentId}
                             type="button"

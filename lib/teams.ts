@@ -33,27 +33,13 @@ export function teamIdsForRole(role: UserRole): string[] {
   return []
 }
 
-/** Which side of the org an agent's team falls under, for hierarchy views (Clients, Meetings). */
-export type TeamCategory = 'rsr' | 'sales' | 'other'
-
-export const CATEGORY_LABEL: Record<TeamCategory, string> = {
-  rsr: 'RSR Department',
-  sales: 'Sales Department',
-  other: 'Other',
-}
-
 /**
- * The agent's `role` decides the category directly for individual contributors
- * ('rsr' and 'sales_specialist' are unambiguous). A 'sales_manager' can lead
- * either kind of team, so that case falls back to `team_id` membership.
+ * The sales_manager profile leading a team — a team's manager isn't a
+ * separate role, just the active sales_manager who shares that `team_id`
+ * (see migration 010: the old rsr_manager role was folded into sales_manager,
+ * with team_id deciding whether they lead a sales or RSR team).
  */
-export function categoryForAgent(agent: Profile | undefined): TeamCategory {
-  if (!agent) return 'other'
-  if (agent.role === 'rsr') return 'rsr'
-  if (agent.role === 'sales_specialist') return 'sales'
-  if (agent.role === 'sales_manager') {
-    if (agent.team_id && RSR_TEAM_IDS.includes(agent.team_id)) return 'rsr'
-    if (agent.team_id && SALES_TEAM_IDS.includes(agent.team_id)) return 'sales'
-  }
-  return 'other'
+export function managerForTeam(teamId: string | null | undefined, managers: Profile[]): Profile | undefined {
+  if (!teamId) return undefined
+  return managers.find(m => m.team_id === teamId && m.is_active !== false)
 }
