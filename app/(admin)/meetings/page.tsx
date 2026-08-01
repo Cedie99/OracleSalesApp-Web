@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -17,10 +18,11 @@ import { useMeetings } from '@/lib/hooks/use-meetings'
 import type { Meeting, MeetingOutcome } from '@/types'
 import {
   Search, CalendarCheck, MapPin, Camera, Video, Navigation, Users, CheckCircle2, Loader2,
-  Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown,
+  Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown, ArrowLeft,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
+import { CATEGORY_LABEL, categoryForAgent, type TeamCategory } from '@/lib/teams'
 
 /**
  * Keys are normalised (see `agendaIcon`) rather than written as the mobile app
@@ -86,6 +88,8 @@ export default function MeetingsPage() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [selected, setSelected] = useState<Meeting | null>(null)
   const [sort, setSort] = useState<SortState>({ key: 'date', dir: 'desc' })
+  const [expandedCategory, setExpandedCategory] = useState<TeamCategory | null>(null)
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const { meetings, loading, error } = useMeetings()
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
 
@@ -112,6 +116,36 @@ export default function MeetingsPage() {
     return matchSearch && matchOutcome && matchType && dateFilter.inRange(m.meeting_date)
   })
 
+  // Group meetings by agent so the table isn't a wall of every agent's rows at
+  // once — same Teams -> agents -> records drill-down as the Clients page.
+  interface AgentGroup { agentId: string; agentName: string; category: TeamCategory; meetings: Meeting[] }
+  const groups = useMemo(() => {
+    const map = new Map<string, AgentGroup>()
+    for (const m of filtered) {
+      const agentId = m.agent_id ?? 'unassigned'
+      const agentName = m.agent?.full_name ?? 'Unassigned'
+      let group = map.get(agentId)
+      if (!group) {
+        group = { agentId, agentName, category: categoryForAgent(m.agent), meetings: [] }
+        map.set(agentId, group)
+      }
+      group.meetings.push(m)
+    }
+    return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
+  }, [filtered])
+
+  const categories = useMemo(() => {
+    return (['rsr', 'sales', 'other'] as const)
+      .map(category => {
+        const catGroups = groups.filter(g => g.category === category)
+        const meetingCount = catGroups.reduce((sum, g) => sum + g.meetings.length, 0)
+        return { category, agentCount: catGroups.length, meetingCount }
+      })
+      .filter(c => c.category !== 'other' || c.agentCount > 0)
+  }, [groups])
+
+  const selectedGroup = selectedAgentId ? groups.find(g => g.agentId === selectedAgentId) ?? null : null
+
   function toggleSort(key: SortKey) {
     setSort(prev =>
       prev.key === key
@@ -120,7 +154,7 @@ export default function MeetingsPage() {
     )
   }
 
-  const sorted = [...filtered].sort((a, b) => {
+  const sorted = [...(selectedGroup?.meetings ?? [])].sort((a, b) => {
     const dir = sort.dir === 'asc' ? 1 : -1
     // Every column falls back to client name so equal rows keep a stable order.
     const byClient = (a.client?.company_name ?? '').localeCompare(b.client?.company_name ?? '', undefined, { sensitivity: 'base' })
@@ -159,7 +193,7 @@ export default function MeetingsPage() {
   })
 
   const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
-    sorted, 10, `${search}|${outcomeFilter}|${typeFilter}|${dateFilter.key}|${sort.key}|${sort.dir}`,
+    sorted, 10, `${selectedAgentId}|${search}|${outcomeFilter}|${typeFilter}|${dateFilter.key}|${sort.key}|${sort.dir}`,
   )
 
   return (
@@ -229,110 +263,200 @@ export default function MeetingsPage() {
           <DateRangeFilter filter={dateFilter} />
         </div>
 
-        {/* Table */}
-        <Card className="bg-card border-border overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border">
-                  <SortHeader label="Client" sortKey="client" sort={sort} onSort={toggleSort} />
-                  <SortHeader label="Agent" sortKey="agent" sort={sort} onSort={toggleSort} />
-                  <SortHeader label="Type" sortKey="type" sort={sort} onSort={toggleSort} />
-                  <SortHeader label="Location" sortKey="location" sort={sort} onSort={toggleSort} />
-                  <SortHeader label="Date" sortKey="date" sort={sort} onSort={toggleSort} />
-                  <SortHeader label="Outcome" sortKey="outcome" sort={sort} onSort={toggleSort} />
-                  <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Flags</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {pageItems.map(m => (
-                  <tr
-                    key={m.id}
-                    onClick={() => setSelected(m)}
-                    className="hover:bg-muted/20 cursor-pointer transition-colors"
-                  >
-                    <td className="px-4 py-3">
-                      <p className="font-medium text-foreground truncate max-w-[160px]">{m.client?.company_name}</p>
-                      <p className="text-xs text-muted-foreground">{m.contact_person}</p>
-                    </td>
-                    <td className="px-4 py-3">
-                      <p className="text-foreground">{m.agent?.full_name}</p>
-                      {m.recorder && (
-                        <p className="text-xs text-muted-foreground">+ {m.recorder.full_name}</p>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
-                        {m.meeting_type === 'f2f'
-                          ? <Users className="w-3.5 h-3.5 text-muted-foreground" />
-                          : <Video className="w-3.5 h-3.5 text-muted-foreground" />
-                        }
-                        <span className="text-xs text-muted-foreground">
-                          {m.meeting_type === 'f2f' ? 'F2F' : m.online_platform === 'zoom' ? 'Zoom' : 'Google Meet'}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        <MapPin className="w-3 h-3 text-muted-foreground shrink-0" />
-                        <span className="text-xs text-muted-foreground truncate max-w-[120px]">
-                          {m.location_type === 'client_office' ? 'Client Office' : m.location_name}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
-                      {format(new Date(m.meeting_date), 'MMM d, yyyy')}<br/>
-                      {format(new Date(m.meeting_date), 'h:mm a')}
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[m.outcome]]}>
-                        {OUTCOME_LABEL[m.outcome]}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex gap-1.5">
-                        {m.gps_lat && <MapPin className="w-3.5 h-3.5 text-primary" />}
-                        {m.photo_url && <Camera className="w-3.5 h-3.5 text-primary" />}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            {loading && (
-              <div className="text-center py-16 text-muted-foreground">
-                <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
-                <p className="text-sm">Loading meetings…</p>
-              </div>
-            )}
-
-            {!loading && error && (
-              <div className="p-4">
-                <Alert variant="destructive">
-                  <AlertDescription className="text-xs">
-                    Couldn&apos;t load meetings: {error}
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {!loading && !error && filtered.length === 0 && (
-              <div className="text-center py-16 text-muted-foreground">
-                <CalendarCheck className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                <p className="text-sm">
-                  {meetings.length === 0 ? 'No meetings recorded yet' : 'No meetings match these filters'}
-                </p>
-              </div>
-            )}
+        {loading && (
+          <div className="text-center py-16 text-muted-foreground">
+            <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
+            <p className="text-sm">Loading meetings…</p>
           </div>
-        </Card>
+        )}
 
-        {!loading && !error && (
-          <Pagination
-            page={page} pageCount={pageCount} onPageChange={setPage}
-            from={from} to={to} total={total} itemLabel="meetings"
-          />
+        {!loading && error && (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">
+              Couldn&apos;t load meetings: {error}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!loading && !error && !selectedGroup && (
+          <>
+            {/* Teams — click a manager to drop down its agents right below it */}
+            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+              Teams
+            </p>
+            <div className="space-y-3">
+              {categories.map(({ category, agentCount, meetingCount }) => {
+                const isOpen = expandedCategory === category
+                const catGroups = groups.filter(g => g.category === category)
+                return (
+                  <div key={category} className="rounded-lg border border-border bg-card overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedCategory(isOpen ? null : category)}
+                      aria-expanded={isOpen}
+                      className="w-full flex items-center justify-between gap-3 p-4 text-left hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                          <Users className="w-4 h-4 text-primary" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-foreground truncate">{CATEGORY_LABEL[category]}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {agentCount} agent{agentCount === 1 ? '' : 's'} · {meetingCount} meeting{meetingCount === 1 ? '' : 's'}
+                          </p>
+                        </div>
+                      </div>
+                      <ChevronDown className={`w-4 h-4 text-muted-foreground shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {isOpen && (
+                      <div className="bg-muted/40 border-t border-border p-4 pl-6 space-y-2.5">
+                        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                          Agents under {CATEGORY_LABEL[category]}
+                        </p>
+                        {catGroups.map(group => (
+                          <button
+                            key={group.agentId}
+                            type="button"
+                            onClick={() => setSelectedAgentId(group.agentId)}
+                            className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-border shadow-sm text-left hover:border-primary/40 hover:bg-accent/30 transition-colors"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                                <span className="text-xs font-bold text-primary">
+                                  {group.agentName.charAt(0)}
+                                </span>
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {group.meetings.length} meeting{group.meetings.length === 1 ? '' : 's'}
+                                </p>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        )}
+
+        {!loading && !error && selectedGroup && (
+          <>
+            {/* Selected agent's meetings */}
+            <div className="space-y-3">
+              <Button variant="outline" size="sm" className="h-9 gap-2" onClick={() => setSelectedAgentId(null)}>
+                <ArrowLeft className="w-4 h-4" />
+                Back to agents
+              </Button>
+
+              <div className="flex items-center gap-3 p-4 rounded-lg border border-border bg-card">
+                <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                  <span className="text-sm font-bold text-primary">
+                    {selectedGroup.agentName.charAt(0)}
+                  </span>
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Agent</p>
+                  <p className="text-base font-semibold text-foreground truncate">{selectedGroup.agentName}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedGroup.meetings.length} meeting{selectedGroup.meetings.length === 1 ? '' : 's'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Table */}
+            <Card className="bg-card border-border overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <SortHeader label="Client" sortKey="client" sort={sort} onSort={toggleSort} />
+                      <SortHeader label="Agent" sortKey="agent" sort={sort} onSort={toggleSort} />
+                      <SortHeader label="Type" sortKey="type" sort={sort} onSort={toggleSort} />
+                      <SortHeader label="Location" sortKey="location" sort={sort} onSort={toggleSort} />
+                      <SortHeader label="Date" sortKey="date" sort={sort} onSort={toggleSort} />
+                      <SortHeader label="Outcome" sortKey="outcome" sort={sort} onSort={toggleSort} />
+                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Flags</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {pageItems.map(m => (
+                      <tr
+                        key={m.id}
+                        onClick={() => setSelected(m)}
+                        className="hover:bg-muted/20 cursor-pointer transition-colors"
+                      >
+                        <td className="px-4 py-3">
+                          <p className="font-medium text-foreground truncate max-w-[160px]">{m.client?.company_name}</p>
+                          <p className="text-xs text-muted-foreground">{m.contact_person}</p>
+                        </td>
+                        <td className="px-4 py-3">
+                          <p className="text-foreground">{m.agent?.full_name}</p>
+                          {m.recorder && (
+                            <p className="text-xs text-muted-foreground">+ {m.recorder.full_name}</p>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            {m.meeting_type === 'f2f'
+                              ? <Users className="w-3.5 h-3.5 text-muted-foreground" />
+                              : <Video className="w-3.5 h-3.5 text-muted-foreground" />
+                            }
+                            <span className="text-xs text-muted-foreground">
+                              {m.meeting_type === 'f2f' ? 'F2F' : m.online_platform === 'zoom' ? 'Zoom' : 'Google Meet'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1">
+                            <MapPin className="w-3 h-3 text-muted-foreground shrink-0" />
+                            <span className="text-xs text-muted-foreground truncate max-w-[120px]">
+                              {m.location_type === 'client_office' ? 'Client Office' : m.location_name}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                          {format(new Date(m.meeting_date), 'MMM d, yyyy')}<br/>
+                          {format(new Date(m.meeting_date), 'h:mm a')}
+                        </td>
+                        <td className="px-4 py-3">
+                          <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[m.outcome]]}>
+                            {OUTCOME_LABEL[m.outcome]}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-1.5">
+                            {m.gps_lat && <MapPin className="w-3.5 h-3.5 text-primary" />}
+                            {m.photo_url && <Camera className="w-3.5 h-3.5 text-primary" />}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {sorted.length === 0 && (
+                  <div className="text-center py-16 text-muted-foreground">
+                    <CalendarCheck className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                    <p className="text-sm">No meetings match these filters</p>
+                  </div>
+                )}
+              </div>
+            </Card>
+
+            <Pagination
+              page={page} pageCount={pageCount} onPageChange={setPage}
+              from={from} to={to} total={total} itemLabel="meetings"
+            />
+          </>
         )}
       </div>
 

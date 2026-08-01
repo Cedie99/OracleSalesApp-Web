@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -21,7 +21,7 @@ import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { createClient as createSupabaseClient } from '@/lib/supabase/client'
 import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
-import { Search, Building2, Phone, MapPin, User, Plus, RefreshCw, Loader2 } from 'lucide-react'
+import { Search, Building2, Phone, MapPin, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users } from 'lucide-react'
 import { format, addDays } from 'date-fns'
 import { toast } from 'sonner'
 import {
@@ -31,6 +31,7 @@ import {
   TONE_CLASS,
   VALUE_LABEL as LABEL,
 } from '@/lib/status-styles'
+import { CATEGORY_LABEL, categoryForAgent, type TeamCategory } from '@/lib/teams'
 
 const ASSIGNABLE_ROLES = ['sales_specialist', 'sales_manager', 'rsr']
 
@@ -71,6 +72,8 @@ export default function ClientsPage() {
   const { meetings } = useMeetings()
   const { byRole } = useProfiles()
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
+  const [expandedCategory, setExpandedCategory] = useState<TeamCategory | null>(null)
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Client | null>(null)
@@ -100,8 +103,42 @@ export default function ClientsPage() {
     return matchSearch && matchType && matchChannel && matchStatus
   })
 
-  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
-    filtered, 9, `${search}|${typeFilter}|${channelFilter}|${statusFilter}`,
+  // Group clients by agent so the grid isn't a wall of 60+ cards at once —
+  // the hierarchy view (team category -> agent -> clients) reveals one level
+  // at a time on click.
+  interface AgentGroup { agentId: string; agentName: string; category: TeamCategory; clients: Client[] }
+  const groups = useMemo(() => {
+    const map = new Map<string, AgentGroup>()
+    for (const c of filtered) {
+      const agentId = c.assigned_agent_id ?? 'unassigned'
+      const agentName = c.agent?.full_name ?? 'Unassigned'
+      let group = map.get(agentId)
+      if (!group) {
+        group = { agentId, agentName, category: categoryForAgent(c.agent), clients: [] }
+        map.set(agentId, group)
+      }
+      group.clients.push(c)
+    }
+    return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
+  }, [filtered])
+
+  // Level 0: RSR Manager / Sales Manager (/ Other, only if it has anyone in it).
+  const categories = useMemo(() => {
+    return (['rsr', 'sales', 'other'] as const)
+      .map(category => {
+        const catGroups = groups.filter(g => g.category === category)
+        const clientCount = catGroups.reduce((sum, g) => sum + g.clients.length, 0)
+        return { category, agentCount: catGroups.length, clientCount }
+      })
+      .filter(c => c.category !== 'other' || c.agentCount > 0)
+  }, [groups])
+
+  // The selected agent's clients (drill-down screen, unchanged regardless of
+  // which team's dropdown is open).
+  const selectedGroup = selectedAgentId ? groups.find(g => g.agentId === selectedAgentId) ?? null : null
+
+  const { pageItems: pageClients, page: clientPage, pageCount: clientPageCount, from: clientFrom, to: clientTo, total: clientTotal, setPage: setClientPage } = usePagination(
+    selectedGroup?.clients ?? [], 9, `${selectedAgentId}|${search}|${typeFilter}|${channelFilter}|${statusFilter}`,
   )
 
   function openCreate() {
@@ -280,84 +317,167 @@ export default function ClientsPage() {
           </Button>
         </div>
 
-        {/* Client cards grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {pageItems.map(client => (
-            <Card
-              key={client.id}
-              onClick={() => setSelectedClientId(client.id)}
-              className="bg-card border-border hover:border-primary/30 transition-colors cursor-pointer"
-            >
-              <CardContent className="p-4 flex-1 flex flex-col">
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2.5 mb-3">
-                      <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                        <Building2 className="w-4 h-4 text-primary" />
+        {!selectedGroup ? (
+          <>
+            {/* Teams — click a manager to drop down its agents right below it */}
+            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+              Teams
+            </p>
+            <div className="space-y-3">
+              {categories.map(({ category, agentCount, clientCount }) => {
+                const isOpen = expandedCategory === category
+                const catGroups = groups.filter(g => g.category === category)
+                return (
+                  <div key={category} className="rounded-lg border border-border bg-card overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedCategory(isOpen ? null : category)}
+                      aria-expanded={isOpen}
+                      className="w-full flex items-center justify-between gap-3 p-4 text-left hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                          <Users className="w-4 h-4 text-primary" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-foreground truncate">{CATEGORY_LABEL[category]}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {agentCount} agent{agentCount === 1 ? '' : 's'} · {clientCount} client{clientCount === 1 ? '' : 's'}
+                          </p>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-foreground truncate leading-tight">{client.company_name}</p>
-                        <Badge variant="tone" className={`h-4 mt-0.5 ${TONE_CLASS[CLIENT_STATUS_TONE[client.status]]}`}>
-                          {LABEL[client.status]}
-                        </Badge>
-                      </div>
-                    </div>
+                      <ChevronDown className={`w-4 h-4 text-muted-foreground shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                    </button>
 
-                    <div className="space-y-1.5 text-xs text-muted-foreground mb-3">
-                      <div className="flex items-center gap-1.5">
-                        <User className="w-3 h-3 shrink-0" />
-                        <span className="truncate">{client.contact_person}{client.contact_position ? ` · ${client.contact_position}` : ''}</span>
+                    {isOpen && (
+                      <div className="bg-muted/40 border-t border-border p-4 pl-6 space-y-2.5">
+                        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                          Agents under {CATEGORY_LABEL[category]}
+                        </p>
+                        {catGroups.map(group => (
+                          <button
+                            key={group.agentId}
+                            type="button"
+                            onClick={() => setSelectedAgentId(group.agentId)}
+                            className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-border shadow-sm text-left hover:border-primary/40 hover:bg-accent/30 transition-colors"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                                <span className="text-xs font-bold text-primary">
+                                  {group.agentName.charAt(0)}
+                                </span>
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {group.clients.length} client{group.clients.length === 1 ? '' : 's'}
+                                </p>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                          </button>
+                        ))}
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        <Phone className="w-3 h-3 shrink-0" />
-                        <span>{client.contact_number}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <MapPin className="w-3 h-3 shrink-0" />
-                        <span className="truncate">{client.office_address}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-1.5">
-                      <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[client.customer_type]]}>
-                        {LABEL[client.customer_type]}
-                      </Badge>
-                      <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[client.sales_channel]]}>
-                        {LABEL[client.sales_channel]}
-                      </Badge>
-                    </div>
+                    )}
                   </div>
+                )
+              })}
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Selected agent's clients */}
+            <div className="space-y-3">
+              <Button variant="outline" size="sm" className="h-9 gap-2" onClick={() => setSelectedAgentId(null)}>
+                <ArrowLeft className="w-4 h-4" />
+                Back to agents
+              </Button>
 
-                  <CircularProgress value={getClientProgress(client.id, meetings)} size={80} strokeWidth={7} className="shrink-0" />
-                </div>
-
-                <div className="flex-1" />
-
-                <div className="flex items-center justify-between pt-2 border-t border-border">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                      <span className="text-[11px] font-bold text-primary">
-                        {client.agent?.full_name?.charAt(0)}
-                      </span>
-                    </div>
-                    <span className="text-sm text-foreground">{client.agent?.full_name}</span>
-                  </div>
-                  <span className="text-sm text-muted-foreground">
-                    {format(new Date(client.created_at), 'MMM d, yyyy')}
+              <div className="flex items-center gap-3 p-4 rounded-lg border border-border bg-card">
+                <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                  <span className="text-sm font-bold text-primary">
+                    {selectedGroup.agentName.charAt(0)}
                   </span>
                 </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Agent</p>
+                  <p className="text-base font-semibold text-foreground truncate">{selectedGroup.agentName}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedGroup.clients.length} client{selectedGroup.clients.length === 1 ? '' : 's'}
+                  </p>
+                </div>
+              </div>
+            </div>
 
-                <div className="flex-1" />
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {pageClients.map(client => (
+                <Card
+                  key={client.id}
+                  onClick={() => setSelectedClientId(client.id)}
+                  className="bg-card border-border hover:border-primary/30 transition-colors cursor-pointer"
+                >
+                  <CardContent className="p-4 flex-1 flex flex-col">
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2.5 mb-3">
+                          <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                            <Building2 className="w-4 h-4 text-primary" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-foreground truncate leading-tight">{client.company_name}</p>
+                            <Badge variant="tone" className={`h-4 mt-0.5 ${TONE_CLASS[CLIENT_STATUS_TONE[client.status]]}`}>
+                              {LABEL[client.status]}
+                            </Badge>
+                          </div>
+                        </div>
 
-        {!loading && !error && (
-          <Pagination
-            page={page} pageCount={pageCount} onPageChange={setPage}
-            from={from} to={to} total={total} itemLabel="clients"
-          />
+                        <div className="space-y-1.5 text-xs text-muted-foreground mb-3">
+                          <div className="flex items-center gap-1.5">
+                            <User className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{client.contact_person}{client.contact_position ? ` · ${client.contact_position}` : ''}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Phone className="w-3 h-3 shrink-0" />
+                            <span>{client.contact_number}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <MapPin className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{client.office_address}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-1.5">
+                          <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[client.customer_type]]}>
+                            {LABEL[client.customer_type]}
+                          </Badge>
+                          <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[client.sales_channel]]}>
+                            {LABEL[client.sales_channel]}
+                          </Badge>
+                        </div>
+                      </div>
+
+                      <CircularProgress value={getClientProgress(client.id, meetings)} size={80} strokeWidth={7} className="shrink-0" />
+                    </div>
+
+                    <div className="flex-1" />
+
+                    <div className="flex items-center justify-end pt-2 border-t border-border">
+                      <span className="text-sm text-muted-foreground">
+                        {format(new Date(client.created_at), 'MMM d, yyyy')}
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+
+            {!loading && !error && (
+              <Pagination
+                page={clientPage} pageCount={clientPageCount} onPageChange={setClientPage}
+                from={clientFrom} to={clientTo} total={clientTotal} itemLabel="clients"
+              />
+            )}
+          </>
         )}
 
         {loading && (
