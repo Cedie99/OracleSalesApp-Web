@@ -35,7 +35,7 @@ import {
   canManageUsers, platformForRole, roleScopeLabel, PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD,
 } from '@/lib/permissions'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import { teamIdsForRole } from '@/lib/teams'
+import { teamIdsForRole, managerForTeam } from '@/lib/teams'
 import type { AdminScope, UserRole } from '@/types'
 import { PLATFORM_TONE, ROLE_TONE, TONE_CLASS, TONE_TEXT, roleTone } from '@/lib/status-styles'
 
@@ -932,11 +932,10 @@ function UserForm({
   }
 
   const availableTeams = teams.filter(t => teamIdsForRole(form.role).includes(t.id))
+  const managers = users.filter(u => u.role === 'sales_manager')
 
-  /** The sales_manager whose team_id matches — the manager of a team isn't a
-   * separate role, it's just the active sales_manager sharing that team_id. */
   function managerNameForTeam(teamId: string): string | undefined {
-    return users.find(u => u.role === 'sales_manager' && u.team_id === teamId && u.is_active)?.full_name
+    return managerForTeam(teamId, managers)?.full_name
   }
 
   const selectedTeamManager = form.team_id ? managerNameForTeam(form.team_id) : undefined

@@ -31,7 +31,7 @@ import {
   TONE_CLASS,
   VALUE_LABEL as LABEL,
 } from '@/lib/status-styles'
-import { CATEGORY_LABEL, categoryForAgent, type TeamCategory } from '@/lib/teams'
+import { managerForTeam } from '@/lib/teams'
 
 const ASSIGNABLE_ROLES = ['sales_specialist', 'sales_manager', 'rsr']
 
@@ -72,7 +72,7 @@ export default function ClientsPage() {
   const { meetings } = useMeetings()
   const { byRole } = useProfiles()
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
-  const [expandedCategory, setExpandedCategory] = useState<TeamCategory | null>(null)
+  const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -86,6 +86,15 @@ export default function ClientsPage() {
 
   const assignableAgents = byRole(ASSIGNABLE_ROLES)
   const canEditClient = (client: Client) => isAdmin || profile?.id === client.assigned_agent_id
+
+  // The actual managers, so the top of the hierarchy lists real people ("Test
+  // manager Two") instead of a generic RSR/Sales bucket. byRole() is stable
+  // across renders unless `profiles` itself changes, so this only recomputes
+  // on a real profile refresh.
+  const managers = useMemo(
+    () => [...byRole(['sales_manager'])].sort((a, b) => a.full_name.localeCompare(b.full_name)),
+    [byRole],
+  )
 
   // Deleted clients (see app/api/cron/prospect-cleanup) are gone from this
   // page entirely — there's no "Deleted" option in the Status filter, so
@@ -104,9 +113,10 @@ export default function ClientsPage() {
   })
 
   // Group clients by agent so the grid isn't a wall of 60+ cards at once —
-  // the hierarchy view (team category -> agent -> clients) reveals one level
-  // at a time on click.
-  interface AgentGroup { agentId: string; agentName: string; category: TeamCategory; clients: Client[] }
+  // the hierarchy view (manager -> agent -> clients) reveals one level at a
+  // time on click. Each agent is bucketed under whichever manager shares
+  // their team_id ('unassigned' if no manager leads that team).
+  interface AgentGroup { agentId: string; agentName: string; managerKey: string; clients: Client[] }
   const groups = useMemo(() => {
     const map = new Map<string, AgentGroup>()
     for (const c of filtered) {
@@ -114,24 +124,33 @@ export default function ClientsPage() {
       const agentName = c.agent?.full_name ?? 'Unassigned'
       let group = map.get(agentId)
       if (!group) {
-        group = { agentId, agentName, category: categoryForAgent(c.agent), clients: [] }
+        const managerKey = managerForTeam(c.agent?.team_id, managers)?.id ?? 'unassigned'
+        group = { agentId, agentName, managerKey, clients: [] }
         map.set(agentId, group)
       }
       group.clients.push(c)
     }
     return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
-  }, [filtered])
+  }, [filtered, managers])
 
-  // Level 0: RSR Manager / Sales Manager (/ Other, only if it has anyone in it).
-  const categories = useMemo(() => {
-    return (['rsr', 'sales', 'other'] as const)
-      .map(category => {
-        const catGroups = groups.filter(g => g.category === category)
-        const clientCount = catGroups.reduce((sum, g) => sum + g.clients.length, 0)
-        return { category, agentCount: catGroups.length, clientCount }
+  // Level 0: one bucket per real manager, plus "Unassigned" only if it has anyone in it.
+  const managerBuckets = useMemo(() => {
+    const buckets = managers.map(m => {
+      const managerGroups = groups.filter(g => g.managerKey === m.id)
+      const clientCount = managerGroups.reduce((sum, g) => sum + g.clients.length, 0)
+      return { key: m.id, label: m.full_name, agentCount: managerGroups.length, clientCount }
+    })
+    const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
+    if (unassignedGroups.length > 0) {
+      buckets.push({
+        key: 'unassigned',
+        label: 'Unassigned',
+        agentCount: unassignedGroups.length,
+        clientCount: unassignedGroups.reduce((sum, g) => sum + g.clients.length, 0),
       })
-      .filter(c => c.category !== 'other' || c.agentCount > 0)
-  }, [groups])
+    }
+    return buckets
+  }, [managers, groups])
 
   // The selected agent's clients (drill-down screen, unchanged regardless of
   // which team's dropdown is open).
@@ -319,19 +338,19 @@ export default function ClientsPage() {
 
         {!selectedGroup ? (
           <>
-            {/* Teams — click a manager to drop down its agents right below it */}
+            {/* Managers — click one to drop down their team's agents right below it */}
             <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-              Teams
+              Managers
             </p>
             <div className="space-y-3">
-              {categories.map(({ category, agentCount, clientCount }) => {
-                const isOpen = expandedCategory === category
-                const catGroups = groups.filter(g => g.category === category)
+              {managerBuckets.map(({ key, label, agentCount, clientCount }) => {
+                const isOpen = expandedManagerKey === key
+                const bucketGroups = groups.filter(g => g.managerKey === key)
                 return (
-                  <div key={category} className="rounded-lg border border-border bg-card overflow-hidden">
+                  <div key={key} className="rounded-lg border border-border bg-card overflow-hidden">
                     <button
                       type="button"
-                      onClick={() => setExpandedCategory(isOpen ? null : category)}
+                      onClick={() => setExpandedManagerKey(isOpen ? null : key)}
                       aria-expanded={isOpen}
                       className="w-full flex items-center justify-between gap-3 p-4 text-left hover:bg-muted/50 transition-colors"
                     >
@@ -340,7 +359,7 @@ export default function ClientsPage() {
                           <Users className="w-4 h-4 text-primary" />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-sm font-semibold text-foreground truncate">{CATEGORY_LABEL[category]}</p>
+                          <p className="text-sm font-semibold text-foreground truncate">{label}</p>
                           <p className="text-xs text-muted-foreground">
                             {agentCount} agent{agentCount === 1 ? '' : 's'} · {clientCount} client{clientCount === 1 ? '' : 's'}
                           </p>
@@ -352,9 +371,9 @@ export default function ClientsPage() {
                     {isOpen && (
                       <div className="bg-muted/40 border-t border-border p-4 pl-6 space-y-2.5">
                         <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                          Agents under {CATEGORY_LABEL[category]}
+                          Agents under {label}
                         </p>
-                        {catGroups.map(group => (
+                        {bucketGroups.map(group => (
                           <button
                             key={group.agentId}
                             type="button"
