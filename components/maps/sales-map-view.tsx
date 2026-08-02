@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -15,7 +15,9 @@ import { useTeams } from '@/lib/hooks/use-teams'
 import {
   getMapStatus,
   isAvailableForReassignment,
+  isInProgress,
   isPlottableMeeting,
+  mapStatusMeta,
   parseLatLng,
   OUTCOME_META,
   STATUS_META,
@@ -257,7 +259,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
               color:
                 colorBy === 'outcome'
                   ? OUTCOME_META[v.plotMeeting!.outcome].color
-                  : STATUS_META[getMapStatus(v.client)].color,
+                  : mapStatusMeta(v.client).color,
               active: v.client.id === selectedId,
               label: v.client.company_name,
               sublabel: `${meetingWhere(v.plotMeeting!)} · ${format(new Date(v.plotMeeting!.meeting_date), 'MMM d')}`,
@@ -266,11 +268,21 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
     [visited, selectedId, colorBy, listMode]
   )
 
+  // Built from STATUS_KEYS, not a literal, so adding a lifecycle stage to
+  // STATUS_META can't leave a legend row counting `undefined + 1` (NaN). A
+  // status outside the map falls through to no bucket, matching the grey pin.
   const statusCounts = useMemo(() => {
-    const acc = { existing: 0, new: 0, prospect: 0, lost: 0 } as Record<MapStatus, number>
-    for (const v of visited) acc[getMapStatus(v.client)] += 1
+    const acc = Object.fromEntries(STATUS_KEYS.map(k => [k, 0])) as Record<MapStatus, number>
+    for (const v of visited) {
+      const status = getMapStatus(v.client)
+      if (status in acc) acc[status] += 1
+    }
     return acc
   }, [visited])
+
+  // The subset behind the prospect pin. Shown as a sub-count under that legend
+  // row rather than as a fifth colour — see getMapStatus.
+  const inProgressCount = useMemo(() => visited.filter(v => isInProgress(v.client)).length, [visited])
 
   const outcomeCounts = useMemo(() => {
     const acc = { successful: 0, follow_up: 0, no_decision: 0, lost_opportunity: 0 } as Record<MeetingOutcome, number>
@@ -322,7 +334,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
       lng: m.gps_lng!,
       kind: 'meeting',
       label: `${format(new Date(m.meeting_date), 'MMM d, yyyy')} · ${meetingWhere(m)}`,
-      color: client ? STATUS_META[getMapStatus(client)].color : undefined,
+      color: client ? mapStatusMeta(client).color : undefined,
       avatarUrl: m.agent?.avatar_url ?? client?.agent?.avatar_url ?? null,
     })
     setFocus({ lat: m.gps_lat!, lng: m.gps_lng!, zoom: 16, nonce: focusNonce.current })
@@ -450,7 +462,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
               {listMode === 'visited' ? (
                 <>
                   {visited.map(({ client, inRange, plotMeeting, lastVisit }) => {
-                    const status = getMapStatus(client)
+                    const status = mapStatusMeta(client)
                     const active = client.id === selectedId
                     return (
                       <button
@@ -461,7 +473,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                         <div className="flex items-center gap-2">
                           <span
                             className="w-2 h-2 rounded-full shrink-0"
-                            style={{ background: STATUS_META[status].color }}
+                            style={{ background: status.color }}
                           />
                           <p className="text-sm font-medium text-foreground truncate flex-1">{client.company_name}</p>
                           <span className="text-[10px] text-muted-foreground shrink-0">
@@ -515,7 +527,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
               ) : (
                 <>
                   {unvisited.map(({ client, lastEver }) => {
-                    const status = getMapStatus(client)
+                    const status = mapStatusMeta(client)
                     const active = client.id === selectedId
                     return (
                       <button
@@ -526,7 +538,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                         <div className="flex items-center gap-2">
                           <span
                             className="w-2 h-2 rounded-full shrink-0"
-                            style={{ background: STATUS_META[status].color }}
+                            style={{ background: status.color }}
                           />
                           <p className="text-sm font-medium text-foreground truncate flex-1">{client.company_name}</p>
                           <span className="text-[10px] text-muted-foreground shrink-0">
@@ -642,11 +654,22 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                 </div>
                 {colorBy === 'status'
                   ? STATUS_KEYS.map(key => (
-                      <div key={key} className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: STATUS_META[key].color }} />
-                        <span className="text-xs text-muted-foreground">{STATUS_META[key].label}</span>
-                        <span className="text-xs text-foreground ml-auto font-medium pl-4">{statusCounts[key]}</span>
-                      </div>
+                      <Fragment key={key}>
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: STATUS_META[key].color }} />
+                          <span className="text-xs text-muted-foreground">{STATUS_META[key].label}</span>
+                          <span className="text-xs text-foreground ml-auto font-medium pl-4">{statusCounts[key]}</span>
+                        </div>
+                        {/* The in-progress subset, indented under the pin it shares.
+                            Hidden at zero: an always-present "0" reads as a legend
+                            entry for a colour that isn't on the map. */}
+                        {key === 'prospect' && inProgressCount > 0 && (
+                          <div className="flex items-center gap-2 pl-4.5">
+                            <span className="text-[11px] text-muted-foreground">of which in progress</span>
+                            <span className="text-[11px] text-foreground ml-auto font-medium pl-2">{inProgressCount}</span>
+                          </div>
+                        )}
+                      </Fragment>
                     ))
                   : OUTCOME_KEYS.map(key => (
                       <div key={key} className="flex items-center gap-2">
@@ -725,12 +748,12 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                   <Badge
                     variant="outline"
                     style={{
-                      borderColor: `${STATUS_META[getMapStatus(selected)].color}55`,
-                      color: STATUS_META[getMapStatus(selected)].color,
+                      borderColor: `${mapStatusMeta(selected).color}55`,
+                      color: mapStatusMeta(selected).color,
                     }}
                     className="text-[10px] px-1.5 h-5 mb-1.5"
                   >
-                    {STATUS_META[getMapStatus(selected)].label}
+                    {mapStatusMeta(selected).label}
                   </Badge>
                   <h2 className="text-base font-semibold text-foreground leading-tight truncate">{selected.company_name}</h2>
                   <div className="flex items-start gap-1.5 mt-1">

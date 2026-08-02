@@ -6,7 +6,23 @@ export type UserRole = 'superadmin' | 'admin' | 'sales_manager' | 'sales_special
  * role column is shared with the mobile app, this column is web-only.
  */
 export type AdminScope = 'all' | 'sales' | 'collection' | 'delivery'
-export type CustomerType = 'existing' | 'new' | 'prospect'
+/**
+ * The client lifecycle, four stages since migration 038 widened the check
+ * constraint (`prospect → in_progress → new → existing`) and 040 split the old
+ * promote_client_to_new() into two stage-specific functions. Both were applied
+ * by hand on 2026-07-27 and back-filled into supabase/migrations/.
+ *
+ * `in_progress` is written by the database, never by web: entering it also
+ * stamps `clients.in_progress_at`, which the close-deal trigger reads to stop
+ * one meeting from chaining both transitions. Web reads and displays the stage;
+ * it does not assign it.
+ *
+ * The column is also NULLABLE (migration 013, mobile's two-phase Create Client —
+ * Phase A inserts a company name and nothing else). Rows enter the app through
+ * `normalizeClient` in lib/hooks/use-clients.ts, which resolves that null the
+ * same way migration 040's own guards do, so this stays non-nullable here.
+ */
+export type CustomerType = 'existing' | 'new' | 'in_progress' | 'prospect'
 export type SalesChannel = 'distributor' | 'dealer' | 'end_user' | 'private_label'
 export type ClientStatus = 'active' | 'lost' | 'deleted'
 export type MeetingType = 'f2f' | 'online'

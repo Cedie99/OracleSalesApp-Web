@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Client, Profile } from '@/types'
+import type { Client, CustomerType, Profile } from '@/types'
 
 /**
  * Columns selected explicitly rather than with `*`.
@@ -43,6 +43,14 @@ function normalizeClient(row: Record<string, unknown>): Client {
     contact_person: (row.contact_person as string | null) ?? '',
     contact_number: (row.contact_number as string | null) ?? '',
     office_address: (row.office_address as string | null) ?? '',
+    // A null customer_type is a Phase-A client: mobile's two-phase Create Client
+    // (migration 013) inserts a company name and fills the rest later. It reads
+    // as 'prospect' because that is how the database itself reads it —
+    // advance_prospect_to_in_progress() in migration 040 gates on
+    // `customer_type is null or customer_type = 'prospect'`, treating the two as
+    // one stage. Resolving it here keeps CustomerType non-nullable, so every
+    // Record<CustomerType, …> lookup in the UI stays total.
+    customer_type: (row.customer_type as CustomerType | null) ?? 'prospect',
     agent: (agent as Profile | null) ?? undefined,
   }
 }

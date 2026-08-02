@@ -27,7 +27,7 @@ import { toast } from 'sonner'
 import {
   CHANNEL_TONE,
   CLIENT_STATUS_TONE,
-  CUSTOMER_TYPE_TONE,
+  customerTypeBadge,
   TONE_CLASS,
   VALUE_LABEL as LABEL,
 } from '@/lib/status-styles'
@@ -106,7 +106,14 @@ export default function ClientsPage() {
     const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
       c.contact_person.toLowerCase().includes(search.toLowerCase()) ||
       (c.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase())
-    const matchType = typeFilter === 'all' || c.customer_type === typeFilter
+    // 'Prospect' is the family, not the single value: it returns in-progress rows
+    // too, matching how their badge reads. The 'in_progress' option isolates the
+    // subset — the near-term pipeline, which is the reason to keep it filterable
+    // at all now that it no longer has a pill of its own.
+    const matchType =
+      typeFilter === 'all' ||
+      c.customer_type === typeFilter ||
+      (typeFilter === 'prospect' && c.customer_type === 'in_progress')
     const matchChannel = channelFilter === 'all' || c.sales_channel === channelFilter
     const matchStatus = statusFilter === 'all' || c.status === statusFilter
     return matchSearch && matchType && matchChannel && matchStatus
@@ -302,6 +309,8 @@ export default function ClientsPage() {
               <SelectItem value="existing">Existing</SelectItem>
               <SelectItem value="new">New</SelectItem>
               <SelectItem value="prospect">Prospect</SelectItem>
+              {/* Indented because it is a subset of the option above it, not a peer. */}
+              <SelectItem value="in_progress" className="pl-5">In Progress only</SelectItem>
             </SelectContent>
           </Select>
           <Select value={channelFilter} onValueChange={v => setChannelFilter(v ?? 'all')}>
@@ -466,8 +475,8 @@ export default function ClientsPage() {
                         </div>
 
                         <div className="flex flex-wrap gap-1.5">
-                          <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[client.customer_type]]}>
-                            {LABEL[client.customer_type]}
+                          <Badge variant="tone" className={TONE_CLASS[customerTypeBadge(client.customer_type).tone]}>
+                            {customerTypeBadge(client.customer_type).label}
                           </Badge>
                           <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[client.sales_channel]]}>
                             {LABEL[client.sales_channel]}
@@ -687,6 +696,15 @@ function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: Client
               <SelectContent>
                 <SelectItem value="existing">Existing</SelectItem>
                 <SelectItem value="new">New</SelectItem>
+                {/* 'In Progress' is offered only to a client already in it, so the
+                    trigger renders its real stage instead of an empty box. It is
+                    never a choice: entering that stage also stamps
+                    clients.in_progress_at (migration 038), which the close-deal
+                    trigger reads — setting it by hand here would write half a
+                    transition. The database owns this stage; see CustomerType. */}
+                {form.customer_type === 'in_progress' && (
+                  <SelectItem value="in_progress">In Progress</SelectItem>
+                )}
                 <SelectItem value="prospect">Prospect</SelectItem>
               </SelectContent>
             </Select>

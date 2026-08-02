@@ -18,13 +18,14 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from 'recharts'
 import {
-  CalendarCheck, TrendingUp, Target, Trophy,
+  CalendarCheck, TrendingUp, Target, Trophy, Handshake,
   Users, CheckCircle2, Clock, BarChart3, Loader2
 } from 'lucide-react'
 import { format, isSameMonth, startOfMonth, subMonths } from 'date-fns'
 import type { CustomerType, MeetingOutcome } from '@/types'
 import {
   APPROVAL_TONE,
+  CUSTOMER_TYPE_LABEL,
   CUSTOMER_TYPE_TONE,
   OUTCOME_LABEL_SHORT as OUTCOME_LABEL,
   OUTCOME_TONE,
@@ -140,8 +141,11 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
     [teamMeetings]
   )
 
+  // One bucket per lifecycle stage, all four carded below. A meeting on a client
+  // whose type is still unset (mobile's Phase-A insert) counts toward Total
+  // Meetings but no stage — the `if (type)` guard drops it rather than guessing.
   const meetingsByType = useMemo(() => {
-    const counts: Record<CustomerType, number> = { existing: 0, new: 0, prospect: 0 }
+    const counts: Record<CustomerType, number> = { existing: 0, new: 0, in_progress: 0, prospect: 0 }
     monthMeetings.forEach(mtg => {
       const type = mtg.client?.customer_type
       if (type) counts[type] += 1
@@ -150,7 +154,7 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
   }, [monthMeetings])
 
   const successfulByType = useMemo(() => {
-    const counts: Record<CustomerType, number> = { existing: 0, new: 0, prospect: 0 }
+    const counts: Record<CustomerType, number> = { existing: 0, new: 0, in_progress: 0, prospect: 0 }
     monthMeetings.forEach(mtg => {
       const type = mtg.client?.customer_type
       if (mtg.outcome === 'successful' && type) counts[type] += 1
@@ -199,6 +203,12 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
       title: 'New Clients', value: meetingsByType.new, icon: TrendingUp,
       sub: `${successfulByType.new} successful`, color: TONE_TEXT[CUSTOMER_TYPE_TONE.new],
     },
+    // The fourth stage, between prospect and new (migrations 038/040). Carded in
+    // lifecycle position rather than appended, so the row reads as the funnel it is.
+    {
+      title: 'In Progress', value: meetingsByType.in_progress, icon: Handshake,
+      sub: `${successfulByType.in_progress} successful`, color: TONE_TEXT[CUSTOMER_TYPE_TONE.in_progress],
+    },
     {
       title: 'Prospects', value: meetingsByType.prospect, icon: Target,
       sub: `${successfulByType.prospect} successful`, color: TONE_TEXT[CUSTOMER_TYPE_TONE.prospect],
@@ -244,8 +254,10 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
           </div>
         )}
 
-        {/* Metric cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+        {/* Metric cards — seven since the lifecycle gained 'in_progress', so the
+            column counts changed with it: 7 across on xl keeps the single row,
+            and lg moves 3→4 so the second row carries 3 rather than a lone card. */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3">
           {metricCards.map(({ title, value, icon: Icon, sub, color }) => (
             <Card key={title} className="bg-card border-border">
               <CardContent className="p-4">
@@ -290,11 +302,12 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
               <CardTitle className="text-sm font-semibold text-foreground">Success Rate</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {[
-                { label: 'Existing', meetings: meetingsByType.existing, successful: successfulByType.existing },
-                { label: 'New', meetings: meetingsByType.new, successful: successfulByType.new },
-                { label: 'Prospect', meetings: meetingsByType.prospect, successful: successfulByType.prospect },
-              ].map(({ label, meetings, successful }) => {
+              {/* Driven off CUSTOMER_TYPE_LABEL rather than a literal list of three,
+                  which is how this panel silently omitted 'in_progress' after
+                  migration 038 added it. A future stage lands here on its own. */}
+              {(Object.entries(CUSTOMER_TYPE_LABEL) as [CustomerType, string][]).map(([key, label]) => {
+                const meetings = meetingsByType[key]
+                const successful = successfulByType[key]
                 const pct = meetings > 0 ? Math.round((successful / meetings) * 100) : 0
                 return (
                   <div key={label}>

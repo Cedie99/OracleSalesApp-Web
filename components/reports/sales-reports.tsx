@@ -8,6 +8,7 @@ import { useClockRecords } from '@/lib/hooks/use-clock-records'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { ReportFilters, ReportGrid, downloadSheet, type ReportDefinition } from '@/components/reports/report-grid'
+import { CUSTOMER_TYPE_LABEL } from '@/lib/status-styles'
 import { Users, CalendarCheck, Clock, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
 
@@ -103,7 +104,12 @@ export function SalesReports() {
       stats: [
         { label: 'Active', value: filteredClients.filter(c => c.status === 'active').length },
         { label: 'Lost', value: filteredClients.filter(c => c.status === 'lost').length },
-        { label: 'Prospects', value: filteredClients.filter(c => c.customer_type === 'prospect').length },
+        // The prospect family, in-progress included — same reading as the Clients
+        // page filter. The export's per-row Customer Type column stays precise.
+        {
+          label: 'Prospects',
+          value: filteredClients.filter(c => c.customer_type === 'prospect' || c.customer_type === 'in_progress').length,
+        },
       ],
       onDownload: () =>
         downloadSheet(
@@ -113,7 +119,9 @@ export function SalesReports() {
             'Position': c.contact_position ?? '',
             'Contact Number': c.contact_number,
             'Office Address': c.office_address,
-            'Customer Type': c.customer_type.charAt(0).toUpperCase() + c.customer_type.slice(1),
+            // Via the label map, not a charAt-uppercase: the four-stage lifecycle
+            // (migration 038) made that produce "In_progress" in the spreadsheet.
+            'Customer Type': CUSTOMER_TYPE_LABEL[c.customer_type] ?? c.customer_type,
             'Sales Channel': c.sales_channel.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()),
             'Assigned Agent': c.agent?.full_name ?? '',
             'Status': c.status.charAt(0).toUpperCase() + c.status.slice(1),

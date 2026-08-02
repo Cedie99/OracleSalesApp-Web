@@ -5,7 +5,7 @@ import { MapContainer, TileLayer, Marker, Popup, ZoomControl, useMap } from 'rea
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Client } from '@/types'
-import { getMapStatus, STATUS_META, TILE_LAYERS, type MapTileType } from '@/components/maps/map-constants'
+import { mapStatusMeta, TILE_LAYERS, type MapTileType } from '@/components/maps/map-constants'
 
 const PIN_PATH =
   'M172.268 501.67C26.97 291.031 0 269.413 0 192 0 85.961 85.961 0 192 0s192 85.961 192 192c0 77.413-26.97 99.031-172.268 309.67-9.535 13.774-29.93 13.773-39.464 0zM192 272c44.183 0 80-35.817 80-80s-35.817-80-80-80-80 35.817-80 80 35.817 80 80 80z'
@@ -91,12 +91,12 @@ export default function ClientMap({ clients, selectedId, onSelect, mapType }: Cl
         />
       )}
       {plottable.map(client => {
-        const status = getMapStatus(client)
+        const status = mapStatusMeta(client)
         return (
           <Marker
             key={client.id}
             position={[client.office_lat!, client.office_lng!]}
-            icon={createPinIcon(STATUS_META[status].color, client.id === selectedId, client.agent?.avatar_url)}
+            icon={createPinIcon(status.color, client.id === selectedId, client.agent?.avatar_url)}
             eventHandlers={{ click: () => onSelect(client.id) }}
           >
             <Popup>
