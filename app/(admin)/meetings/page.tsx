@@ -19,47 +19,11 @@ import { useProfiles } from '@/lib/hooks/use-profiles'
 import type { Meeting, MeetingOutcome } from '@/types'
 import {
   Search, CalendarCheck, MapPin, Camera, Video, Navigation, Users, CheckCircle2, Loader2,
-  Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown, ArrowLeft,
+  Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown, ArrowLeft, User, ExternalLink,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
 import { managerForTeam } from '@/lib/teams'
-
-/**
- * Keys are normalised (see `agendaIcon`) rather than written as the mobile app
- * spells them, because the two had already drifted: this map was keyed
- * 'Product/Company presentation' and 'Terms and Limit negotiation' while the
- * database actually holds "Product / company presentation" and "Terms & limit
- * negotiation", so three of the nine live agenda values silently rendered
- * without an icon.
- */
-const AGENDA_ICONS: Record<string, string> = {
-  'new business opportunity': '💼',
-  'product company presentation': '📊',
-  'price negotiation quotation': '💰',
-  'terms limit negotiation': '📋',
-  'negotiation other matters': '🤝',
-  'collection': '💳',
-  'technical support': '🔧',
-  'marketing support': '📣',
-  'complaint resolution': '⚠️',
-  'relationship building': '🫱',
-  'closed deal': '✅',
-}
-
-/** Lowercase, drop punctuation/connectives, collapse whitespace. */
-function normalizeAgenda(agenda: string): string {
-  return agenda
-    .toLowerCase()
-    .replace(/[/&,()]/g, ' ')
-    .replace(/\b(and|or)\b/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function agendaIcon(agenda: string): string {
-  return AGENDA_ICONS[normalizeAgenda(agenda)] ?? '•'
-}
 
 type TypeFilter = 'all' | 'f2f' | 'online'
 
@@ -480,79 +444,123 @@ export default function MeetingsPage() {
 
       {/* Meeting Detail Dialog */}
       <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
-        <DialogContent className="bg-card border-border max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="text-foreground">Meeting Details</DialogTitle>
+        <DialogContent className="bg-card border-border sm:max-w-2xl p-6">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Meeting Details</DialogTitle>
           </DialogHeader>
           {selected && (
-            <div className="space-y-4 text-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold text-foreground">{selected.client?.company_name}</p>
-                  <p className="text-xs text-muted-foreground">{selected.contact_person}{selected.contact_position ? ` · ${selected.contact_position}` : ''}</p>
-                </div>
-                <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[selected.outcome]]}>
-                  {OUTCOME_LABEL[selected.outcome]}
-                </Badge>
+            <div className="space-y-5 text-sm pt-1">
+              <div className="min-w-0">
+                <p className="font-semibold text-foreground text-lg truncate">{selected.client?.company_name}</p>
+                <p className="text-sm text-muted-foreground truncate">{selected.contact_person}{selected.contact_position ? ` · ${selected.contact_position}` : ''}</p>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="bg-muted/30 rounded-lg p-3">
-                  <p className="text-muted-foreground mb-1">Agent</p>
-                  <p className="text-foreground font-medium">{selected.agent?.full_name}</p>
-                  {selected.recorder && <p className="text-muted-foreground">Assisted by {selected.recorder.full_name}</p>}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
+                  <div className="flex items-center gap-2 text-muted-foreground mb-2.5">
+                    <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                      <User className="w-3.5 h-3.5" />
+                    </div>
+                    <p className="text-xs">Agent</p>
+                  </div>
+                  <p className="text-foreground font-semibold">{selected.agent?.full_name}</p>
+                  {selected.recorder && <p className="text-xs text-muted-foreground mt-1">Assisted by {selected.recorder.full_name}</p>}
                 </div>
-                <div className="bg-muted/30 rounded-lg p-3">
-                  <p className="text-muted-foreground mb-1">Date & Time</p>
-                  <p className="text-foreground font-medium">{format(new Date(selected.meeting_date), 'MMM d, yyyy')}</p>
-                  <p className="text-muted-foreground">{format(new Date(selected.meeting_date), 'h:mm a')}</p>
+                <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
+                  <div className="flex items-center gap-2 text-muted-foreground mb-2.5">
+                    <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                      <CalendarCheck className="w-3.5 h-3.5" />
+                    </div>
+                    <p className="text-xs">Date & Time</p>
+                  </div>
+                  <p className="text-foreground font-semibold">{format(new Date(selected.meeting_date), 'MMM d, yyyy')}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{format(new Date(selected.meeting_date), 'h:mm a')}</p>
                 </div>
-                <div className="bg-muted/30 rounded-lg p-3">
-                  <p className="text-muted-foreground mb-1">Type</p>
-                  <p className="text-foreground font-medium capitalize">
+                <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
+                  <div className="flex items-center gap-2 text-muted-foreground mb-2.5">
+                    <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                      {selected.meeting_type === 'f2f' ? <Navigation className="w-3.5 h-3.5" /> : <Video className="w-3.5 h-3.5" />}
+                    </div>
+                    <p className="text-xs">Type</p>
+                  </div>
+                  <p className="text-foreground font-semibold capitalize">
                     {selected.meeting_type === 'f2f' ? 'Face to Face' : selected.online_platform === 'zoom' ? 'Zoom' : 'Google Meet'}
                   </p>
                 </div>
-                <div className="bg-muted/30 rounded-lg p-3">
-                  <p className="text-muted-foreground mb-1">Location</p>
-                  <p className="text-foreground font-medium">
-                    {selected.location_type === 'client_office' ? 'Client Office' : selected.location_name}
-                  </p>
-                  {selected.gps_lat && (
-                    <p className="text-muted-foreground">{selected.gps_lat.toFixed(4)}, {selected.gps_lng?.toFixed(4)}</p>
-                  )}
-                </div>
+                {selected.gps_lat ? (
+                  <a
+                    href={`https://www.google.com/maps?q=${selected.gps_lat},${selected.gps_lng}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="group block rounded-xl bg-muted/40 p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)] transition-colors hover:bg-muted/70"
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-2.5">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                          <MapPin className="w-3.5 h-3.5" />
+                        </div>
+                        <p className="text-xs">Location</p>
+                      </div>
+                      <ExternalLink className="w-3.5 h-3.5 text-primary shrink-0" />
+                    </div>
+                    <p className="text-foreground font-semibold group-hover:text-primary transition-colors">
+                      {selected.location_type === 'client_office' ? 'Client Office' : selected.location_name}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{selected.gps_lat.toFixed(4)}, {selected.gps_lng?.toFixed(4)}</p>
+                  </a>
+                ) : (
+                  <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
+                    <div className="flex items-center gap-2 text-muted-foreground mb-2.5">
+                      <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                        <MapPin className="w-3.5 h-3.5" />
+                      </div>
+                      <p className="text-xs">Location</p>
+                    </div>
+                    <p className="text-foreground font-semibold">
+                      {selected.location_type === 'client_office' ? 'Client Office' : selected.location_name}
+                    </p>
+                  </div>
+                )}
               </div>
 
+              {selected.remarks && (
+                <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
+                  <p className="text-xs text-muted-foreground mb-1.5 font-medium">Remarks</p>
+                  <p className="text-sm text-foreground leading-relaxed">{selected.remarks}</p>
+                </div>
+              )}
+
               <div>
-                <p className="text-xs text-muted-foreground mb-2">Agenda</p>
-                <div className="flex flex-wrap gap-1.5">
+                <p className="text-xs text-muted-foreground mb-2.5 font-medium">Agenda</p>
+                <div className="flex flex-wrap gap-2">
                   {selected.agenda.map(a => (
-                    <Badge key={a} variant="outline" className="text-[10px] bg-primary/5 border-primary/20 text-primary">
-                      {agendaIcon(a)} {a}
-                    </Badge>
+                    <span
+                      key={a}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/15"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                      {a}
+                    </span>
                   ))}
                 </div>
               </div>
 
-              {selected.remarks && (
-                <div className="bg-muted/30 rounded-lg p-3">
-                  <p className="text-xs text-muted-foreground mb-1">Remarks</p>
-                  <p className="text-sm text-foreground">{selected.remarks}</p>
+              <div className="flex items-center justify-between gap-2.5 pt-3 border-t border-border">
+                <div className="flex gap-2.5">
+                  {selected.gps_lat && (
+                    <div className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground bg-muted/40 rounded-full px-3 py-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" /> GPS captured
+                    </div>
+                  )}
+                  {selected.photo_url && (
+                    <div className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground bg-muted/40 rounded-full px-3 py-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" /> Photo taken
+                    </div>
+                  )}
                 </div>
-              )}
-
-              <div className="flex gap-2 text-xs text-muted-foreground pt-1 border-t border-border">
-                {selected.gps_lat && (
-                  <div className="flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3 text-primary" /> GPS captured
-                  </div>
-                )}
-                {selected.photo_url && (
-                  <div className="flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3 text-primary" /> Photo taken
-                  </div>
-                )}
+                <Badge variant="tone" className={`shrink-0 text-sm px-3 py-1 ${TONE_CLASS[OUTCOME_TONE[selected.outcome]]}`}>
+                  {OUTCOME_LABEL[selected.outcome]}
+                </Badge>
               </div>
             </div>
           )}
