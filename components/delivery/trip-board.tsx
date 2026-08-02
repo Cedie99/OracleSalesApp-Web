@@ -8,12 +8,16 @@ import { isActiveClaim, staleClaimCount } from '@/lib/claims'
 import {
   ClaimLine, ReleaseClaimButton, StaleClaimBadge, claimRowClass,
 } from '@/components/claim-indicator'
+import { StatusDot } from '@/components/status-dot'
+import { boardWorkerIds } from '@/lib/board-numbering'
 import { TRIP_CAP, dwellMinutes, hasMissingProof, tripProgress, type TripList } from '@/lib/delivery'
 import { peso } from '@/lib/money'
+import { workerColors } from '@/lib/trips'
 import { DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
 import type { PurchaseOrder } from '@/types'
 import { CalendarClock, ImageOff, Plus, Truck, X } from 'lucide-react'
 import { format, isToday, isTomorrow, isYesterday } from 'date-fns'
+import { useMemo } from 'react'
 
 /** "Today" reads faster than a date the admin has to compare against a calendar. */
 function dayLabel(day: Date): string {
@@ -29,6 +33,12 @@ function initials(name: string): string {
 
 interface TripBoardProps {
   lists: TripList[]
+  /**
+   * Driver to bring forward, or 'all'. A FOCUS, not a filter — see the twin note
+   * on ListBoard. Filtering rows out would take every waiting stop with them,
+   * since a pending stop has no `driver_id` by constraint.
+   */
+  focusWorkerId: string
   onOpenPo: (po: PurchaseOrder) => void
   onAddPo: (list: TripList) => void
   onRemovePo: (po: PurchaseOrder) => void
@@ -46,8 +56,15 @@ interface TripBoardProps {
  * belongs to anyone until someone drives it.
  */
 export function TripBoard({
-  lists, onOpenPo, onAddPo, onRemovePo, onCancelClaim,
+  lists, focusWorkerId, onOpenPo, onAddPo, onRemovePo, onCancelClaim,
 }: TripBoardProps) {
+  // Assigned across every visible day, not per card, so one driver keeps one
+  // colour throughout the board — and the same colour the trip map gives them.
+  const colors = useMemo(
+    () => workerColors(boardWorkerIds(lists.map(l => l.numbers))),
+    [lists]
+  )
+
   if (lists.length === 0) {
     return (
       <div className="text-center py-16 text-muted-foreground">
@@ -59,7 +76,8 @@ export function TripBoard({
   }
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+    // A grid, not full-width rows — see the twin note on ListBoard.
+    <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
       {lists.map(list => {
         const progress = tripProgress(list)
         const done = list.openCount === 0
@@ -162,15 +180,26 @@ export function TripBoard({
               )}
 
               <div className="divide-y divide-border rounded-xl border border-border">
-                {list.stops.map(stop => (
-                  <StopRow
-                    key={stop.id}
-                    stop={stop}
-                    onOpen={() => onOpenPo(stop)}
-                    onRemove={() => onRemovePo(stop)}
-                    onCancelClaim={() => onCancelClaim(stop)}
-                  />
-                ))}
+                {list.stops.map(stop => {
+                  const number = list.numbers.get(stop.id)
+                  return (
+                    <StopRow
+                      key={stop.id}
+                      stop={stop}
+                      color={number ? colors.get(number.workerId) : undefined}
+                      // Only rows owned by another driver dim. An unowned waiting
+                      // stop stays bright — it is still available to this driver.
+                      dimmed={
+                        focusWorkerId !== 'all'
+                        && number != null
+                        && number.workerId !== focusWorkerId
+                      }
+                      onOpen={() => onOpenPo(stop)}
+                      onRemove={() => onRemovePo(stop)}
+                      onCancelClaim={() => onCancelClaim(stop)}
+                    />
+                  )
+                })}
               </div>
 
               {/* The paper trip ticket tops out around here, so say so before a
@@ -194,9 +223,13 @@ export function TripBoard({
 }
 
 function StopRow({
-  stop, onOpen, onRemove, onCancelClaim,
+  stop, color, dimmed = false, onOpen, onRemove, onCancelClaim,
 }: {
   stop: PurchaseOrder
+  /** Owned by a driver other than the one being focused. */
+  dimmed?: boolean
+  /** The claim holder's colour, for the avatar on the claim line. */
+  color?: string
   onOpen: () => void
   onRemove: () => void
   onCancelClaim: () => void
@@ -213,15 +246,20 @@ function StopRow({
 
   return (
     <div
-      className={`flex items-center gap-2 px-3 py-2 transition-colors hover:bg-muted/20 ${claimRowClass(stop, claimed)}`}
+      className={`flex items-center gap-2 px-3 py-2 transition-all hover:bg-muted/20 ${claimRowClass(stop, claimed)} ${
+        // Dimmed, never hidden — the row still counts toward the card's totals.
+        dimmed ? 'opacity-35' : ''
+      }`}
     >
-      {/* The driver's own sequence number, assigned when they got there. */}
-      <span
-        className={`w-5 shrink-0 text-center text-[11px] font-semibold tabular-nums ${
-          stop.sequence_no ? 'text-muted-foreground' : 'text-transparent'
-        }`}
-      >
-        {stop.sequence_no ? `#${stop.sequence_no}` : '#'}
+      {/* State, not sequence — see StatusDot. A per-person stop number was here
+          briefly and read as broken numbering on a shared list: three drivers
+          holding one stop each all showed ①. The run order lives on Activity →
+          By driver, where every row belongs to the same person. */}
+      <span className="w-4 shrink-0 flex justify-center">
+        <StatusDot
+          tone={DELIVERY_STATUS_TONE[stop.status]}
+          label={DELIVERY_STATUS_LABEL[stop.status]}
+        />
       </span>
 
       <button onClick={onOpen} className="flex-1 min-w-0 text-left">
@@ -264,7 +302,7 @@ function StopRow({
 
         {/* Who is on their way. A live lock, unlike the plate/driver above which
             are recorded after the stop was actually run. */}
-        {claimed && <ClaimLine row={stop} holder="driver" />}
+        {claimed && <ClaimLine row={stop} holder="driver" color={color} />}
       </button>
 
       {claimed && (
@@ -281,6 +319,7 @@ function StopRow({
           variant="ghost"
           size="icon-xs"
           aria-label={`Remove ${stop.po_number} from this list`}
+          title="Take this stop off the day's trip list"
           onClick={onRemove}
         >
           <X />
