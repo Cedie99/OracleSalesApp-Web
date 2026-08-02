@@ -1,19 +1,26 @@
 'use client'
 
-import { useMemo } from 'react'
+import { Suspense, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Header } from '@/components/header'
 import { ModuleSwitcher } from '@/components/module-switcher'
 import { SalesMapView } from '@/components/maps/sales-map-view'
 import { TripMapView } from '@/components/maps/trip-map-view'
 import { useAdminModules } from '@/lib/hooks/use-admin-modules'
-import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
+import { fromDateInput, useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useCollectionVisits } from '@/lib/hooks/use-collection'
 import { usePurchaseOrders } from '@/lib/hooks/use-delivery'
 import { collectionTrips } from '@/lib/collection'
 import { deliveryTrips } from '@/lib/delivery'
 import { peso } from '@/lib/money'
 import type { TripStop } from '@/lib/trips'
+import { ADMIN_MODULES, type AdminModule } from '@/lib/permissions'
 import { Loader2 } from 'lucide-react'
+
+/** Narrows a raw `?module=` string before it is trusted as a module name. */
+function isAdminModule(value: string): value is AdminModule {
+  return (ADMIN_MODULES as string[]).includes(value)
+}
 
 /**
  * Maps — one page, three lenses, chosen by the admin's scope.
@@ -32,8 +39,45 @@ import { Loader2 } from 'lucide-react'
  * Collection and Delivery read the live tables (migrations 043/044), the same
  * ones their admin pages publish into.
  */
-export default function MapsPage() {
+/**
+ * `useSearchParams` forces the client tree up to the nearest Suspense boundary
+ * to render on the client. This page is otherwise statically prerendered, and
+ * Next's docs are explicit that a static page calling it from a Client Component
+ * **fails the production build** without a boundary — while working fine in dev,
+ * where routes render on demand. Hence the split: the default export below is
+ * that boundary, and this is what it wraps.
+ */
+function MapsPageContent() {
   const { activeModule, modules, setModule, loading, hasChoice } = useAdminModules()
+
+  /**
+   * Deep link from a module's Activity tab:
+   * `?module=collection&trip=<workerId>|<day>`.
+   *
+   * Derived, not synced: `linkedModule` only stands in until the admin touches
+   * the switcher, after which their choice wins. Re-asserting the param would
+   * make the switcher spring back every time they used it.
+   */
+  const searchParams = useSearchParams()
+  const rawModule = searchParams.get('module')
+  const linkedTripId = searchParams.get('trip')
+  const linkedModule =
+    rawModule && isAdminModule(rawModule) && modules.includes(rawModule) ? rawModule : null
+  /**
+   * A `Trip.id` is `${workerId}|${day}`, so the link already carries everything
+   * needed to scope the map to that one run: whose it is and which day.
+   *
+   * Both matter. The map's own default is a single day anchored on today, so a
+   * link to a run from last Tuesday would land on an empty map and read as a
+   * broken link — the trip simply would not be in `trips` to select.
+   */
+  const [linkedWorkerId, linkedDay] = linkedTripId?.split('|') ?? []
+  const [switched, setSwitched] = useState(false)
+  const effectiveModule = !switched && linkedModule ? linkedModule : activeModule
+  const chooseModule = (m: AdminModule) => {
+    setSwitched(true)
+    setModule(m)
+  }
 
   // Both lenses' data is fetched regardless of which is on screen. They are two
   // small queries and an admin flips between them constantly; refetching on
@@ -43,7 +87,12 @@ export default function MapsPage() {
 
   // One filter instance for both operational lenses. Defaults to a single day
   // because that is the unit a trip exists in — a run belongs to its day.
-  const dateFilter = useDateRangeFilter({ defaultPreset: 'day' })
+  const dateFilter = useDateRangeFilter({
+    defaultPreset: 'day',
+    // Open on the linked run's day rather than today. Initial state only — the
+    // stepper and the picker take over from the first interaction.
+    defaultAnchorDay: linkedDay ? fromDateInput(linkedDay) : undefined,
+  })
   const { inRange } = dateFilter
 
   const collection = useMemo(() => {
@@ -95,7 +144,7 @@ export default function MapsPage() {
   }, [purchaseOrders, inRange])
 
   const switcher = hasChoice ? (
-    <ModuleSwitcher modules={modules} value={activeModule} onChange={setModule} />
+    <ModuleSwitcher modules={modules} value={effectiveModule} onChange={chooseModule} />
   ) : undefined
 
   // Holding here rather than rendering through the unresolved scope: until the
@@ -115,9 +164,9 @@ export default function MapsPage() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      {activeModule === 'sales' && <SalesMapView headerAction={switcher} />}
+      {effectiveModule ==='sales' && <SalesMapView headerAction={switcher} />}
 
-      {activeModule === 'collection' && (
+      {effectiveModule ==='collection' && (
         <TripMapView
           title="Collection Trips"
           moduleLabel="collection"
@@ -126,10 +175,12 @@ export default function MapsPage() {
           openStops={collection.openStops}
           nouns={{ stop: ['store', 'stores'], worker: ['collector', 'collectors'] }}
           dateFilter={dateFilter}
+          initialTripId={linkedModule === 'collection' ? linkedTripId : null}
+          initialWorkerId={linkedModule === 'collection' ? linkedWorkerId : null}
         />
       )}
 
-      {activeModule === 'delivery' && (
+      {effectiveModule ==='delivery' && (
         <TripMapView
           title="Delivery Trips"
           moduleLabel="delivery"
@@ -138,8 +189,33 @@ export default function MapsPage() {
           openStops={delivery.openStops}
           nouns={{ stop: ['stop', 'stops'], worker: ['driver', 'drivers'] }}
           dateFilter={dateFilter}
+          initialTripId={linkedModule === 'delivery' ? linkedTripId : null}
+          initialWorkerId={linkedModule === 'delivery' ? linkedWorkerId : null}
         />
       )}
     </div>
+  )
+}
+
+/**
+ * The Suspense boundary `useSearchParams` requires — see MapsPageContent. The
+ * fallback mirrors that component's own loading state so following a deep link
+ * doesn't flash a different shape on the way in.
+ */
+export default function MapsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex flex-col flex-1 min-h-0">
+          <Header title="Maps" />
+          <div className="flex-1 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Loading map…
+          </div>
+        </div>
+      }
+    >
+      <MapsPageContent />
+    </Suspense>
   )
 }

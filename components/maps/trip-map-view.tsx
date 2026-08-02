@@ -57,6 +57,26 @@ interface TripMapViewProps {
   openStops: TripStop[]
   nouns: Nouns
   dateFilter: DateRangeFilterState
+  /**
+   * A `Trip.id` (`${workerId}|${day}`) to open on arrival — set when the admin
+   * followed "View on map" from a module's Activity tab.
+   *
+   * Applied as a DERIVED fallback for the selection, not by seeding state in an
+   * effect: `trips` arrives from an async query, so an effect would have to fire
+   * setState after mount, which is both a cascading render and the thing
+   * `react-hooks/set-state-in-effect` exists to stop. The first click on any run
+   * takes over and this is never consulted again.
+   */
+  initialTripId?: string | null
+  /**
+   * Worker to scope the map to on arrival, from the same deep link.
+   *
+   * Scoping as well as selecting is the difference between "this run is
+   * highlighted among everyone else's" and "show me this run" — the latter is
+   * what following a link from one person's Activity run means. Derived, so the
+   * "All collectors" control overrides it the moment it is used.
+   */
+  initialWorkerId?: string | null
 }
 
 function plural(n: number, [one, many]: [string, string]): string {
@@ -84,11 +104,28 @@ export function TripMapView({
   openStops,
   nouns,
   dateFilter,
+  initialTripId,
+  initialWorkerId,
 }: TripMapViewProps) {
   const [search, setSearch] = useState('')
-  const [workerFilter, setWorkerFilter] = useState<'all' | string>('all')
+  const [pickedWorker, setPickedWorker] = useState<'all' | string>('all')
+  const [touchedWorker, setTouchedWorker] = useState(false)
+  const workerFilter = touchedWorker ? pickedWorker : (initialWorkerId ?? 'all')
+  const setWorkerFilter = (id: 'all' | string) => {
+    setTouchedWorker(true)
+    setPickedWorker(id)
+  }
   const [listMode, setListMode] = useState<'trips' | 'open'>('trips')
-  const [selectedTripId, setSelectedTripId] = useState<string | null>(null)
+  // `null` here means "the admin has not chosen yet", which is what lets the
+  // deep-linked run below stand in without an effect. Clicking any run — even to
+  // deselect — sets `touchedSelection` and this becomes the only source.
+  const [pickedTripId, setPickedTripId] = useState<string | null>(null)
+  const [touchedSelection, setTouchedSelection] = useState(false)
+  const selectedTripId = touchedSelection ? pickedTripId : (initialTripId ?? null)
+  const setSelectedTripId = (id: string | null) => {
+    setTouchedSelection(true)
+    setPickedTripId(id)
+  }
   const [selectedStopId, setSelectedStopId] = useState<string | null>(null)
 
   const [mapType, setMapType] = useState<MapTileType>('satellite')
@@ -123,6 +160,20 @@ export function TripMapView({
     setSelectedStopId(null)
     setHighlight(null)
   }
+
+  /**
+   * Camera for a deep-linked run, derived exactly as its selection is — a run
+   * selected without the map moving to it looks like the link failed.
+   *
+   * `nonce: 0` is safe because the interactive path starts at 1 (`focusNonce`
+   * pre-increments), so this can never collide with a real focus event.
+   */
+  const initialFocus = useMemo<FocusTarget | null>(() => {
+    if (touchedSelection || !initialTripId) return null
+    const first = trips.find(t => t.id === initialTripId)?.located[0]
+    if (!first) return null
+    return { lat: first.lat!, lng: first.lng!, zoom: 13, nonce: 0 }
+  }, [touchedSelection, initialTripId, trips])
 
   const coord = useMemo(() => parseLatLng(search), [search])
 
@@ -491,7 +542,7 @@ export function TripMapView({
             trips={paths}
             onSelect={selectStop}
             mapType={mapType}
-            focus={focus}
+            focus={focus ?? initialFocus}
             highlight={highlight}
           />
 
