@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Header } from '@/components/header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -9,7 +10,9 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Pagination } from '@/components/ui/pagination'
+import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { usePagination } from '@/lib/hooks/use-pagination'
+import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { AddPoDialog, type AddPoDraft } from '@/components/delivery/add-po-dialog'
 import { PoDetailDialog } from '@/components/delivery/po-detail-dialog'
@@ -18,8 +21,15 @@ import { usePurchaseOrders, useCodRemittances } from '@/lib/hooks/use-delivery'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { TripRuns } from '@/components/trip-runs'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import {
-  buildTripLists, codVariance, dwellMinutes, hasMissingProof, isHeldCod, type TripList,
+  NeedsAttention, type AttentionKey, type AttentionSignal,
+} from '@/components/needs-attention'
+import { isNotWorked, isStaleClaim, staleClaimCount } from '@/lib/claims'
+import {
+  buildTripLists, codVariance, deliveryTrips, dwellMinutes, hasMissingProof, isHeldCod,
+  type TripList,
 } from '@/lib/delivery'
 import { peso, pesoDelta } from '@/lib/money'
 import {
@@ -79,6 +89,9 @@ import { format } from 'date-fns'
  * 044). A PO listed here is immediately visible to the driver's phone.
  */
 
+/** How the Activity tab groups the same set of rows. */
+type ActivityView = 'person' | 'store'
+
 export default function DeliveryPage() {
   const { profile } = useCurrentProfile()
 
@@ -107,7 +120,76 @@ export default function DeliveryPage() {
   const [remittanceBusyId, setRemittanceBusyId] = useState<string | null>(null)
   const [lightboxPhoto, setLightboxPhoto] = useState<LightboxPhoto | null>(null)
 
+  const router = useRouter()
   const drivers = useMemo(() => byRole(['delivery']), [byRole])
+
+  /**
+   * Opens on ALL dates — see the twin note on the Collection page. A failed
+   * stop especially does not stop mattering at midnight: nothing re-lists it,
+   * so it sits here until an admin acts.
+   */
+  const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+  const [attention, setAttention] = useState<AttentionKey | null>(null)
+  /** True when isolating a signal widened the window the admin had narrowed. */
+  const [widened, setWidened] = useState(false)
+  const [activityView, setActivityView] = useState<ActivityView>('person')
+
+  /**
+   * Counted over ALL orders, never the windowed set — see NeedsAttention.
+   * `failed` is the backload pile: goods that rode back on the truck and now
+   * need re-listing or writing off, which nothing does automatically.
+   */
+  const signals = useMemo<AttentionSignal[]>(() => [
+    {
+      key: 'stuck',
+      count: staleClaimCount(orders),
+      label: ['claimed, never run', 'claimed, never run'],
+      hint: 'A driver said they were on their way and never went. Different from "not worked", which nobody picked up at all — this one has a name on it. Claims never expire and each driver may hold only one, so that person cannot take any new stop until an admin releases it.',
+    },
+    {
+      key: 'proof',
+      count: orders.filter(hasMissingProof).length,
+      label: ['missing proof', 'missing proofs'],
+      hint: 'Closed out without a capture the phone should have required — a delivered stop with no proof photo, or a failed one with no backload photo.',
+    },
+    {
+      key: 'failed',
+      count: orders.filter(po => po.status === 'failed').length,
+      label: ['came back', 'came back'],
+      hint: 'Failed deliveries whose goods rode back. One day, one outcome — nothing rolls these forward, so an admin re-lists them on a later day or writes them off.',
+    },
+    {
+      key: 'notworked',
+      count: orders.filter(isNotWorked).length,
+      label: ['not worked', 'not worked'],
+      hint: 'Listed for a day that has passed and never claimed by anyone — the day was over-listed. Different from "came back" (a driver attempted it and the goods returned) and from "claimed, never run" (a driver committed and did not go). Nothing re-lists these, so they sit here until an admin puts them on a later day.',
+    },
+  ], [orders])
+
+  /** See the twin note on the Collection page. */
+  const toggleAttention = useCallback((key: AttentionKey | null) => {
+    setAttention(key)
+    if (key) {
+      if (dateFilter.preset !== 'all') {
+        setWidened(true)
+        dateFilter.setPreset('all')
+      }
+    } else if (widened) {
+      setWidened(false)
+      dateFilter.reset()
+    }
+  }, [dateFilter, widened])
+
+  const matchesAttention = useCallback(
+    (po: PurchaseOrder) => {
+      if (attention === 'stuck') return isStaleClaim(po)
+      if (attention === 'proof') return hasMissingProof(po)
+      if (attention === 'failed') return po.status === 'failed'
+      if (attention === 'notworked') return isNotWorked(po)
+      return true
+    },
+    [attention]
+  )
 
   const matchesSearch = useCallback(
     (po: PurchaseOrder) => {
@@ -128,6 +210,7 @@ export default function DeliveryPage() {
       const matchDriver = driverFilter === 'all' || po.driver_id === driverFilter
       const matchStatus = statusFilter === 'all' || po.status === statusFilter
       return matchesSearch(po) && matchDriver && matchStatus
+        && dateFilter.inRange(po.scheduled_for) && matchesAttention(po)
     })
 
     // Failed deliveries first — they are the only rows waiting on someone here —
@@ -135,15 +218,48 @@ export default function DeliveryPage() {
     const rank = (po: PurchaseOrder) =>
       po.status === 'failed' ? 0 : po.status === 'pending' ? 1 : 2
     return [...filtered].sort((a, b) => rank(a) - rank(b) || a.po_number.localeCompare(b.po_number))
-  }, [orders, driverFilter, statusFilter, matchesSearch])
+  }, [orders, driverFilter, statusFilter, matchesSearch, dateFilter, matchesAttention])
 
   /**
-   * The trip lists honour the search box but ignore the driver and status
-   * filters. A driver only lands on a row once the stop has been run, so
-   * filtering by one would silently drop every stop still waiting — which is the
-   * main thing an admin opens this tab to see.
+   * The trip lists honour the search box and the date window, but still ignore
+   * the driver and status filters. A driver only lands on a row once the stop
+   * has been run, so filtering by one would silently drop every stop still
+   * waiting — the main thing an admin opens this tab to see.
+   *
+   * The driver selection is not discarded: it goes to TripBoard as a FOCUS,
+   * dimming other people's rows rather than removing them.
+   *
+   * `scheduled_for` is safe to window on because the admin sets it when
+   * publishing — every stop has one. Windowing on `time_out` would reintroduce
+   * exactly the bug described above.
    */
-  const lists = useMemo(() => buildTripLists(orders.filter(matchesSearch)), [orders, matchesSearch])
+  const lists = useMemo(
+    () => buildTripLists(
+      orders.filter(
+        po => matchesSearch(po) && dateFilter.inRange(po.scheduled_for) && matchesAttention(po)
+      )
+    ),
+    [orders, matchesSearch, dateFilter, matchesAttention]
+  )
+
+  /**
+   * One entry per driver per day, in the order they ran it — the other half of
+   * the Activity tab, over the same rows as `filteredOrders`.
+   *
+   * ⚠️ Runs are filtered WHOLE, never stop-by-stop — see the twin note on the
+   * Collection page. `deliveryTrips` numbers stops by position within the group
+   * it is handed, so a filtered subset would renumber the survivors and claim a
+   * running order that never happened.
+   */
+  const trips = useMemo(() => {
+    const scoped = orders.filter(
+      po =>
+        (driverFilter === 'all' || po.driver_id === driverFilter) &&
+        dateFilter.inRange(po.scheduled_for)
+    )
+    const matched = new Set(filteredOrders.map(po => po.id))
+    return deliveryTrips(scoped).filter(t => t.stops.some(s => matched.has(s.id)))
+  }, [orders, driverFilter, dateFilter, filteredOrders])
 
   const remittances = useMemo(() => {
     const scoped = codRemittances.filter(
@@ -157,7 +273,9 @@ export default function DeliveryPage() {
     })
   }, [codRemittances, driverFilter])
 
-  const ordersPage = usePagination(filteredOrders, 10, `${search}|${driverFilter}|${statusFilter}`)
+  const ordersPage = usePagination(
+    filteredOrders, 10, `${search}|${driverFilter}|${statusFilter}|${dateFilter.key}`
+  )
   const remittancesPage = usePagination(remittances, 9, driverFilter)
 
   const stats = useMemo(() => {
@@ -236,22 +354,22 @@ export default function DeliveryPage() {
   )
 
   /** Only ever called for stops no driver has touched — see TripBoard. */
-  const handleRemovePo = useCallback(
-    async (po: PurchaseOrder) => {
-      const message = await removeOrder(po.id)
-      setActionError(message ?? '')
-    },
-    [removeOrder]
-  )
+  /** Staged, not fired — see the twin note on the Collection page. */
+  const [pendingAction, setPendingAction] =
+    useState<{ kind: 'remove' | 'release'; po: PurchaseOrder } | null>(null)
+  const [actionBusy, setActionBusy] = useState(false)
 
-  /** Release a driver's hold — the delivery twin of collection's cancel. */
-  const handleCancelClaim = useCallback(
-    async (po: PurchaseOrder) => {
-      const message = await cancelClaim(po.id)
-      setActionError(message ?? '')
-    },
-    [cancelClaim]
-  )
+  const runPendingAction = useCallback(async () => {
+    if (!pendingAction) return
+    setActionBusy(true)
+    const { kind, po } = pendingAction
+    const message = kind === 'remove'
+      ? await removeOrder(po.id)
+      : await cancelClaim(po.id)
+    setActionError(message ?? '')
+    setActionBusy(false)
+    setPendingAction(null)
+  }, [pendingAction, removeOrder, cancelClaim])
 
   /**
    * Close out a COD remittance, or reopen one. The driver's app can't — migration
@@ -389,15 +507,21 @@ export default function DeliveryPage() {
               ))}
             </SelectContent>
           </Select>
+          <DateRangeFilter filter={dateFilter} />
           <Button className="h-9" onClick={() => openAdd()}>
             <Plus /> Add PO
           </Button>
         </div>
 
+        <NeedsAttention
+          signals={signals} active={attention} widened={widened} onToggle={toggleAttention}
+        />
+
         <Tabs defaultValue="lists">
           <TabsList>
-            <TabsTrigger value="lists">Trip Lists ({lists.length})</TabsTrigger>
-            <TabsTrigger value="deliveries">Deliveries ({filteredOrders.length})</TabsTrigger>
+            {/* One tab per JOB — see the twin note on the Collection page. */}
+            <TabsTrigger value="lists">Lists ({lists.length})</TabsTrigger>
+            <TabsTrigger value="activity">Activity ({filteredOrders.length})</TabsTrigger>
             <TabsTrigger value="remittances">COD Remittances ({remittances.length})</TabsTrigger>
           </TabsList>
 
@@ -405,15 +529,42 @@ export default function DeliveryPage() {
           <TabsContent value="lists" className="mt-4 space-y-4">
             <TripBoard
               lists={lists}
+              focusWorkerId={driverFilter}
               onOpenPo={setSelected}
               onAddPo={handleAddPoToList}
-              onRemovePo={handleRemovePo}
-              onCancelClaim={handleCancelClaim}
+              onRemovePo={po => setPendingAction({ kind: 'remove', po })}
+              onCancelClaim={po => setPendingAction({ kind: 'release', po })}
             />
           </TabsContent>
 
-          {/* --- Deliveries: what came back --- */}
-          <TabsContent value="deliveries" className="mt-4">
+          {/* --- Activity: what came back, grouped the way you need to read it --- */}
+          <TabsContent value="activity" className="mt-4 space-y-3">
+            {/* Same rows either way — only the grouping changes. */}
+            <Tabs value={activityView} onValueChange={v => setActivityView(v as ActivityView)}>
+              <TabsList className="h-8">
+                <TabsTrigger value="person" className="text-xs px-3">
+                  By driver ({trips.length})
+                </TabsTrigger>
+                <TabsTrigger value="store" className="text-xs px-3">
+                  By stop ({filteredOrders.length})
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            {activityView === 'person' ? (
+              <TripRuns
+                trips={trips}
+                nouns={{ stop: ['stop', 'stops'], worker: ['driver', 'drivers'] }}
+                onOpenStop={id => {
+                  const po = orders.find(o => o.id === id)
+                  if (po) setSelected(po)
+                }}
+                onViewOnMap={trip => router.push(
+                  `/maps?module=delivery&trip=${encodeURIComponent(trip.id)}`
+                )}
+              />
+            ) : (
+            <>
             <Card className="overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -562,6 +713,8 @@ export default function DeliveryPage() {
               page={ordersPage.page} pageCount={ordersPage.pageCount} onPageChange={ordersPage.setPage}
               from={ordersPage.from} to={ordersPage.to} total={ordersPage.total} itemLabel="purchase orders"
             />
+            </>
+            )}
           </TabsContent>
 
           {/* --- COD remittances --- */}
@@ -689,6 +842,40 @@ export default function DeliveryPage() {
         orders={orders}
         defaults={addDefaults}
         onAdd={handleAdd}
+      />
+
+      <ConfirmDialog
+        open={!!pendingAction}
+        busy={actionBusy}
+        destructive={pendingAction?.kind === 'remove'}
+        title={pendingAction?.kind === 'remove' ? 'Remove this stop?' : 'Release this claim?'}
+        confirmLabel={pendingAction?.kind === 'remove' ? 'Remove stop' : 'Release claim'}
+        description={
+          pendingAction?.kind === 'remove' ? (
+            <>
+              <span className="font-medium text-foreground">
+                {pendingAction.po.po_number}
+              </span>{' '}
+              comes off this day&apos;s trip list and disappears from the drivers&apos; phones. Only
+              a stop nobody has run or claimed can be removed, so no captured proof or COD is
+              lost — but the goods still need a day, so re-list it.
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-foreground">
+                {pendingAction?.po.claimed_by_name ?? 'The driver'}
+              </span>{' '}
+              is on their way to{' '}
+              <span className="font-medium text-foreground">
+                {pendingAction?.po.client?.company_name ?? pendingAction?.po.po_number}
+              </span>
+              . Releasing puts it back in the shared pool for any driver, and frees their one claim
+              slot — do it if they have finished for the day or the claim was a mistake.
+            </>
+          )
+        }
+        onConfirm={runPendingAction}
+        onOpenChange={open => !open && setPendingAction(null)}
       />
 
       <PoDetailDialog

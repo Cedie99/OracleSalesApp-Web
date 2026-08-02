@@ -6,6 +6,8 @@
 
 ## Read this first
 
+**Status, 2026-08-02 → see §13.** Answers mobile commit `3180b7b`. Migration **061** widens `payment_method` to accept `delivery_receipt` and adds the collection signature column — both things that commit's message asked web for. It is committed but **not merged**, so the constraint on the live database still rejects `delivery_receipt` today. One correction worth reading before you wire it up: the signature column is `customer_signature_url`, not the `signature_url` mobile's comment guesses at.
+
 **Status, 2026-07-31 → see §12.** It answers mobile's `COLLECTION_DELIVERY_STATUS_MOBILE.md` point by point. Short version: the claim display it lists as the one thing blocking mobile has been shipped since `c9e0bf8`, remittance reconciliation is now built, and the Phase 2b/2c photos are rendering in the admin. Nothing on this doc is waiting on web.
 
 **Status, 2026-07-28: 043/044 are merged to main and deployed.** Commit `9c40364`; CI's `db push` ran on merge. The paragraph below describes the pre-merge state and is kept for the numbering rationale, which still applies.
@@ -521,3 +523,58 @@ Nothing outstanding from the current mobile status doc. The next items on this s
 ### One thing worth a second look on mobile
 
 `sequence_no` is assigned as `MAX(sequence_no) + 1` over the driver's whole history with no day in the `WHERE` clause, so it never resets — a driver's second day starts at #4. Web now renumbers from the position within each (driver, day) group and uses the stored value only as an ordering key, which is correct for the board either way. Flagging it because anything on the phone that shows the raw number to a driver will drift further every day.
+
+---
+
+## 13. Reply to mobile commit `3180b7b` — migration 061, 2026-08-02
+
+Read against `3180b7b` (2026-08-01, PR #27: plain-English copy, tabbed delivery outcome, new payment methods). Both database dependencies you flagged in the commit message are now written. **Migration 057 is committed but NOT yet merged** — merging runs `db push` against the shared project, so I'll ping before it goes.
+
+### ✅ `payment_method` now accepts `delivery_receipt`
+
+You were right that this was hard-blocking: `043` had the CHECK inline as `IN ('cash','check','gcash','counter')`, so every delivery-receipt push would have come back as a `23514` check violation.
+
+057 drops and re-adds it as a **named** constraint, `collection_visits_payment_method_valid`, so the next widening is a one-liner rather than a guess at Postgres' generated name.
+
+**`cod_method` on `purchase_orders` is deliberately NOT widened.** Settling by delivery receipt has no meaning on the truck, and your `RemoteCodMethod` already agrees — it stayed `cash|check|gcash`. Flagging only so nobody later reads the asymmetry as an oversight.
+
+### ✅ The signature column exists — with a different name than you guessed
+
+`lib/collection-delivery-write.ts:78` anticipates a web `signature_url`. **It is `customer_signature_url`.**
+
+Two reasons, and I'd rather spend your one string edit than leave it: 044 already has `receiver_signature_url` on `purchase_orders`, so a bare `signature_url` breaks the convention the moment you read the two tables side by side; and it doesn't say whose signature it is, which on a collection row is a genuine question (the customer's, not the collector's). Your call site is still unwritten — the comment calls it "a one-line `queuePhoto` once ready" — so this costs one identifier now and nothing later.
+
+**No storage work needed on either side.** The `collection-proofs` bucket already exists (043) and its INSERT policy checks only `bucket_id`, with no path prefix — so `collection-proofs/{visit_id}/signature.jpg` is already writable by a collector today. You need a `pending_uploads` kind, not a bucket.
+
+The column is **nullable**, same as the two photo columns and for the same two reasons 043 gave: the row rides the outbox while the image rides your separate lane, and a capture that never arrived is a hole web has to show rather than reject at the door.
+
+### ⚠️ Web is not flagging missing signatures yet — on purpose
+
+`hasMissingProof` treats the signature as **not required** for now. Every collected row in the database has a null signature, so switching it on today would flag the entire history as incomplete and the flag would mean nothing.
+
+**Tell me when signatures start uploading and I'll flip the one boolean** (`proofRequired` in `lib/collection.ts`). Until then web displays a signature when one is present and stays quiet when it isn't.
+
+**Two web-side steps are queued behind the 061 merge, in this order:**
+
+1. Add `customer_signature_url` back to `VISIT_COLUMNS` in `lib/hooks/use-collection.ts`. It is deliberately absent right now. Naming a column PostgREST doesn't know **fails the entire select** — it does not degrade to a null field — so referencing it before the migration deployed returned zero rows and took the whole Collection page down behind a *"column does not exist"* banner. Caught in the browser, not by `tsc` or the build, neither of which knows the live schema. Worth mobile knowing too: the same trap applies to any column you read ahead of a migration.
+2. Then flip `proofRequired`, once signatures are actually arriving.
+
+### 🔴 One thing your change broke on web that the commit message didn't mention
+
+Hiding the delivery-receipt photo slot for `counter` and `delivery_receipt` is right, but web's "missing proof" rule required **both** photos on every collected visit regardless of method. Left alone, every counter and delivery-receipt collection would have shown up on the admin board as *"1 required capture is missing"* — sending an admin to chase a collector for a photo their app never offered to take.
+
+Fixed here: the required set is now derived per method, mirroring your `showReceiptPhoto`. A capture that is no longer required but arrived anyway (a Counter visit from before 2026-08-01) is still displayed — it just no longer counts as a hole.
+
+Worth knowing as a general shape: **a rule about which captures are mandatory lives in two repos**, and yours is the one that enforces it. When a capture becomes optional on the phone, web has to be told, or it reports a fleet of false holes.
+
+### ✅ Checked and fine: no amount for counter / delivery_receipt
+
+`collection_visits_collected_complete` requires `amount_collected IS NOT NULL`, and I expected this to be a second blocker. It isn't — `visit.tsx` sends `amount: showAmount ? amountValue : 0`, and `0` satisfies both that constraint and `amount_collected >= 0`.
+
+That is also the semantically right value: the store was worked and nothing was handed over, which is different from a row that never recorded an amount. Web sums it harmlessly and the constraint stays as written. Keep sending `0` rather than `null`.
+
+### Also hardened, prompted by this change
+
+`delivery_receipt` arriving from mobile ahead of web would have **hard-crashed the Collection dashboard** — a `Record` keyed off web's `PaymentMethod` union, indexed with a raw database value, `undefined.count += 1`. Exactly the failure the `executive` role caused on the Users page on 2026-07-24, which §6 cites as the reason `admin_scope` became a column instead of new role values.
+
+That is now guarded rather than merely widened, in both places it occurred, plus a `paymentMethodLabel()` helper that renders an unrecognised value readably instead of blank. **This is on web, not on you** — mobile shipping a value first is normal and the two repos will always be briefly out of step. Web's job is to degrade, not explode.

@@ -9,7 +9,7 @@ import {
 import { dwellMinutes, poProofs } from '@/lib/delivery'
 import { peso } from '@/lib/money'
 import {
-  DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE,
+  DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, PAYMENT_METHOD_TONE, paymentMethodLabel,
   TONE_CLASS, TONE_TEXT,
 } from '@/lib/status-styles'
 import type { PurchaseOrder } from '@/types'
@@ -70,7 +70,7 @@ function PoDetail({
           </Badge>
           {po.cod_method && (
             <Badge variant="tone" className={TONE_CLASS[PAYMENT_METHOD_TONE[po.cod_method]]}>
-              COD · {PAYMENT_METHOD_LABEL[po.cod_method]}
+              COD · {paymentMethodLabel(po.cod_method)}
             </Badge>
           )}
         </div>

@@ -56,10 +56,22 @@ export interface DateRangeFilterState {
  * behave identically. Parses native date inputs in LOCAL time (see fromDateInput)
  * to avoid the off-by-a-day drift a bare `new Date('yyyy-MM-dd')` (UTC) causes.
  */
-export function useDateRangeFilter(opts?: { defaultPreset?: DatePreset }): DateRangeFilterState {
+export function useDateRangeFilter(opts?: {
+  defaultPreset?: DatePreset
+  /**
+   * Day the single-day preset starts on. Defaults to today.
+   *
+   * Exists so a caller arriving from a deep link can open on the linked day —
+   * a trip belongs to its day, so landing on today would show an empty map and
+   * look like the link was broken. Read once as initial state, so changing it
+   * later does not yank the window out from under someone mid-browse.
+   */
+  defaultAnchorDay?: Date
+}): DateRangeFilterState {
   const defaultPreset = opts?.defaultPreset ?? 'all'
+  const initialAnchor = opts?.defaultAnchorDay
   const [preset, setPreset] = useState<DatePreset>(defaultPreset)
-  const [anchorDay, setAnchorDay] = useState<Date>(() => new Date())
+  const [anchorDay, setAnchorDay] = useState<Date>(() => initialAnchor ?? new Date())
   const [customStart, setCustomStart] = useState<Date>(() => new Date())
   const [customEnd, setCustomEnd] = useState<Date>(() => new Date())
 

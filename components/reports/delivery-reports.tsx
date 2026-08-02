@@ -8,7 +8,7 @@ import { useProfiles } from '@/lib/hooks/use-profiles'
 import { codVariance, dwellMinutes, hasMissingProof } from '@/lib/delivery'
 import { peso } from '@/lib/money'
 import {
-  DELIVERY_STATUS_LABEL, PAYMENT_METHOD_LABEL, REMITTANCE_STATUS_LABEL,
+  DELIVERY_STATUS_LABEL, REMITTANCE_STATUS_LABEL, paymentMethodLabel,
 } from '@/lib/status-styles'
 import { Package, CircleDollarSign } from 'lucide-react'
 import { format } from 'date-fns'
@@ -82,7 +82,7 @@ export function DeliveryReports() {
             'COD': po.cod ? 'Yes' : 'No',
             'COD Due': po.cod_due ?? '',
             'COD Collected': po.cod_amount ?? '',
-            'COD Method': po.cod_method ? PAYMENT_METHOD_LABEL[po.cod_method] : '',
+            'COD Method': po.cod_method ? paymentMethodLabel(po.cod_method) : '',
             'COD Remitted': po.cod ? (po.cod_remitted ? 'Yes' : 'No') : '',
             'Received By': po.receiver_name ?? '',
             'Signature': po.receiver_signature_url ? 'Yes' : 'No',

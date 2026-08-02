@@ -16,6 +16,7 @@
  * again on a later day — nothing rolls forward by itself.
  */
 import type { CodRemittance, PurchaseOrder } from '@/types'
+import { numberStopsByWorker, type WorkerStopNumber } from '@/lib/board-numbering'
 import { peso } from '@/lib/money'
 import { groupByWorkerDay, tripColor, workerColors, type Trip, type TripStop } from '@/lib/trips'
 
@@ -143,6 +144,13 @@ export interface TripList {
    * actually worked — nobody is assigned to a day up front.
    */
   drivers: DayDriver[]
+  /**
+   * Each stop's position within its own driver's run for this day, keyed by PO
+   * id. Absent for a stop nobody has worked or claimed. Note this is derived
+   * from position, NOT from the stored `sequence_no` — see lib/board-numbering.ts
+   * and the note on `TripStop.sequence`.
+   */
+  numbers: Map<string, WorkerStopNumber>
 }
 
 function dayKey(iso: string): string {
@@ -189,6 +197,20 @@ export function buildTripLists(orders: PurchaseOrder[]): TripList[] {
       codOutstanding: open.reduce((sum, po) => sum + (po.cod_due ?? 0), 0),
       overCap: stops.length > TRIP_CAP,
       drivers: buildDrivers(stops),
+      // Per day, never across days — a driver's count restarts each morning.
+      numbers: numberStopsByWorker(stops, {
+        id: po => po.id,
+        workedBy: po => po.driver_id,
+        workedByName: po => po.driver?.full_name ?? null,
+        claimedBy: po => po.claimed_by,
+        claimedByName: po => po.claimed_by_name,
+        // `time_out`, NOT `sequence_no`. The stored counter never resets — the
+        // phone assigns it as MAX+1 over the driver's whole history — so it is
+        // useless as a per-day position. `purchase_orders_closed_complete`
+        // guarantees a time_out on every non-pending row, which makes this the
+        // one ordering signal that is both present and day-relative.
+        at: po => po.time_out,
+      }),
     })
   }
 
