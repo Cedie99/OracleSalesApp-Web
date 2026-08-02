@@ -1,8 +1,12 @@
 'use client'
 
+import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { PendingNote } from '@/components/pending-note'
+import {
+  PhotoLightbox, ProofTile, captionFor, type LightboxPhoto,
+} from '@/components/photo-lightbox'
 import { visitProofs } from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
 import {
@@ -25,18 +29,31 @@ interface VisitDetailDialogProps {
  * picked it up brought back — including whether both required captures arrived.
  */
 export function VisitDetailDialog({ visit, onOpenChange, listedByName }: VisitDetailDialogProps) {
+  const [photo, setPhoto] = useState<LightboxPhoto | null>(null)
+
   return (
-    <Dialog open={!!visit} onOpenChange={open => !open && onOpenChange(false)}>
-      <DialogContent className="max-w-md">
-        {visit && <VisitDetail visit={visit} listedByName={listedByName} />}
-      </DialogContent>
-    </Dialog>
+    <>
+      <Dialog open={!!visit} onOpenChange={open => !open && onOpenChange(false)}>
+        <DialogContent className="max-w-md">
+          {visit && (
+            <VisitDetail visit={visit} listedByName={listedByName} onOpenPhoto={setPhoto} />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* A sibling, not a child — see PhotoLightbox. */}
+      <PhotoLightbox photo={photo} onOpenChange={open => !open && setPhoto(null)} />
+    </>
   )
 }
 
 function VisitDetail({
-  visit, listedByName,
-}: { visit: CollectionVisit; listedByName: string | null }) {
+  visit, listedByName, onOpenPhoto,
+}: {
+  visit: CollectionVisit
+  listedByName: string | null
+  onOpenPhoto: (photo: LightboxPhoto) => void
+}) {
   const proofs = visitProofs(visit)
   const missing = visit.status === 'collected' ? proofs.filter(p => !p.url) : []
   const shortfall =
@@ -123,25 +140,14 @@ function VisitDetail({
           )}
           <div className="grid grid-cols-2 gap-2">
             {proofs.map(proof => (
-              <div key={proof.label} className="space-y-1">
-                {proof.url ? (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img
-                    src={proof.url}
-                    alt={proof.label}
-                    className="w-full aspect-4/3 object-cover rounded-lg border border-border"
-                  />
-                ) : (
-                  <div
-                    className={`w-full aspect-4/3 rounded-lg border border-dashed flex items-center justify-center ${
-                      visit.status === 'collected' ? 'border-destructive/40' : 'border-border'
-                    }`}
-                  >
-                    <Camera className="w-4 h-4 text-muted-foreground opacity-50" />
-                  </div>
-                )}
-                <p className="text-[10px] text-muted-foreground leading-tight">{proof.label}</p>
-              </div>
+              <ProofTile
+                key={proof.label}
+                label={proof.label}
+                url={proof.url}
+                missing={visit.status === 'collected'}
+                caption={captionFor(visit.collector?.full_name, visit.visited_at ?? visit.scheduled_for)}
+                onOpen={onOpenPhoto}
+              />
             ))}
           </div>
         </div>
