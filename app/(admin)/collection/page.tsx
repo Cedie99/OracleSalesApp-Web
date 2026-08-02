@@ -25,7 +25,8 @@ import {
   REMITTANCE_DESTINATION_LABEL, REMITTANCE_STATUS_LABEL, REMITTANCE_STATUS_TONE,
   TONE_CLASS, TONE_TEXT, VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
-import type { CollectionVisit, PaymentMethod } from '@/types'
+import { RemittanceActions } from '@/components/remittance-actions'
+import type { CollectionVisit, PaymentMethod, RemittanceStatus } from '@/types'
 import {
   Search, Wallet, MapPin, Camera, PenLine, AlertTriangle, Banknote, Clock, ImageOff, Plus,
   Loader2,
@@ -71,7 +72,9 @@ export default function CollectionPage() {
   const {
     visits, loading: visitsLoading, error: visitsError, createVisit, removeVisit, cancelClaim,
   } = useCollectionVisits()
-  const { remittances: allRemittances, error: remittancesError } = useRemittances()
+  const {
+    remittances: allRemittances, error: remittancesError, setStatus: setRemittanceStatus,
+  } = useRemittances()
   const { clients } = useClients()
   const { profiles, byRole } = useProfiles()
   // Surfaces the reason a publish failed — an RLS rejection or a constraint
@@ -87,6 +90,8 @@ export default function CollectionPage() {
   // Bumped on every opening so the dialog remounts with fresh fields — see the
   // note on AddStoreDialog about why this isn't an effect.
   const [addSession, setAddSession] = useState(0)
+  // Which remittance is mid-write, so only that card's buttons go quiet.
+  const [remittanceBusyId, setRemittanceBusyId] = useState<string | null>(null)
 
   const collectors = useMemo(() => byRole(['collector']), [byRole])
 
@@ -218,6 +223,21 @@ export default function CollectionPage() {
       setActionError(message ?? '')
     },
     [cancelClaim]
+  )
+
+  /**
+   * Close out a remittance, or reopen one. The collector's app can't do this —
+   * migration 043 gives it no UPDATE on `remittances` — so this page is the only
+   * place the status ever moves off `submitted`.
+   */
+  const handleRemittanceStatus = useCallback(
+    async (id: string, status: RemittanceStatus) => {
+      setRemittanceBusyId(id)
+      const message = await setRemittanceStatus(id, status)
+      setRemittanceBusyId(null)
+      setActionError(message ?? '')
+    },
+    [setRemittanceStatus]
   )
 
   const listedByName = selectedVisit
@@ -539,6 +559,13 @@ export default function CollectionPage() {
                           </span>
                         ) : null}
                       </div>
+
+                      <RemittanceActions
+                        status={r.status}
+                        delta={delta}
+                        busy={remittanceBusyId === r.id}
+                        onSetStatus={status => handleRemittanceStatus(r.id, status)}
+                      />
                     </CardContent>
                   </Card>
                 )
