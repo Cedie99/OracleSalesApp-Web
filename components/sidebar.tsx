@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, Users, CalendarCheck, ClipboardCheck,
-  AlertTriangle, Clock, FileBarChart2, LogOut, UserCog, Map, Wallet, Truck,
+  AlertTriangle, Clock, FileBarChart2, LogOut, UserCog, Map, Wallet, Truck, Settings,
 } from 'lucide-react'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
@@ -89,7 +89,13 @@ function buildNavGroups(pendingApprovals: number): NavGroup[] {
       // adminOnly is currently a no-op — WEB_ROLES is already just superadmin+admin,
       // so nobody who can load this sidebar fails the check. Kept as a guard in case
       // a lower role is ever granted web access.
-      items: [{ href: '/users', label: 'User Management', icon: UserCog, adminOnly: true }],
+      items: [
+        { href: '/users', label: 'User Management', icon: UserCog, adminOnly: true },
+        // Quota configuration — the cutoff calendar and the per-client visit cap.
+        // Absent from every SCOPE_ROUTES entry, so canAccessRoute already limits
+        // it to unrestricted admins and superadmins, same as User Management.
+        { href: '/settings', label: 'Settings', icon: Settings, adminOnly: true },
+      ],
     },
   ]
 }
