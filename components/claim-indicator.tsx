@@ -2,6 +2,7 @@
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { WorkerAvatar } from '@/components/stop-number'
 import { claimAge, isStaleClaim, type Claimable } from '@/lib/claims'
 import { TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
 import { AlertTriangle, LockOpen, Navigation } from 'lucide-react'
@@ -23,12 +24,22 @@ type Holder = 'collector' | 'driver'
  * Row classes for a claimed stop: a coloured leading rule plus a wash, so the
  * lock is legible while scanning a list rather than only on the row being read.
  * Returns empty for an unclaimed row, which should look like nothing at all.
+ *
+ * The rule stays brand/red rather than taking the holder's personal colour: this
+ * mark answers "is this locked, and is the lock stale", which is a property of
+ * the row. WHO holds it is carried by the avatar and the numbered badge, which
+ * are the per-person marks. Tinting the rule per person would make a stale claim
+ * — the one thing on this board that needs an admin — stop looking urgent.
  */
 export function claimRowClass(row: Claimable, claimed: boolean): string {
   if (!claimed) return ''
+  // Rounded, not square. The tint and its leading rule sit inside a rounded
+  // list container, so square corners collided with the container's radius and
+  // left visible points at the top and bottom of the claimed block. Rounding
+  // makes a claimed row read as a highlighted pill within the list instead.
   return isStaleClaim(row)
-    ? 'border-l-2 border-l-destructive bg-destructive/5'
-    : 'border-l-2 border-l-primary bg-primary/5'
+    ? 'rounded-lg border-l-2 border-l-destructive bg-destructive/5'
+    : 'rounded-lg border-l-2 border-l-primary bg-primary/5'
 }
 
 /**
@@ -37,7 +48,19 @@ export function claimRowClass(row: Claimable, claimed: boolean): string {
  * Distinct from the "worked by" contributors above it on the card, which are
  * recorded after the fact — this one is live, and it is blocking someone.
  */
-export function ClaimLine({ row, holder }: { row: Claimable; holder: Holder }) {
+export function ClaimLine({
+  row, holder, color,
+}: {
+  row: Claimable
+  holder: Holder
+  /**
+   * The holder's personal colour, when the board knows it. Adds their ringed
+   * avatar so two claims by the same person are matchable at a glance without
+   * reading both names — which is the whole point on a card where one person may
+   * hold a stop while several others are working the same list.
+   */
+  color?: string
+}) {
   const stale = isStaleClaim(row)
   const age = claimAge(row)
 
@@ -52,6 +75,7 @@ export function ClaimLine({ row, holder }: { row: Claimable; holder: Holder }) {
       ) : (
         <Navigation className="w-3 h-3 shrink-0" />
       )}
+      {color && <WorkerAvatar name={row.claimed_by_name} color={color} />}
       <span className="truncate">
         {stale ? 'Held since an earlier day by ' : 'On the way · '}
         {row.claimed_by_name ?? `a ${holder}`}

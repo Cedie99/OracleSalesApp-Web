@@ -78,3 +78,49 @@ export function claimAge(row: Claimable, now: Date = new Date()): string | null 
   if (hours < 24) return `${hours}h`
   return `${Math.round(hours / 24)}d`
 }
+
+/**
+ * A row whose day has passed and which nobody ever worked.
+ *
+ * ⚠️ This is NOT the same as `failed` on a purchase order, and the two must not
+ * be merged. `failed` means a driver attempted the stop and the goods rode back
+ * — something happened, and there is a backload photo proving it. This means
+ * nothing happened at all: the day came and went and no one reached the stop.
+ * Folding these together would put phantom rows in the backload pile and
+ * corrupt the "came back" count an admin uses to decide what to re-list.
+ *
+ * DERIVED, never stored. Three reasons it stays that way:
+ *
+ *  1. `purchase_orders_closed_complete` (044) requires a driver_id AND a
+ *     time_out on any non-pending row. An untouched stop has neither, so a
+ *     stored status change would be rejected by the database.
+ *  2. Nothing in the migrations closes out a day — there is no pg_cron and no
+ *     scheduled function — so there is no moment at which such a write could
+ *     honestly happen.
+ *  3. Storing it would need a new status value, which mobile's
+ *     `RemotePurchaseOrderStatus` would have to widen to match. Cross-repo cost
+ *     for something web can compute from two columns it already reads.
+ *
+ * Today's pending rows are excluded on purpose: a stop nobody has reached YET is
+ * the normal state of a live list, not a problem to chase.
+ */
+export function isNotWorked(
+  row: { status: string; scheduled_for: string } & Claimable
+): boolean {
+  if (row.status !== 'pending') return false
+  // ⚠️ A row someone CLAIMED and then abandoned is deliberately excluded — it
+  // belongs to `isStaleClaim`, not here, and counting it in both would inflate
+  // two chips off one row.
+  //
+  // They are different problems with different fixes. Nobody picked this row up:
+  // the day was over-listed, so an admin re-lists it and that is the end of it.
+  // A stale claim has a NAME on it — someone committed to the stop and did not
+  // go — and under the one-claim rule it is still blocking that person from
+  // taking anything new until an admin releases it. One is scheduling, the other
+  // is accountability plus a live block on a worker.
+  if (isStaleClaim(row)) return false
+  const day = new Date(row.scheduled_for)
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+  return day.getTime() < startOfToday.getTime()
+}

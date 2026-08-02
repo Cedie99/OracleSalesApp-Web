@@ -66,8 +66,19 @@ export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
  *
  * Nothing here is in the database yet — no collection tables exist as of
  * migration 024 — so this currently backs mock data only.
+ *
+ * 'delivery_receipt' was added by mobile on 2026-08-01 and widened into the DB
+ * CHECK by migration 061: the delivery receipt itself settles the balance, so no
+ * cash changes hands at the visit. Like Counter it takes the payment photo only
+ * and no amount — mobile writes `amount_collected = 0` for both, which is the
+ * honest value rather than a null.
+ *
+ * ⚠️ This union is NOT a guarantee about what the database holds. It is what web
+ * knows about, and mobile can ship a new value before we do — that is exactly
+ * how 'delivery_receipt' arrived, and how an `executive` role once crashed the
+ * Users page. Anything keying a Record off this union must tolerate a miss.
  */
-export type PaymentMethod = 'cash' | 'check' | 'gcash' | 'counter'
+export type PaymentMethod = 'cash' | 'check' | 'gcash' | 'counter' | 'delivery_receipt'
 
 /** Where a collector hands off the money they're holding. */
 export type RemittanceDestination = 'office' | 'bayad_center' | 'bank_deposit'
@@ -160,6 +171,17 @@ export interface CollectionVisit {
    * skipped it — either way the admin needs to see the hole, not a blank space.
    */
   delivery_receipt_photo_url: string | null
+  /**
+   * The customer's acknowledgment signature, drawn on the collector's phone
+   * (migration 061). Mobile requires it on every payment method before it will
+   * accept "✓ Collected" — including counter and delivery_receipt, where it is
+   * the only thing tying the settlement to the customer.
+   *
+   * Null on every visit collected before 2026-08-01, and on newer ones until the
+   * deferred upload lands. It is therefore NOT yet counted as a required capture
+   * by `hasMissingProof` — see the note in lib/collection.ts.
+   */
+  customer_signature_url: string | null
   gps_lat: number | null
   gps_lng: number | null
   remarks: string | null

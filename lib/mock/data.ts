@@ -423,9 +423,14 @@ function claimFor(id: string) {
 // which is exactly what the real insert does — they are a copy of the client
 // taken when the admin publishes the row (migration 045), not hand-authored.
 // The claim fields are omitted for the same reason — see CLAIMS above.
+// `customer_signature_url` is omitted too, and always null at map time: mobile
+// requires the signature but does not upload it yet (migration 061 created the
+// column; mobile's queuePhoto call is unwritten). Seeding one would show a
+// capture that cannot exist in the live database.
 const collectionVisitSeed: Omit<
   CollectionVisit,
-  'client' | 'collector' | 'client_name' | 'area' | 'claimed_by' | 'claimed_at' | 'claimed_by_name'
+  'client' | 'collector' | 'client_name' | 'area'
+  | 'claimed_by' | 'claimed_at' | 'claimed_by_name' | 'customer_signature_url'
 >[] = [
   {
     id: 'cv-1', collector_id: 'col-1', client_id: 'client-1', status: 'collected',
@@ -560,6 +565,7 @@ export const mockCollectionVisits: CollectionVisit[] = collectionVisitSeed.map(v
     ...v,
     client_name: client?.company_name ?? null,
     area: client?.city ?? null,
+    customer_signature_url: null,
     ...claimFor(v.id),
     client,
     collector: staffById(v.collector_id),
