@@ -57,6 +57,18 @@ export function isStaleClaim(row: Claimable): boolean {
   return day.setHours(0, 0, 0, 0) < today.setHours(0, 0, 0, 0)
 }
 
+/**
+ * How many of these are stuck behind a stale claim.
+ *
+ * Exists because a stale claim is, by definition, on a day the admin has already
+ * stopped looking at — the boards sort newest first, so the one row that needs
+ * acting on is the one furthest from the top. A count on the day header drags it
+ * back into view.
+ */
+export function staleClaimCount(rows: Claimable[]): number {
+  return rows.filter(isStaleClaim).length
+}
+
 /** "12m" / "3h" / "2d" — how long the stop has been held. */
 export function claimAge(row: Claimable, now: Date = new Date()): string | null {
   if (!row.claimed_at) return null

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Client, CollectionVisit, Profile, Remittance } from '@/types'
+import type { Client, CollectionVisit, Profile, Remittance, RemittanceStatus } from '@/types'
 
 /**
  * Live Collection data (migration 043).
@@ -218,8 +218,16 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   return { visits, loading, error, refresh, createVisit, removeVisit, cancelClaim }
 }
 
+interface UseRemittancesResult {
+  remittances: Remittance[]
+  loading: boolean
+  error: string
+  refresh: () => Promise<void>
+  setStatus: (id: string, status: RemittanceStatus) => Promise<string | null>
+}
+
 /** Money handed over by collectors, most recent first. */
-export function useRemittances() {
+export function useRemittances(): UseRemittancesResult {
   const [remittances, setRemittances] = useState<Remittance[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -250,5 +258,35 @@ export function useRemittances() {
     load()
   }, [load])
 
-  return { remittances, loading, error, refresh }
+  /**
+   * Reconcile a remittance, or flag it as a variance. Returns an error message,
+   * or null on success.
+   *
+   * Everything after `submitted` is web's to do. Mobile INSERTs the row and
+   * never touches it again — not by convention but because it cannot: migration
+   * 043 gives collectors INSERT and SELECT on `remittances` and no UPDATE
+   * policy at all, so `status` would sit on its default forever if this page
+   * didn't move it. Admins reach it through "Collection admins manage
+   * remittances", which is `FOR ALL`.
+   *
+   * `submitted` is a legal target too, so a misclick can be undone — the CHECK
+   * constraint allows all three values in any direction, and nothing downstream
+   * treats reconciliation as one-way.
+   */
+  const setStatus = useCallback(
+    async (id: string, status: RemittanceStatus): Promise<string | null> => {
+      const supabase = createClient()
+      const { error: updateError } = await supabase
+        .from('remittances')
+        .update({ status })
+        .eq('id', id)
+
+      if (updateError) return updateError.message
+      await load()
+      return null
+    },
+    [load]
+  )
+
+  return { remittances, loading, error, refresh, setStatus }
 }

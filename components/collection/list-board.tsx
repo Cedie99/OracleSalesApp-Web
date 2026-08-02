@@ -4,12 +4,15 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { claimAge, isActiveClaim, isStaleClaim } from '@/lib/claims'
+import { isActiveClaim, staleClaimCount } from '@/lib/claims'
+import {
+  ClaimLine, ReleaseClaimButton, StaleClaimBadge, claimRowClass,
+} from '@/components/claim-indicator'
 import { dayProgress, hasMissingProof, type CollectionDay } from '@/lib/collection'
 import { peso } from '@/lib/money'
 import { TONE_CLASS, TONE_TEXT, VISIT_STATUS_LABEL, VISIT_STATUS_TONE } from '@/lib/status-styles'
 import type { CollectionVisit } from '@/types'
-import { AlertTriangle, CalendarClock, ImageOff, Navigation, Plus, X } from 'lucide-react'
+import { CalendarClock, ImageOff, Plus, X } from 'lucide-react'
 import { format, isToday, isTomorrow, isYesterday } from 'date-fns'
 
 /** "Today" reads faster than a date the admin has to compare against a calendar. */
@@ -60,6 +63,9 @@ export function ListBoard({
       {days.map(day => {
         const progress = dayProgress(day)
         const done = day.pendingCount === 0
+        // Claims left on a past day. Surfaced up here because the board sorts
+        // newest first, so the row that needs clearing is the one nobody scrolls to.
+        const stuck = staleClaimCount(day.stores)
 
         return (
           <Card key={day.id}>
@@ -73,13 +79,24 @@ export function ListBoard({
                     {day.stores.length === 1 ? 'store' : 'stores'}
                   </p>
                 </div>
-                <Badge
-                  variant="tone"
-                  className={`shrink-0 ${done ? TONE_CLASS.brand : TONE_CLASS.amber}`}
-                >
-                  {done ? 'List cleared' : `${day.pendingCount} left`}
-                </Badge>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <StaleClaimBadge count={stuck} />
+                  <Badge
+                    variant="tone"
+                    className={done ? TONE_CLASS.brand : TONE_CLASS.amber}
+                  >
+                    {done ? 'List cleared' : `${day.pendingCount} left`}
+                  </Badge>
+                </div>
               </div>
+
+              {stuck > 0 && (
+                <p className={`text-[11px] ${TONE_TEXT.red}`}>
+                  {stuck === 1 ? 'A store is' : `${stuck} stores are`} still claimed from this
+                  day. A claim never expires and each collector may hold only one, so whoever
+                  holds {stuck === 1 ? 'it' : 'them'} cannot take anything new until released.
+                </p>
+              )}
 
               {/* The collector's list decrements as they visit; this mirrors it. */}
               <div>
@@ -177,13 +194,11 @@ function StoreRow({
   // deleting it out from under them is how a collector arrives at a store that
   // no longer exists. Release the claim first, then remove.
   const removable = store.status === 'pending' && !claimed
-  // Still held on a day that has already passed. Shouldn't happen under the
-  // whole-day rule, but nothing enforces that rule, and the admin is the only
-  // one who can clear it — so it has to be loud.
-  const stale = isStaleClaim(store)
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 hover:bg-muted/20 transition-colors">
+    <div
+      className={`flex items-center gap-2 px-3 py-2 transition-colors hover:bg-muted/20 ${claimRowClass(store, claimed)}`}
+    >
       <button onClick={onOpen} className="flex-1 min-w-0 text-left">
         <div className="flex items-center gap-1.5">
           <p className="text-sm font-medium text-foreground truncate">
@@ -213,40 +228,16 @@ function StoreRow({
 
         {/* Who is on their way. Distinct from "worked by" above, which is after
             the fact — this one is a live lock nobody else can work around. */}
-        {claimed && (
-          <div
-            className={`flex items-center gap-1 mt-1 text-[10px] font-medium ${
-              stale ? TONE_TEXT.red : TONE_TEXT.brand
-            }`}
-          >
-            {stale ? (
-              <AlertTriangle className="w-3 h-3 shrink-0" />
-            ) : (
-              <Navigation className="w-3 h-3 shrink-0" />
-            )}
-            <span className="truncate">
-              {stale ? 'Still held from an earlier day by ' : 'On the way · '}
-              {store.claimed_by_name ?? 'a collector'}
-            </span>
-            {claimAge(store) && (
-              <span className="text-muted-foreground tabular-nums shrink-0">
-                {claimAge(store)}
-              </span>
-            )}
-          </div>
-        )}
+        {claimed && <ClaimLine row={store} holder="collector" />}
       </button>
 
       {claimed && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={`Release ${store.claimed_by_name ?? 'the collector'}'s claim on ${store.client?.company_name}`}
-          title="Release claim"
-          onClick={onCancelClaim}
-        >
-          <Navigation className={stale ? TONE_TEXT.red : undefined} />
-        </Button>
+        <ReleaseClaimButton
+          row={store}
+          holder="collector"
+          target={store.client?.company_name ?? 'this store'}
+          onRelease={onCancelClaim}
+        />
       )}
 
       {removable && (

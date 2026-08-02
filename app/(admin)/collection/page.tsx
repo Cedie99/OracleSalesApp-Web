@@ -25,7 +25,11 @@ import {
   REMITTANCE_DESTINATION_LABEL, REMITTANCE_STATUS_LABEL, REMITTANCE_STATUS_TONE,
   TONE_CLASS, TONE_TEXT, VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
-import type { CollectionVisit, PaymentMethod } from '@/types'
+import {
+  PhotoLightbox, RemittanceProofThumb, captionFor, type LightboxPhoto,
+} from '@/components/photo-lightbox'
+import { RemittanceActions } from '@/components/remittance-actions'
+import type { CollectionVisit, PaymentMethod, RemittanceStatus } from '@/types'
 import {
   Search, Wallet, MapPin, Camera, PenLine, AlertTriangle, Banknote, Clock, ImageOff, Plus,
   Loader2,
@@ -71,7 +75,9 @@ export default function CollectionPage() {
   const {
     visits, loading: visitsLoading, error: visitsError, createVisit, removeVisit, cancelClaim,
   } = useCollectionVisits()
-  const { remittances: allRemittances, error: remittancesError } = useRemittances()
+  const {
+    remittances: allRemittances, error: remittancesError, setStatus: setRemittanceStatus,
+  } = useRemittances()
   const { clients } = useClients()
   const { profiles, byRole } = useProfiles()
   // Surfaces the reason a publish failed — an RLS rejection or a constraint
@@ -87,6 +93,9 @@ export default function CollectionPage() {
   // Bumped on every opening so the dialog remounts with fresh fields — see the
   // note on AddStoreDialog about why this isn't an effect.
   const [addSession, setAddSession] = useState(0)
+  // Which remittance is mid-write, so only that card's buttons go quiet.
+  const [remittanceBusyId, setRemittanceBusyId] = useState<string | null>(null)
+  const [lightboxPhoto, setLightboxPhoto] = useState<LightboxPhoto | null>(null)
 
   const collectors = useMemo(() => byRole(['collector']), [byRole])
 
@@ -218,6 +227,21 @@ export default function CollectionPage() {
       setActionError(message ?? '')
     },
     [cancelClaim]
+  )
+
+  /**
+   * Close out a remittance, or reopen one. The collector's app can't do this —
+   * migration 043 gives it no UPDATE on `remittances` — so this page is the only
+   * place the status ever moves off `submitted`.
+   */
+  const handleRemittanceStatus = useCallback(
+    async (id: string, status: RemittanceStatus) => {
+      setRemittanceBusyId(id)
+      const message = await setRemittanceStatus(id, status)
+      setRemittanceBusyId(null)
+      setActionError(message ?? '')
+    },
+    [setRemittanceStatus]
   )
 
   const listedByName = selectedVisit
@@ -524,21 +548,45 @@ export default function CollectionPage() {
 
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
                         {r.receiver_name && <span>Receiver: {r.receiver_name}</span>}
-                        {r.signed_proof_url && (
-                          <span className="inline-flex items-center gap-1">
-                            <Camera className="w-3 h-3" /> Signed proof
-                          </span>
-                        )}
-                        {r.receiver_signature_url ? (
-                          <span className="inline-flex items-center gap-1">
-                            <PenLine className="w-3 h-3" /> Signature
-                          </span>
-                        ) : signatureRequired ? (
+                        {!r.receiver_signature_url && signatureRequired && (
                           <span className={`inline-flex items-center gap-1 font-medium ${TONE_TEXT.red}`}>
                             <AlertTriangle className="w-3 h-3" /> Signature missing
                           </span>
-                        ) : null}
+                        )}
                       </div>
+
+                      {/* The evidence the reconcile decision below rests on, so
+                          it has to be readable — not just ticked off. */}
+                      {(r.signed_proof_url || r.receiver_signature_url) && (
+                        <div className="flex gap-2">
+                          {r.signed_proof_url && (
+                            <RemittanceProofThumb
+                              url={r.signed_proof_url}
+                              label="Signed proof"
+                              caption={captionFor(r.collector?.full_name, r.submitted_at)}
+                              icon={<Camera className="w-3 h-3" />}
+                              onOpen={setLightboxPhoto}
+                            />
+                          )}
+                          {r.receiver_signature_url && (
+                            <RemittanceProofThumb
+                              url={r.receiver_signature_url}
+                              label="Signature"
+                              caption={captionFor(r.receiver_name, r.submitted_at)}
+                              signature
+                              icon={<PenLine className="w-3 h-3" />}
+                              onOpen={setLightboxPhoto}
+                            />
+                          )}
+                        </div>
+                      )}
+
+                      <RemittanceActions
+                        status={r.status}
+                        delta={delta}
+                        busy={remittanceBusyId === r.id}
+                        onSetStatus={status => handleRemittanceStatus(r.id, status)}
+                      />
                     </CardContent>
                   </Card>
                 )
@@ -574,6 +622,13 @@ export default function CollectionPage() {
         visit={selectedVisit}
         onOpenChange={open => !open && setSelectedVisit(null)}
         listedByName={listedByName}
+      />
+
+      {/* Opened from the remittance cards. The detail dialog carries its own,
+          for the captures on a visit. */}
+      <PhotoLightbox
+        photo={lightboxPhoto}
+        onOpenChange={open => !open && setLightboxPhoto(null)}
       />
     </div>
   )
