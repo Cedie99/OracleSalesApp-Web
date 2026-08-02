@@ -1,420 +1,54 @@
 'use client'
 
-import { useMemo, useState } from 'react'
 import { Header } from '@/components/header'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { mockMeetings, mockEditRequests, mockProfiles } from '@/lib/mock/data'
-import { TEAM_1_ID, TEAM_2_ID, TEAM_RSR_1_ID, TEAM_RSR_2_ID } from '@/lib/teams'
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
-} from 'recharts'
-import {
-  CalendarCheck, TrendingUp, Target, Trophy,
-  Users, CheckCircle2, Clock, BarChart3
-} from 'lucide-react'
-import { format, isSameMonth, startOfMonth, subMonths } from 'date-fns'
-import type { CustomerType } from '@/types'
+import { ModuleSwitcher } from '@/components/module-switcher'
+import { SalesDashboard } from '@/components/dashboard/sales-dashboard'
+import { CollectionDashboard } from '@/components/dashboard/collection-dashboard'
+import { DeliveryDashboard } from '@/components/dashboard/delivery-dashboard'
+import { useAdminModules } from '@/lib/hooks/use-admin-modules'
+import { Loader2 } from 'lucide-react'
 
-const OUTCOME_COLOR: Record<string, string> = {
-  successful: 'bg-primary/15 text-primary border-primary/30',
-  follow_up: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  no_decision: 'bg-muted text-muted-foreground border-border',
-  lost_opportunity: 'bg-destructive/15 text-destructive border-destructive/30',
-}
-
-const OUTCOME_LABEL: Record<string, string> = {
-  successful: 'Successful',
-  follow_up: 'Follow-up',
-  no_decision: 'No Decision',
-  lost_opportunity: 'Lost',
-}
-
-const VIEW_OPTIONS = [
-  { id: 'all', label: 'All Teams & Agencies', shortLabel: 'All Teams', teamId: null as string | null },
-  { id: 'mgr-1', label: 'Sales Team 1', shortLabel: 'Sales Team 1', teamId: TEAM_1_ID },
-  { id: 'mgr-2', label: 'Sales Team 2', shortLabel: 'Sales Team 2', teamId: TEAM_2_ID },
-  { id: 'rsr-mgr-1', label: 'RSR Team 1', shortLabel: 'RSR Team 1', teamId: TEAM_RSR_1_ID },
-  { id: 'rsr-mgr-2', label: 'RSR Team 2', shortLabel: 'RSR Team 2', teamId: TEAM_RSR_2_ID },
-] as const
-
-const FIELD_AGENT_ROLES = ['sales_specialist', 'rsr'] as const
-
+/**
+ * Dashboard — one route, three overviews, chosen by the admin's scope.
+ *
+ * This page is every admin's landing page, which is exactly why it used to be
+ * the worst offender: a Collection Admin signed in and was shown meeting
+ * outcomes and agent success rates, none of which are theirs. Each lens now
+ * reports its own function's numbers, and only the unrestricted admin and the
+ * superadmin get the switcher between them.
+ *
+ * The three are separate components rather than one parameterised dashboard on
+ * purpose — the questions genuinely differ. Sales asks about conversion,
+ * Collection about money not yet in the office, Delivery about goods that came
+ * back. Forcing them through a shared shape would flatten precisely the
+ * distinctions the roles exist for.
+ */
 export default function DashboardPage() {
-  const [viewAs, setViewAs] = useState<string>('all')
-  const [perfAgentFilter, setPerfAgentFilter] = useState<string>('all')
-  const [dateFrom, setDateFrom] = useState<string>('')
-  const [dateTo, setDateTo] = useState<string>('')
+  const { activeModule, modules, setModule, loading, hasChoice } = useAdminModules()
 
-  const currentView = useMemo(
-    () => VIEW_OPTIONS.find(v => v.id === viewAs) ?? VIEW_OPTIONS[0],
-    [viewAs]
-  )
+  const switcher = hasChoice ? (
+    <ModuleSwitcher modules={modules} value={activeModule} onChange={setModule} />
+  ) : undefined
 
-  const scopedAgents = useMemo(
-    () =>
-      mockProfiles.filter(
-        p =>
-          (FIELD_AGENT_ROLES as readonly string[]).includes(p.role) &&
-          (currentView.teamId === null || p.team_id === currentView.teamId)
-      ),
-    [currentView]
-  )
-
-  // All meetings within the current team scope (not affected by the Agent
-  // Performance table's own agent/date filters below) — drives the metric
-  // cards, monthly trend, success rate, and outcome counts.
-  const teamMeetings = useMemo(
-    () => mockMeetings.filter(mtg => currentView.teamId === null || mtg.agent?.team_id === currentView.teamId),
-    [currentView]
-  )
-
-  const scopedMeetings = useMemo(
-    () =>
-      teamMeetings.filter(mtg => {
-        const inAgent = perfAgentFilter === 'all' || mtg.agent_id === perfAgentFilter
-        const d = new Date(mtg.meeting_date)
-        const afterFrom = !dateFrom || d >= new Date(dateFrom)
-        const beforeTo = !dateTo || d <= new Date(`${dateTo}T23:59:59`)
-        return inAgent && afterFrom && beforeTo
-      }),
-    [teamMeetings, perfAgentFilter, dateFrom, dateTo]
-  )
-
-  const agentPerformance = useMemo(
-    () =>
-      scopedAgents
-        .map(agent => {
-          const meetings = scopedMeetings.filter(mtg => mtg.agent_id === agent.id)
-          const successful = meetings.filter(mtg => mtg.outcome === 'successful').length
-          const followUp = meetings.filter(mtg => mtg.outcome === 'follow_up').length
-          const noDecision = meetings.filter(mtg => mtg.outcome === 'no_decision').length
-          const lost = meetings.filter(mtg => mtg.outcome === 'lost_opportunity').length
-          const rate = meetings.length > 0 ? Math.round((successful / meetings.length) * 100) : 0
-          return { agent, total: meetings.length, successful, followUp, noDecision, lost, rate }
-        })
-        .sort((a, b) => b.total - a.total),
-    [scopedAgents, scopedMeetings]
-  )
-
-  const recentMeetings = useMemo(
-    () =>
-      [...teamMeetings]
-        .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
-        .slice(0, 5),
-    [teamMeetings]
-  )
-
-  const pending = useMemo(
-    () =>
-      mockEditRequests.filter(
-        r => r.status === 'pending' && (currentView.teamId === null || r.requester?.team_id === currentView.teamId)
-      ).length,
-    [currentView]
-  )
-
-  // Just this calendar month, within the team scope — drives the metric
-  // cards, success rate, and outcome counts (all "current month" stats).
-  const monthMeetings = useMemo(
-    () => teamMeetings.filter(mtg => isSameMonth(new Date(mtg.meeting_date), new Date())),
-    [teamMeetings]
-  )
-
-  const meetingsByType = useMemo(() => {
-    const counts: Record<CustomerType, number> = { existing: 0, new: 0, prospect: 0 }
-    monthMeetings.forEach(mtg => {
-      const type = mtg.client?.customer_type
-      if (type) counts[type] += 1
-    })
-    return counts
-  }, [monthMeetings])
-
-  const successfulByType = useMemo(() => {
-    const counts: Record<CustomerType, number> = { existing: 0, new: 0, prospect: 0 }
-    monthMeetings.forEach(mtg => {
-      const type = mtg.client?.customer_type
-      if (mtg.outcome === 'successful' && type) counts[type] += 1
-    })
-    return counts
-  }, [monthMeetings])
-
-  const closedDeals = useMemo(
-    () => monthMeetings.filter(mtg => mtg.outcome === 'successful').length,
-    [monthMeetings]
-  )
-
-  // Always 12 buckets (this month + the trailing 11), zero-filled, so the
-  // trend chart shows a real year regardless of how the data is distributed.
-  const monthlyTrend = useMemo(() => {
-    const months = Array.from({ length: 12 }, (_, i) => subMonths(startOfMonth(new Date()), 11 - i))
-    const buckets = months.map(d => ({
-      key: `${d.getFullYear()}-${d.getMonth()}`,
-      month: format(d, 'MMM'),
-      total: 0,
-      successful: 0,
-    }))
-    const bucketByKey = new Map(buckets.map(b => [b.key, b]))
-    teamMeetings.forEach(mtg => {
-      const d = new Date(mtg.meeting_date)
-      const bucket = bucketByKey.get(`${d.getFullYear()}-${d.getMonth()}`)
-      if (!bucket) return
-      bucket.total += 1
-      if (mtg.outcome === 'successful') bucket.successful += 1
-    })
-    return buckets.map(({ month, total, successful }) => ({ month, total, successful }))
-  }, [teamMeetings])
-
-  const metricCards = [
-    {
-      title: 'Total Meetings', value: monthMeetings.length, icon: CalendarCheck,
-      sub: 'This month', color: 'text-primary',
-    },
-    {
-      title: 'Existing Clients', value: meetingsByType.existing, icon: Users,
-      sub: `${successfulByType.existing} successful`, color: 'text-blue-400',
-    },
-    {
-      title: 'New Clients', value: meetingsByType.new, icon: TrendingUp,
-      sub: `${successfulByType.new} successful`, color: 'text-yellow-400',
-    },
-    {
-      title: 'Prospects', value: meetingsByType.prospect, icon: Target,
-      sub: `${successfulByType.prospect} successful`, color: 'text-purple-400',
-    },
-    {
-      title: 'Closed Deals', value: closedDeals, icon: Trophy,
-      sub: 'Successful meetings', color: 'text-primary',
-    },
-    {
-      title: 'Pending Approvals', value: pending, icon: Clock,
-      sub: 'Awaiting review', color: pending > 0 ? 'text-yellow-400' : 'text-muted-foreground',
-    },
-  ]
+  // Held until the scope is known — `visibleModules` reports the unrestricted
+  // set for a null role, which would flash the sales dashboard at a scoped admin.
+  if (loading) {
+    return (
+      <div className="flex flex-col flex-1">
+        <Header title="Dashboard" />
+        <div className="flex-1 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading dashboard…
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col flex-1">
-      <Header
-        title="Dashboard"
-        subtitle={`Overview for ${format(new Date(), 'MMMM yyyy')}`}
-        pendingApprovals={pending}
-        viewSwitcher={{
-          options: VIEW_OPTIONS.map(({ id, label }) => ({ id, label })),
-          value: viewAs,
-          activeLabel: currentView.shortLabel,
-          onChange: setViewAs,
-        }}
-      />
-
-      <div className="flex-1 p-6 space-y-6">
-        {/* Metric cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-          {metricCards.map(({ title, value, icon: Icon, sub, color }) => (
-            <Card key={title} className="bg-card border-border">
-              <CardContent className="p-4">
-                <div className="flex items-start justify-between mb-3">
-                  <p className="text-xs text-muted-foreground leading-tight">{title}</p>
-                  <Icon className={`w-4 h-4 shrink-0 ${color}`} />
-                </div>
-                <p className={`text-2xl font-bold ${color}`}>{value}</p>
-                <p className="text-xs text-muted-foreground mt-1">{sub}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Bar chart */}
-          <Card className="bg-card border-border lg:col-span-2">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold text-foreground">Monthly Meetings Trend</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={monthlyTrend} barGap={4}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(1 0 0 / 6%)" vertical={false} />
-                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'oklch(0.55 0 0)' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: 'oklch(0.55 0 0)' }} axisLine={false} tickLine={false} />
-                  <Tooltip
-                    contentStyle={{ background: 'oklch(0.11 0 0)', border: '1px solid oklch(1 0 0 / 10%)', borderRadius: '8px', fontSize: '12px' }}
-                    labelStyle={{ color: 'oklch(0.96 0 0)', fontWeight: 600 }}
-                    itemStyle={{ color: 'oklch(0.75 0 0)' }}
-                  />
-                  <Bar dataKey="total" name="Total" fill="oklch(0.62 0.19 145 / 40%)" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="successful" name="Successful" fill="oklch(0.62 0.19 145)" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-
-          {/* Success Rate breakdown */}
-          <Card className="bg-card border-border">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold text-foreground">Success Rate</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {[
-                { label: 'Existing', meetings: meetingsByType.existing, successful: successfulByType.existing },
-                { label: 'New', meetings: meetingsByType.new, successful: successfulByType.new },
-                { label: 'Prospect', meetings: meetingsByType.prospect, successful: successfulByType.prospect },
-              ].map(({ label, meetings, successful }) => {
-                const pct = meetings > 0 ? Math.round((successful / meetings) * 100) : 0
-                return (
-                  <div key={label}>
-                    <div className="flex justify-between text-xs mb-1.5">
-                      <span className="text-muted-foreground">{label}</span>
-                      <span className="text-foreground font-medium">{successful}/{meetings} ({pct}%)</span>
-                    </div>
-                    <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-primary rounded-full transition-all"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                )
-              })}
-
-              <div className="pt-3 border-t border-border space-y-2">
-                <p className="text-xs font-medium text-foreground">Meeting Outcomes</p>
-                {Object.entries(OUTCOME_LABEL).map(([key, label]) => {
-                  const count = monthMeetings.filter(mtg => mtg.outcome === key).length
-                  return (
-                    <div key={key} className="flex items-center justify-between">
-                      <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${OUTCOME_COLOR[key]}`}>
-                        {label}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">{count}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Agent Performance */}
-        <Card className="bg-card border-border">
-          <CardHeader className="pb-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <BarChart3 className="w-4 h-4 text-primary" />
-                <CardTitle className="text-sm font-semibold text-foreground">Agent Performance</CardTitle>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Select value={perfAgentFilter} onValueChange={v => setPerfAgentFilter(v ?? 'all')}>
-                  <SelectTrigger className="w-44 h-8 bg-card border-border text-xs">
-                    <SelectValue placeholder="All Agents" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Agents</SelectItem>
-                    {scopedAgents.map(a => (
-                      <SelectItem key={a.id} value={a.id}>{a.full_name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Input
-                  type="date"
-                  value={dateFrom}
-                  onChange={e => setDateFrom(e.target.value)}
-                  className="w-36 h-8 bg-card border-border text-xs"
-                />
-                <span className="text-xs text-muted-foreground">to</span>
-                <Input
-                  type="date"
-                  value={dateTo}
-                  onChange={e => setDateTo(e.target.value)}
-                  className="w-36 h-8 bg-card border-border text-xs"
-                />
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border text-xs text-muted-foreground">
-                    <th className="text-left px-5 py-2.5 font-medium">Agent</th>
-                    <th className="text-left px-5 py-2.5 font-medium hidden md:table-cell">Team</th>
-                    <th className="text-right px-5 py-2.5 font-medium">Total</th>
-                    <th className="text-right px-5 py-2.5 font-medium hidden lg:table-cell">Successful</th>
-                    <th className="text-right px-5 py-2.5 font-medium hidden lg:table-cell">Follow-up</th>
-                    <th className="text-right px-5 py-2.5 font-medium hidden xl:table-cell">No Decision</th>
-                    <th className="text-right px-5 py-2.5 font-medium hidden xl:table-cell">Lost</th>
-                    <th className="text-left px-5 py-2.5 font-medium w-40">Success Rate</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {agentPerformance.map(({ agent, total, successful, followUp, noDecision, lost, rate }) => (
-                    <tr key={agent.id} className="hover:bg-muted/20 transition-colors">
-                      <td className="px-5 py-3">
-                        <p className="font-medium text-foreground leading-tight">{agent.full_name}</p>
-                        <p className="text-xs text-muted-foreground capitalize">{agent.role.replace('_', ' ')}</p>
-                      </td>
-                      <td className="px-5 py-3 hidden md:table-cell text-xs text-muted-foreground">
-                        {agent.team_id ?? '—'}
-                      </td>
-                      <td className="px-5 py-3 text-right font-medium text-foreground">{total}</td>
-                      <td className="px-5 py-3 text-right hidden lg:table-cell text-muted-foreground">{successful}</td>
-                      <td className="px-5 py-3 text-right hidden lg:table-cell text-muted-foreground">{followUp}</td>
-                      <td className="px-5 py-3 text-right hidden xl:table-cell text-muted-foreground">{noDecision}</td>
-                      <td className="px-5 py-3 text-right hidden xl:table-cell text-muted-foreground">{lost}</td>
-                      <td className="px-5 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="h-1.5 flex-1 bg-muted rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-primary rounded-full transition-all"
-                              style={{ width: `${rate}%` }}
-                            />
-                          </div>
-                          <span className="text-xs text-foreground font-medium w-9 text-right">{rate}%</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              {agentPerformance.length === 0 && (
-                <div className="text-center py-12 text-muted-foreground text-sm">
-                  No agents in this scope
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Recent meetings */}
-        <Card className="bg-card border-border">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold text-foreground">Recent Meetings</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="divide-y divide-border">
-              {recentMeetings.map((meeting) => (
-                <div key={meeting.id} className="flex items-center gap-4 px-6 py-3 hover:bg-muted/30 transition-colors">
-                  <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                    <CheckCircle2 className="w-4 h-4 text-primary" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{meeting.client?.company_name}</p>
-                    <p className="text-xs text-muted-foreground">{meeting.agent?.full_name} · {meeting.contact_person}</p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${OUTCOME_COLOR[meeting.outcome]}`}>
-                      {OUTCOME_LABEL[meeting.outcome]}
-                    </Badge>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {format(new Date(meeting.meeting_date), 'MMM d')}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      {activeModule === 'sales' && <SalesDashboard headerAction={switcher} />}
+      {activeModule === 'collection' && <CollectionDashboard headerAction={switcher} />}
+      {activeModule === 'delivery' && <DeliveryDashboard headerAction={switcher} />}
     </div>
   )
 }

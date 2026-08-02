@@ -1,4 +1,11 @@
-export type UserRole = 'superadmin' | 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector'
+export type UserRole = 'superadmin' | 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector' | 'delivery'
+
+/**
+ * Which business function an admin covers (migration 024). Only meaningful for
+ * role 'admin' — everyone else is 'all'. Deliberately not part of UserRole: the
+ * role column is shared with the mobile app, this column is web-only.
+ */
+export type AdminScope = 'all' | 'sales' | 'collection' | 'delivery'
 export type CustomerType = 'existing' | 'new' | 'prospect'
 export type SalesChannel = 'distributor' | 'dealer' | 'end_user' | 'private_label'
 export type ClientStatus = 'active' | 'lost' | 'deleted'
@@ -10,12 +17,388 @@ export type ClockType = 'office' | 'event'
 export type ClockAction = 'in' | 'out'
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
 
+/**
+ * Collection module (F-007). Spec'd with the client at the 2026-07-03 meeting,
+ * revised 2026-07-25, and revised again 2026-07-26; see Features.md F-007,
+ * Meeting-2026-07-25-Collection-Delivery.md, and
+ * Wireframe-Collection-Delivery-BizLink.html in the vault.
+ *
+ * A CollectionVisit spans both halves of the module, because it is one record
+ * with two authors:
+ *
+ *  - the **Collection Admin**, on web, creates it — picks the store, the
+ *    collection day, and the amount due, publishing the "daily electronic
+ *    collection list" of the July 3 spec. Crucially the admin does NOT pick a
+ *    collector: the list is a shared pool, not a per-person route.
+ *  - the **collector**, on the phone, closes it — takes the store off the list
+ *    and records payment method, the amount actually received, two proof
+ *    photos, GPS, timestamp. Their identity lands on the row at that moment.
+ *
+ * `amount_due` is the clearest expression of that split: the admin sets it here
+ * and it is deliberately NOT shown on the collector's Collect Payment screen
+ * (2026-07-25 anchoring-bias decision — collectors were matching the displayed
+ * figure instead of counting what was handed over). Web keeps it because
+ * reconciling received-against-owed is exactly the admin's job.
+ *
+ * ⚠️ The vault currently disagrees with itself about Counter. The BizLink
+ * wireframe (2026-07-26, vault PR #6) made it a payment METHOD and deleted the
+ * dedicated `c-counterPhoto` slot; the spec-of-record wireframe, Features.md
+ * F-007, and the planned-schema notes in Database.md all still describe it as a
+ * separate required photo. We follow the newer wireframe per the vault's
+ * newest-wins convention. If Ced reconciles the other three the other way, this
+ * reverts to a `counter_photo_url` field and a third required capture.
+ *
+ * Nothing here is in the database yet — no collection tables exist as of
+ * migration 024 — so this currently backs mock data only.
+ */
+export type PaymentMethod = 'cash' | 'check' | 'gcash' | 'counter'
+
+/** Where a collector hands off the money they're holding. */
+export type RemittanceDestination = 'office' | 'bayad_center' | 'bank_deposit'
+
+export type CollectionVisitStatus = 'collected' | 'rescheduled' | 'pending'
+
+export type RemittanceStatus = 'submitted' | 'reconciled' | 'variance'
+
+export interface CollectionVisit {
+  id: string
+  client_id: string
+  /**
+   * Customer name copied onto the row when the admin published it (migration
+   * 045). Exists because the `collector` role has no RLS read on `clients`, so
+   * the phone cannot resolve `client_id` to a name on its own.
+   *
+   * Web should keep reading `client?.company_name` — that reflects the customer
+   * as they are NOW. This is what the row said on the day it was published, and
+   * the two diverge if a customer is renamed. Null on rows published before 045.
+   */
+  client_name: string | null
+  /**
+   * Locality copied from `clients.city` at publish time, for the same reason as
+   * `client_name`. Collection has no admin-entered area field — unlike delivery,
+   * where the admin types one.
+   */
+  area: string | null
+  status: CollectionVisitStatus
+
+  // --- Put on the day's list by the Collection Admin (web) ------------------
+
+  /** The collection day this store sits on. Drives the collector's daily list. */
+  scheduled_for: string
+  /** Admin profile who put this store on the list. */
+  listed_by: string | null
+  listed_at: string
+  /**
+   * What the store owes, in PHP, as known to the office. Admin-entered and
+   * withheld from the collector — see the module note above.
+   */
+  amount_due: number
+
+  // --- Captured by the collector on the phone -------------------------------
+
+  /**
+   * Who actually worked this store — recorded when they collect, NOT chosen in
+   * advance. The daily list is a shared pool: the admin publishes the stores and
+   * their amounts, and any collector works it down (the mobile wireframe's
+   * `cStores` carries no collector field at all). Null while the store is still
+   * pending, which is why this can't be an assignment.
+   */
+  collector_id: string | null
+  /**
+   * The collector currently EN ROUTE to this store (migration 046) — distinct
+   * from `collector_id`, which is who actually worked it. A claim is a hard
+   * lock: nobody else may work the store while this is set. One active claim
+   * per collector, enforced by a partial unique index on pending rows, so
+   * completing a store frees the slot automatically.
+   *
+   * Never expires. Cleared by the claimer or by an admin. Deliberately survives
+   * completion as history — the index predicate already frees the slot.
+   */
+  claimed_by: string | null
+  claimed_at: string | null
+  /**
+   * Claimer's name copied onto the row, for the same reason as `client_name`:
+   * a collector can read only their own `profiles` row (migration 003), so the
+   * phone cannot resolve another collector's `claimed_by` to a name.
+   */
+  claimed_by_name: string | null
+  /**
+   * Exact amount typed by the collector to match the payment photo. Null when the
+   * visit was rescheduled or is still pending. This is the figure reconciled
+   * against remittance totals.
+   */
+  amount_collected: number | null
+  payment_method: PaymentMethod | null
+  /**
+   * Photo of however the payment arrived — cash, check, GCash confirmation
+   * screen, or the counter receipt. Camera-only, <=3MB. One slot whose meaning
+   * follows `payment_method`, which is why Counter needs no photo field of its
+   * own (2026-07-26 wireframe change).
+   */
+  payment_photo_url: string | null
+  /**
+   * Proof the receipt was handed to the customer, added 2026-07-25 (Addendum 3)
+   * and still its own capture after the 2026-07-26 change. Required before the
+   * collector's app will accept "✓ Collected", so a collected visit missing it
+   * means the record predates the rule or reached us through a path that
+   * skipped it — either way the admin needs to see the hole, not a blank space.
+   */
+  delivery_receipt_photo_url: string | null
+  gps_lat: number | null
+  gps_lng: number | null
+  remarks: string | null
+  /** Set when status is 'rescheduled' — the collection-day reschedule rule. */
+  rescheduled_to: string | null
+  visited_at: string | null
+  created_at: string
+  client?: Client
+  collector?: Profile
+}
+
+/**
+ * Delivery module (F-007). Modelled on the delivery screens in
+ * Wireframe-Collection-Delivery-BizLink.html and revised by the 2026-07-25
+ * session (Meeting-2026-07-25-Collection-Delivery.md and its five addenda).
+ *
+ * Structurally this is Collection with different nouns, and deliberately so —
+ * one record, two authors:
+ *
+ *  - the **Delivery Admin**, on web, lists the PO for a delivery day (customer,
+ *    area, items, and whether it is COD). That is the trip list.
+ *  - the **driver**, on the phone, closes it — plate number, proof photo, an
+ *    outcome, and the COD payment if there is one. Their name, their truck's
+ *    plate, and the stop's sequence number all land on the row at that moment.
+ *
+ * Two things separate it from Collection:
+ *
+ *  1. **The COD amount IS shown to the driver**, the exact opposite of the
+ *     anchoring-bias rule that hides `amount_due` from collectors. A COD figure
+ *     is the fixed price of goods being handed over, not a negotiable balance
+ *     (2026-07-25 COD addendum, flagged there as a judgment call).
+ *  2. **Proof is lighter.** A photo plus a "Delivered" remark is enough;
+ *     receiver name and signature are both optional, because customers often
+ *     refuse to give a name.
+ *
+ * ⚠️ GPS reversal (2026-07-27). Earlier passes of this file said outright "no
+ * GPS in the delivery module — do not add GPS fields; their absence is the
+ * decision, not a gap", sourced from the wireframe's "Walang GPS sa delivery
+ * module (per confirmed scope)". That is superseded: the latest meeting asked
+ * for Collection AND Delivery maps so the office can trace a collector's or
+ * driver's trip across a day. The coordinates ride along with the image capture
+ * that already happens at every stop, so this costs the driver no extra step —
+ * which is why it was cheap enough to reverse.
+ *
+ * Nothing here is in the database — no delivery tables exist as of migration
+ * 024 — so this backs mock data only.
+ */
+
+/**
+ * A PO lives for exactly one delivery day (2026-07-27, direct instruction).
+ * Either the driver hands it over that day, or the goods come back on the truck
+ * and it is a failed delivery — there is no multi-day follow-up countdown.
+ *
+ * ⚠️ The wireframes and the mobile first draft still model a 3-day follow-up
+ * window plus a separate `backload` status. Both are wrong here. The only
+ * "3-day rule" the vault can source is Meeting-2026-06-24's CLIENT-lifecycle
+ * auto-delete, which Meeting-2026-07-03 superseded with the 1-month rule — it
+ * was never a delivery rule and leaked into the delivery screens. And a failed
+ * delivery IS a backload: nothing was accepted, so the goods ride back. They are
+ * one outcome, not two, which is why `backload_photo_url` is a capture on a
+ * failed row rather than a status of its own.
+ */
+export type DeliveryStatus = 'pending' | 'delivered' | 'failed'
+
+export interface PurchaseOrder {
+  id: string
+  po_number: string
+  client_id: string
+  /**
+   * Customer name copied onto the row at publish time (migration 045), because
+   * the `delivery` role has no RLS read on `clients`. Same caveat as
+   * `CollectionVisit.client_name`: point-in-time, so web keeps using
+   * `client?.company_name` for current state. Null on rows published before 045.
+   */
+  client_name: string | null
+  /**
+   * Delivery area, e.g. "Balanga". Coarser than an address — no GPS in scope,
+   * and with the customer name it is the whole of what the admin lists. There
+   * is deliberately no line-items field: the trip ticket carries customer +
+   * plate, not an itemised manifest (2026-07-25 "kept deliberately simple",
+   * confirmed 2026-07-27 for the admin side).
+   */
+  area: string
+  status: DeliveryStatus
+
+  // --- Put on a delivery day's trip list by the Delivery Admin (web) ---------
+
+  /** The delivery day this PO sits on. Drives the driver's PO list. */
+  scheduled_for: string
+  /** Admin profile who put this PO on the list. */
+  listed_by: string | null
+  listed_at: string
+  /**
+   * Cash on delivery, a per-PO toggle rather than a mode the whole module runs
+   * in (2026-07-25). Non-COD deliveries skip the payment step entirely.
+   */
+  cod: boolean
+  /** What the driver collects on a COD stop. Null on non-COD POs. */
+  cod_due: number | null
+
+  // --- Captured by the driver on the phone ----------------------------------
+
+  /**
+   * Who actually ran this stop — recorded when they deliver, NOT chosen in
+   * advance, exactly as with `CollectionVisit.collector_id`. Null while the PO
+   * is still waiting, which is why this can't be an assignment.
+   */
+  driver_id: string | null
+  /**
+   * The driver currently EN ROUTE to this stop (migration 046) — the delivery
+   * twin of `CollectionVisit.claimed_by`, same hard-lock and one-claim rules.
+   * See that field for the full reasoning.
+   */
+  claimed_by: string | null
+  claimed_at: string | null
+  /** Claimer's name, denormalized — drivers can't read other `profiles` rows. */
+  claimed_by_name: string | null
+  /**
+   * The truck's plate, typed by the driver at the stop. Paired with the customer
+   * name, this is the whole of the "trip ticket" data the client asked for — a
+   * full itemised trip ticket with a PO reference was explicitly deferred.
+   */
+  truck_plate: string | null
+  /**
+   * Position in the day's run, 1-based. Assigned at the moment of delivery from
+   * the order the driver actually visits stops, mirroring the paper process —
+   * it is NOT a pre-planned route the office hands down.
+   */
+  sequence_no: number | null
+  /**
+   * Who took the goods. Optional since 2026-07-25 — many customers refuse to
+   * give a name, which is exactly why the signature below carries the weight.
+   */
+  receiver_name: string | null
+  /**
+   * The receiving party's signature, taken on the driver's phone. This is the
+   * paper Trip Report's "COMPANY REPRESENTATIVE'S SIGNATURE" column, which is
+   * signed on every row — so treat it as the expected proof that a human at the
+   * customer took delivery, not an extra. Still never blocking on the phone.
+   */
+  receiver_signature_url: string | null
+  /**
+   * Arrival and departure at the stop, straight off the paper Trip Report's
+   * TIME-IN / TIME-OUT columns — the driver writes both today, so the app has to
+   * capture both. The gap between them is the dwell at the customer (5–15
+   * minutes in the sheets we've seen) and it is the only measure of how long a
+   * stop actually took.
+   *
+   * Both are set on a failed delivery too: the truck still arrived, waited, and
+   * left. `time_out` doubles as the moment the stop closed out.
+   */
+  time_in: string | null
+  time_out: string | null
+  /** Camera-only capture of the delivered items / signed DR, compressed <=3MB. */
+  proof_url: string | null
+  /**
+   * Camera-only capture of the goods riding back, required before the driver's
+   * app will log a failed delivery at all — it documents what actually returned.
+   * So a failed row without one arrived through a path that skipped the rule,
+   * and the admin needs to see the hole rather than a blank space.
+   */
+  backload_photo_url: string | null
+  /**
+   * Where the truck actually stood when the driver captured the stop's photo —
+   * the proof photo on a delivered stop, the backload photo on a failed one.
+   * Added 2026-07-27 with the delivery map (see the GPS-reversal note above);
+   * the fix comes free with the capture the driver already makes.
+   *
+   * Null on any stop nobody has reached, which is the same reason
+   * `CollectionVisit.gps_lat` is null on a pending store: no photo, no fix. A
+   * closed-out stop missing coordinates came through a path that skipped the
+   * capture, and reads on the map as "no location" rather than as a gap in the
+   * route.
+   */
+  gps_lat: number | null
+  gps_lng: number | null
+  remarks: string | null
+
+  // --- COD payment, captured at the stop when `cod` is set -------------------
+  //
+  // The same payment step Collection uses: method tile, camera-only photo, exact
+  // amount. 'counter' is not offered here — that method belongs to a store
+  // paying at its own counter, which has no meaning on a delivery.
+
+  cod_amount: number | null
+  cod_method: PaymentMethod | null
+  cod_photo_url: string | null
+  /** True once this PO's COD money has been handed over in a remittance. */
+  cod_remitted: boolean
+
+  created_at: string
+  client?: Client
+  driver?: Profile
+}
+
+/**
+ * A driver handing over the COD money they are holding.
+ *
+ * Reuses Collection's remittance pattern rather than inventing a second one, but
+ * OFFICE-ONLY (2026-07-25, Addendum 4): the 7-11 and bank-deposit destinations
+ * were removed from the driver's Remit screen, so there is no `destination`
+ * field to choose and the receiver's in-app signature is always required —
+ * unlike `Remittance`, where it is required for office only.
+ */
+export interface CodRemittance {
+  id: string
+  driver_id: string
+  /** Total the driver declared they are handing over. */
+  amount_remitted: number
+  /** Sum of the COD payments this covers — variance = remitted - collected. */
+  amount_collected: number
+  status: RemittanceStatus
+  /** Receiving officer at the office. */
+  receiver_name: string
+  /** Signature pad capture. Required — Office is the only destination. */
+  receiver_signature_url: string | null
+  po_ids: string[]
+  submitted_at: string
+  created_at: string
+  driver?: Profile
+}
+
+export interface Remittance {
+  id: string
+  collector_id: string
+  destination: RemittanceDestination
+  /** Total the collector declared they are handing over. */
+  amount_remitted: number
+  /** Sum of the visits this remittance covers — variance = remitted - collected. */
+  amount_collected: number
+  status: RemittanceStatus
+  /** Name of the receiving officer. Required for destination 'office'. */
+  receiver_name: string | null
+  /** Photo of the signed acknowledgment / receipt (e.g. a 7-11 slip). */
+  signed_proof_url: string | null
+  /**
+   * In-app signature pad capture from the receiving officer. Required before an
+   * OFFICE remittance can submit (added 2026-07-16 per direct instruction).
+   * Not required for bayad-center or bank-deposit destinations.
+   */
+  receiver_signature_url: string | null
+  visit_ids: string[]
+  submitted_at: string
+  created_at: string
+  collector?: Profile
+}
+
 export interface Profile {
   id: string
   user_id: string
   full_name: string
   email?: string
   role: UserRole
+  /** Defaults to 'all'; may be absent on rows written before migration 024. */
+  admin_scope?: AdminScope
   team_id: string | null
   is_active?: boolean
   avatar_url?: string | null
@@ -36,18 +419,62 @@ export interface Client {
   contact_position: string | null
   contact_number: string
   office_address: string
+  /**
+   * ⚠️ NOT IN THE DATABASE YET. The live `clients` table has no coordinate
+   * columns — verified against the deployed schema on 2026-07-24. The mobile
+   * app does not capture a location when a client is created; adding that pin
+   * is a planned change, and these fields are the shape it will fill.
+   *
+   * Until then anything reading from Supabase sees them undefined, so the Maps
+   * page renders with no pins by design. Do NOT substitute meeting GPS
+   * (`Meeting.gps_lat/gps_lng`) — that records where the agent stood during a
+   * visit, which is not the client's address, and plotting it would assert a
+   * location the data cannot support.
+   */
   office_lat?: number
   office_lng?: number
   customer_type: CustomerType
   sales_channel: SalesChannel
   assigned_agent_id: string
   status: ClientStatus
+  /** ⚠️ NOT IN THE DATABASE — replaced by the binary progress bar. See lib/client-progress.ts. */
   rating?: number
   lost_at: string | null
   reassignable_at: string | null
   created_at: string
   updated_at: string
   agent?: Profile
+
+  // --- Columns mobile added that web had never modelled (live as of 2026-07-24) ---
+
+  /** Structured address parts. Mobile captures these; `office_address` is the legacy single field. */
+  address_line1?: string | null
+  address_line2?: string | null
+  landmark?: string | null
+  province?: string | null
+  city?: string | null
+  /**
+   * Deadline for completing the client's full details after a bare-bones
+   * creation in the field — the client-lifecycle timing rule. Null once met.
+   */
+  details_deadline_at?: string | null
+  details_completed_at?: string | null
+  /** Free-text reason captured when a client is marked lost/inactive. */
+  inactive_reason?: string | null
+  /** Lowercased/trimmed company_name, maintained by mobile for duplicate detection. */
+  normalized_company_name?: string | null
+}
+
+export interface Notification {
+  id: string
+  /** Free-form event key, e.g. 'prospect_auto_deleted'. */
+  type: string
+  title: string
+  message: string
+  client_id: string | null
+  /** Global read state — set once any admin has opened the panel, not per-admin. */
+  read_at: string | null
+  created_at: string
 }
 
 export interface ClientEditRequest {
@@ -86,6 +513,19 @@ export interface Meeting {
   client?: Client
   agent?: Profile
   recorder?: Profile
+
+  // --- Start/end capture, added by mobile (live as of 2026-07-24) ---
+  //
+  // The pair of timestamps is what makes a real meeting duration computable —
+  // previously the web Excel export had to approximate it. `end_gps_*` records
+  // where the agent actually finished, which can differ from where they started.
+
+  start_photo_url?: string | null
+  start_captured_at?: string | null
+  end_photo_url?: string | null
+  end_captured_at?: string | null
+  end_gps_lat?: number | null
+  end_gps_lng?: number | null
 }
 
 export interface ClockRecord {

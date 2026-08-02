@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -11,29 +11,33 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
 import {
   Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
   MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
-  Monitor, Smartphone,
+  Monitor, Smartphone, Truck, CircleHelp, ImagePlus, Trash2, KeyRound,
+  ArrowUp, ArrowDown, ArrowUpDown,
 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { createClient } from '@/lib/supabase/client'
-import { createUser, updateUser, toggleUserStatus } from './actions'
-import { ROLE_LABEL, canManageUsers, platformForRole } from '@/lib/permissions'
+import {
+  createUser, updateUser, toggleUserStatus, uploadUserAvatar, removeUserAvatar, resetUserPassword,
+} from './actions'
+import {
+  AVATAR_ACCEPT_ATTR, AVATAR_ACCEPTED_TYPES, AVATAR_MAX_SOURCE_BYTES, resizeAvatar,
+} from '@/lib/avatar'
+import {
+  ADMIN_SCOPES, ADMIN_SCOPE_DESCRIPTION, ADMIN_SCOPE_LABEL, adminScope,
+  canManageUsers, platformForRole, roleScopeLabel, PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD,
+} from '@/lib/permissions'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import { teamIdsForRole } from '@/lib/teams'
-import type { UserRole } from '@/types'
-
-const ROLE_STYLE: Record<UserRole, string> = {
-  superadmin: 'bg-primary/15 text-primary border-primary/30',
-  admin: 'bg-primary/15 text-primary border-primary/30',
-  sales_manager: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  sales_specialist: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  rsr: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
-  collector: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
-}
+import { teamIdsForRole, managerForTeam } from '@/lib/teams'
+import type { AdminScope, UserRole } from '@/types'
+import { PLATFORM_TONE, ROLE_TONE, TONE_CLASS, TONE_TEXT, roleTone } from '@/lib/status-styles'
 
 const ROLE_ICON: Record<UserRole, React.ElementType> = {
   superadmin: ShieldEllipsis,
@@ -42,28 +46,34 @@ const ROLE_ICON: Record<UserRole, React.ElementType> = {
   sales_specialist: User,
   rsr: Store,
   collector: Wallet,
+  delivery: Truck,
+}
+
+/**
+ * Icon per admin category. The icon carries the business function (wallet =
+ * collection) while the label carries the level ("Collection Admin"), so it
+ * intentionally matches the icon of the field role that function belongs to.
+ */
+const ADMIN_SCOPE_ICON: Record<AdminScope, LucideIcon> = {
+  all: ShieldCheck,
+  sales: Briefcase,
+  collection: Wallet,
+  delivery: Truck,
 }
 
 const PLATFORM_META = {
-  web: {
-    label: 'Web',
-    icon: Monitor,
-    style: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
-  },
-  mobile: {
-    label: 'Mobile App',
-    icon: Smartphone,
-    style: 'bg-green-500/15 text-green-400 border-green-500/30',
-  },
+  web: { label: 'Web', icon: Monitor, style: TONE_CLASS[PLATFORM_TONE.web] },
+  mobile: { label: 'Mobile App', icon: Smartphone, style: TONE_CLASS[PLATFORM_TONE.mobile] },
 } as const
 
 const ROLE_DESCRIPTION: Record<UserRole, string> = {
   superadmin: 'Full system access — the only role that can create or edit admin accounts.',
-  admin: 'Full operational access to clients, meetings, reports, approvals, and maps — user management is view-only.',
+  admin: 'Operational access to the modules its category covers — user management is view-only.',
   sales_manager: 'Oversees a team of sales specialists or RSRs, approves client changes, and views all team sales.',
   sales_specialist: 'Front-line sales agent that logs meetings, clients, and clock records.',
   rsr: 'Route Sales Representative — visits stores daily and logs field activity.',
   collector: 'Handles payment collection from assigned stores with cash/check proof.',
+  delivery: 'Delivers purchase orders and captures receiver name plus a proof photo — no GPS, per confirmed scope.',
 }
 
 interface TeamRow {
@@ -77,6 +87,7 @@ interface UserRow {
   full_name: string
   email: string
   role: UserRole
+  admin_scope: AdminScope
   team_id: string | null
   is_active: boolean
   avatar_url: string | null
@@ -88,14 +99,56 @@ interface UserFormData {
   email: string
   password: string
   role: UserRole
+  admin_scope: AdminScope
   team_id: string
+}
+
+type SortKey = 'user' | 'role' | 'platform' | 'team' | 'created' | 'status'
+
+interface SortState {
+  key: SortKey
+  dir: 'asc' | 'desc'
+}
+
+/**
+ * Role column order — seniority, not the alphabet. Sorting by role is a
+ * question about the org chart ("show me the admins"), and A-Z would open on
+ * Collector and bury Super Admin in the middle.
+ */
+const ROLE_ORDER: UserRole[] = [
+  'superadmin', 'admin', 'sales_manager', 'sales_specialist', 'rsr', 'collector', 'delivery',
+]
+
+/**
+ * Roles this build has no definition for sort last rather than crashing or
+ * landing at the top — profiles.role is shared with the mobile repo, which has
+ * shipped a role web didn't know about before (see roleLabel).
+ */
+function roleRank(role: string): number {
+  const i = ROLE_ORDER.indexOf(role as UserRole)
+  return i === -1 ? ROLE_ORDER.length : i
+}
+
+/**
+ * Which direction a column opens on first click. Dates read newest-first
+ * everywhere else in the app, so Created matches; the rest start A-Z.
+ */
+const DEFAULT_SORT_DIR: Record<SortKey, SortState['dir']> = {
+  user: 'asc',
+  role: 'asc',
+  platform: 'asc',
+  team: 'asc',
+  created: 'desc',
+  status: 'asc',
 }
 
 const EMPTY_FORM: UserFormData = {
   full_name: '',
   email: '',
-  password: '',
+  // Pre-filled, not forced — the admin can overwrite it before saving.
+  password: DEFAULT_PASSWORD,
   role: 'sales_specialist',
+  admin_scope: 'all',
   team_id: '',
 }
 
@@ -110,6 +163,9 @@ export default function UsersPage() {
   const [roleFilter, setRoleFilter] = useState<string>('all')
   const [platformFilter, setPlatformFilter] = useState<string>('all')
   const [teams, setTeams] = useState<TeamRow[]>([])
+  // Matches the query's own .order('created_at', desc), so the first paint is
+  // sorted the same way with or without a click.
+  const [sort, setSort] = useState<SortState>({ key: 'created', dir: 'desc' })
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<UserRow | null>(null)
@@ -117,6 +173,91 @@ export default function UsersPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  // Password reset keeps its own state: it is a separate dialog from the
+  // create/edit form and must not inherit a half-filled UserFormData.
+  const [resetTarget, setResetTarget] = useState<UserRow | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
+  const [resetConfirm, setResetConfirm] = useState('')
+  const [showResetPassword, setShowResetPassword] = useState(false)
+  const [resetError, setResetError] = useState('')
+
+  // Avatar lives outside UserFormData because it is a File, not a text field.
+  const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+  const [avatarCleared, setAvatarCleared] = useState(false)
+  const objectUrlRef = useRef<string | null>(null)
+
+  function releasePreview() {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
+  }
+
+  function resetAvatar(existingUrl: string | null) {
+    releasePreview()
+    setAvatarFile(null)
+    setAvatarPreview(existingUrl)
+    setAvatarCleared(false)
+  }
+
+  useEffect(() => releasePreview, [])
+
+  async function handleAvatarPick(file: File) {
+    if (!AVATAR_ACCEPTED_TYPES.includes(file.type)) {
+      setFormError('Photo must be a JPEG, PNG, or WebP image.')
+      return
+    }
+    if (file.size > AVATAR_MAX_SOURCE_BYTES) {
+      setFormError('Photo is too large — pick an image under 5 MB.')
+      return
+    }
+
+    let resized: File
+    try {
+      resized = await resizeAvatar(file)
+    } catch {
+      setFormError('That image could not be read.')
+      return
+    }
+
+    releasePreview()
+    objectUrlRef.current = URL.createObjectURL(resized)
+    setAvatarFile(resized)
+    setAvatarPreview(objectUrlRef.current)
+    setAvatarCleared(false)
+    setFormError('')
+  }
+
+  function handleAvatarClear() {
+    releasePreview()
+    setAvatarFile(null)
+    setAvatarPreview(null)
+    setAvatarCleared(true)
+  }
+
+  /**
+   * Runs after the profile row is saved — the photo needs an existing profile
+   * to hang off. Returns a message if the profile saved but the photo didn't,
+   * which the callers surface at page level rather than in the (now closed)
+   * dialog.
+   */
+  async function syncAvatar(profileId: string, hadAvatar: boolean): Promise<string> {
+    if (avatarFile) {
+      const payload = new FormData()
+      payload.append('profileId', profileId)
+      payload.append('file', avatarFile)
+      const { error } = await uploadUserAvatar(payload)
+      return error ? `Profile saved, but the photo failed to upload: ${error}` : ''
+    }
+    if (avatarCleared && hadAvatar) {
+      const { error } = await removeUserAvatar(profileId)
+      return error ? `Profile saved, but the photo could not be removed: ${error}` : ''
+    }
+    return ''
+  }
 
   async function loadUsers() {
     setLoading(true)
@@ -124,7 +265,7 @@ export default function UsersPage() {
     const supabase = createClient()
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at')
+      .select('id, user_id, full_name, email, role, admin_scope, team_id, is_active, avatar_url, created_at')
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -135,6 +276,7 @@ export default function UsersPage() {
           ...p,
           email: p.email ?? '',
           is_active: p.is_active ?? true,
+          admin_scope: adminScope(p.role, p.admin_scope),
         }))
       )
     }
@@ -160,10 +302,77 @@ export default function UsersPage() {
     const matchSearch =
       u.full_name.toLowerCase().includes(search.toLowerCase()) ||
       u.email.toLowerCase().includes(search.toLowerCase())
-    const matchRole = roleFilter === 'all' || u.role === roleFilter
+    // 'admin' matches every category; 'admin:sales' narrows to one of them.
+    const matchRole =
+      roleFilter === 'all' ||
+      (roleFilter.startsWith('admin:')
+        ? u.role === 'admin' && u.admin_scope === roleFilter.slice('admin:'.length)
+        : u.role === roleFilter)
     const matchPlatform = platformFilter === 'all' || platformForRole(u.role) === platformFilter
     return matchSearch && matchRole && matchPlatform
   })
+
+  function toggleSort(key: SortKey) {
+    setSort(prev =>
+      prev.key === key
+        ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: DEFAULT_SORT_DIR[key] }
+    )
+  }
+
+  const sorted = [...filtered].sort((a, b) => {
+    const dir = sort.dir === 'asc' ? 1 : -1
+    // Every column falls back to name so equal rows keep a stable, readable
+    // order instead of shuffling between renders.
+    const byName = a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' })
+
+    switch (sort.key) {
+      case 'user':
+        return dir * byName
+
+      case 'role': {
+        const rank = roleRank(a.role) - roleRank(b.role)
+        if (rank) return dir * rank
+        // Only admins differ on the second key — keeps Collection/Delivery/
+        // Sales Admin grouped rather than interleaved by name.
+        const scope = roleScopeLabel(a.role, a.admin_scope)
+          .localeCompare(roleScopeLabel(b.role, b.admin_scope))
+        return scope ? dir * scope : byName
+      }
+
+      case 'platform': {
+        const platform = platformForRole(a.role).localeCompare(platformForRole(b.role))
+        return platform ? dir * platform : byName
+      }
+
+      case 'team': {
+        const at = teams.find(t => t.id === a.team_id)?.name ?? ''
+        const bt = teams.find(t => t.id === b.team_id)?.name ?? ''
+        // Unassigned sinks to the bottom in BOTH directions — most users here
+        // have no team, and a screen of dashes is never what someone sorting
+        // by team is looking for.
+        if (!at || !bt) return at ? -1 : bt ? 1 : byName
+        // numeric, so Team 10 follows Team 9 rather than Team 1.
+        const team = at.localeCompare(bt, undefined, { numeric: true, sensitivity: 'base' })
+        return team ? dir * team : byName
+      }
+
+      case 'created': {
+        const created = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        return created ? dir * created : byName
+      }
+
+      case 'status': {
+        // Active first when ascending.
+        const status = Number(b.is_active) - Number(a.is_active)
+        return status ? dir * status : byName
+      }
+    }
+  })
+
+  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
+    sorted, 10, `${search}|${roleFilter}|${platformFilter}|${sort.key}|${sort.dir}`,
+  )
 
   const counts = {
     total: users.length,
@@ -173,6 +382,7 @@ export default function UsersPage() {
     sales_specialist: users.filter(u => u.role === 'sales_specialist').length,
     rsr: users.filter(u => u.role === 'rsr').length,
     collector: users.filter(u => u.role === 'collector').length,
+    delivery: users.filter(u => u.role === 'delivery').length,
     active: users.filter(u => u.is_active).length,
   }
 
@@ -180,6 +390,7 @@ export default function UsersPage() {
     setForm(EMPTY_FORM)
     setFormError('')
     setShowPassword(false)
+    resetAvatar(null)
     setCreateOpen(true)
   }
 
@@ -189,10 +400,12 @@ export default function UsersPage() {
       email: user.email,
       password: '',
       role: user.role,
+      admin_scope: user.admin_scope,
       team_id: user.team_id ?? '',
     } satisfies UserFormData)
     setFormError('')
     setShowPassword(false)
+    resetAvatar(user.avatar_url)
     setEditTarget(user)
   }
 
@@ -201,7 +414,9 @@ export default function UsersPage() {
     if (!form.email.trim()) return 'Email is required.'
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return 'Enter a valid email address.'
     if (isCreate && !form.password) return 'Password is required.'
-    if (isCreate && form.password.length < 8) return 'Password must be at least 8 characters.'
+    if (isCreate && form.password.length < PASSWORD_MIN_LENGTH) {
+      return `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`
+    }
     return ''
   }
 
@@ -209,17 +424,22 @@ export default function UsersPage() {
     const err = validateForm(true)
     if (err) { setFormError(err); return }
     setSaving(true)
-    const { error } = await createUser({
+    const { error, profileId } = await createUser({
       full_name: form.full_name.trim(),
       email: form.email.trim().toLowerCase(),
       password: form.password,
       role: form.role,
+      admin_scope: form.admin_scope,
       team_id: form.team_id || null,
     })
+    if (error) { setSaving(false); setFormError(error); return }
+
+    const avatarError = profileId ? await syncAvatar(profileId, false) : ''
     setSaving(false)
-    if (error) { setFormError(error); return }
     setCreateOpen(false)
-    loadUsers()
+    await loadUsers()
+    // After loadUsers — it clears fetchError on entry.
+    if (avatarError) setFetchError(avatarError)
   }
 
   async function handleEdit() {
@@ -231,17 +451,55 @@ export default function UsersPage() {
       full_name: form.full_name.trim(),
       email: form.email.trim().toLowerCase(),
       role: form.role,
+      admin_scope: form.admin_scope,
       team_id: form.team_id || null,
     })
+    if (error) { setSaving(false); setFormError(error); return }
+
+    const avatarError = await syncAvatar(editTarget.id, !!editTarget.avatar_url)
     setSaving(false)
-    if (error) { setFormError(error); return }
     setEditTarget(null)
-    loadUsers()
+    await loadUsers()
+    // After loadUsers — it clears fetchError on entry.
+    if (avatarError) setFetchError(avatarError)
   }
 
   async function handleToggleStatus(user: UserRow) {
     const { error } = await toggleUserStatus(user.id, !user.is_active)
     if (!error) loadUsers()
+  }
+
+  function openReset(user: UserRow) {
+    // Pre-filled with the default so the usual "they forgot it" case is one
+    // click, and visible by default so the admin can read it out as-is.
+    setResetPassword(DEFAULT_PASSWORD)
+    setResetConfirm(DEFAULT_PASSWORD)
+    setShowResetPassword(true)
+    setResetError('')
+    setNotice('')
+    setResetTarget(user)
+  }
+
+  async function handleReset() {
+    if (!resetTarget) return
+    if (resetPassword.length < PASSWORD_MIN_LENGTH) {
+      setResetError(`Password must be at least ${PASSWORD_MIN_LENGTH} characters.`)
+      return
+    }
+    // The admin reads this out to the agent, so a typo here locks them out of
+    // an account that reports itself as reset. Confirm before sending.
+    if (resetPassword !== resetConfirm) {
+      setResetError('The two passwords do not match.')
+      return
+    }
+
+    setSaving(true)
+    const { error } = await resetUserPassword(resetTarget.id, resetPassword)
+    setSaving(false)
+    if (error) { setResetError(error); return }
+
+    setNotice(`Password updated for ${resetTarget.full_name}. Give it to them directly — they will not receive an email.`)
+    setResetTarget(null)
   }
 
   return (
@@ -256,16 +514,23 @@ export default function UsersPage() {
           </Alert>
         )}
 
+        {notice && (
+          <Alert>
+            <AlertDescription>{notice}</AlertDescription>
+          </Alert>
+        )}
+
         {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
           {([
             { label: 'Total Users', value: counts.total, icon: Users, color: 'text-foreground' },
             { label: 'Super Admins', value: counts.superadmin, icon: ShieldEllipsis, color: 'text-primary' },
             { label: 'Admins', value: counts.admin, icon: ShieldCheck, color: 'text-primary' },
-            { label: 'Sales Managers', value: counts.sales_manager, icon: Briefcase, color: 'text-blue-400' },
-            { label: 'Sales Specialists', value: counts.sales_specialist, icon: User, color: 'text-yellow-400' },
-            { label: 'RSR', value: counts.rsr, icon: Store, color: 'text-orange-400' },
-            { label: 'Collectors', value: counts.collector, icon: Wallet, color: 'text-purple-400' },
+            { label: 'Sales Managers', value: counts.sales_manager, icon: Briefcase, color: TONE_TEXT[ROLE_TONE.sales_manager] },
+            { label: 'Sales Specialists', value: counts.sales_specialist, icon: User, color: TONE_TEXT[ROLE_TONE.sales_specialist] },
+            { label: 'RSR', value: counts.rsr, icon: Store, color: TONE_TEXT[ROLE_TONE.rsr] },
+            { label: 'Collectors', value: counts.collector, icon: Wallet, color: TONE_TEXT[ROLE_TONE.collector] },
+            { label: 'Delivery', value: counts.delivery, icon: Truck, color: TONE_TEXT[ROLE_TONE.delivery] },
           ] as const).map(({ label, value, icon: Icon, color }) => (
             <Card key={label} className="bg-card border-border last:col-span-2 sm:last:col-span-1">
               <CardContent className="p-4 flex items-center gap-3">
@@ -299,11 +564,17 @@ export default function UsersPage() {
             <SelectContent>
               <SelectItem value="all">All Roles</SelectItem>
               <SelectItem value="superadmin">Super Admin</SelectItem>
-              <SelectItem value="admin">Admin</SelectItem>
+              <SelectItem value="admin">All Admins</SelectItem>
+              {ADMIN_SCOPES.filter(scope => scope !== 'all').map(scope => (
+                <SelectItem key={scope} value={`admin:${scope}`}>
+                  {ADMIN_SCOPE_LABEL[scope]}
+                </SelectItem>
+              ))}
               <SelectItem value="sales_manager">Sales Manager</SelectItem>
               <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
               <SelectItem value="rsr">RSR</SelectItem>
               <SelectItem value="collector">Collector</SelectItem>
+              <SelectItem value="delivery">Delivery</SelectItem>
             </SelectContent>
           </Select>
           <Select value={platformFilter} onValueChange={v => setPlatformFilter(v ?? 'all')}>
@@ -335,12 +606,12 @@ export default function UsersPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-xs text-muted-foreground">
-                    <th className="text-left px-5 py-3 font-medium">User</th>
-                    <th className="text-left px-5 py-3 font-medium">Role</th>
-                    <th className="text-left px-5 py-3 font-medium">Platform</th>
-                    <th className="text-left px-5 py-3 font-medium hidden md:table-cell">Team</th>
-                    <th className="text-left px-5 py-3 font-medium hidden lg:table-cell">Created</th>
-                    <th className="text-left px-5 py-3 font-medium">Status</th>
+                    <SortHeader label="User" sortKey="user" sort={sort} onSort={toggleSort} />
+                    <SortHeader label="Role" sortKey="role" sort={sort} onSort={toggleSort} />
+                    <SortHeader label="Platform" sortKey="platform" sort={sort} onSort={toggleSort} />
+                    <SortHeader label="Team" sortKey="team" sort={sort} onSort={toggleSort} className="hidden md:table-cell" />
+                    <SortHeader label="Created" sortKey="created" sort={sort} onSort={toggleSort} className="hidden lg:table-cell" />
+                    <SortHeader label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
                     <th className="px-5 py-3" />
                   </tr>
                 </thead>
@@ -365,8 +636,14 @@ export default function UsersPage() {
                         <td className="px-5 py-3" />
                       </tr>
                     ))
-                  ) : filtered.map(user => {
-                    const RoleIcon = ROLE_ICON[user.role]
+                  ) : pageItems.map(user => {
+                    // Falls back for roles added to the DB by the mobile repo that
+                    // this build has no icon for — an undefined element type here
+                    // takes the whole page down. See roleLabel in lib/permissions.
+                    const RoleIcon =
+                      user.role === 'admin'
+                        ? ADMIN_SCOPE_ICON[user.admin_scope]
+                        : ROLE_ICON[user.role] ?? CircleHelp
                     const platform = PLATFORM_META[platformForRole(user.role)]
                     return (
                       <tr key={user.id} className="hover:bg-muted/20 transition-colors">
@@ -385,9 +662,9 @@ export default function UsersPage() {
                           </div>
                         </td>
                         <td className="px-5 py-3">
-                          <Badge variant="outline" className={`text-[11px] px-2 h-5 gap-1 ${ROLE_STYLE[user.role]}`}>
+                          <Badge variant="tone" className={`gap-1 ${TONE_CLASS[roleTone(user.role)]}`}>
                             <RoleIcon className="w-3 h-3" />
-                            {ROLE_LABEL[user.role]}
+                            {roleScopeLabel(user.role, user.admin_scope)}
                           </Badge>
                         </td>
                         <td className="px-5 py-3">
@@ -406,11 +683,8 @@ export default function UsersPage() {
                         </td>
                         <td className="px-5 py-3">
                           <Badge
-                            variant="outline"
-                            className={user.is_active
-                              ? 'text-[11px] px-2 h-5 bg-primary/10 text-primary border-primary/30'
-                              : 'text-[11px] px-2 h-5 bg-muted text-muted-foreground border-border'
-                            }
+                            variant="tone"
+                            className={TONE_CLASS[user.is_active ? 'brand' : 'neutral']}
                           >
                             {user.is_active ? 'Active' : 'Inactive'}
                           </Badge>
@@ -430,6 +704,10 @@ export default function UsersPage() {
                                   <DropdownMenuItem onClick={() => openEdit(user)} className="gap-2">
                                     <Pencil className="w-3.5 h-3.5" />
                                     Edit
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => openReset(user)} className="gap-2">
+                                    <KeyRound className="w-3.5 h-3.5" />
+                                    Reset Password
                                   </DropdownMenuItem>
                                   <DropdownMenuItem
                                     onClick={() => handleToggleStatus(user)}
@@ -458,6 +736,13 @@ export default function UsersPage() {
             </div>
           </CardContent>
         </Card>
+
+        {!loading && (
+          <Pagination
+            page={page} pageCount={pageCount} onPageChange={setPage}
+            from={from} to={to} total={total} itemLabel="users"
+          />
+        )}
       </div>
 
       {/* Create User Dialog */}
@@ -466,7 +751,8 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Create New User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} canCreateAdmins={canManage} />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} users={users} canCreateAdmins={canManage}
+            avatarPreview={avatarPreview} onAvatarPick={handleAvatarPick} onAvatarClear={handleAvatarClear} />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -487,7 +773,8 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
-          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} canCreateAdmins={canManage} />
+          <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} users={users} canCreateAdmins={canManage}
+            avatarPreview={avatarPreview} onAvatarPick={handleAvatarPick} onAvatarClear={handleAvatarClear} />
           {formError && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
@@ -501,7 +788,110 @@ export default function UsersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Reset Password Dialog */}
+      <Dialog open={!!resetTarget} onOpenChange={open => { if (!saving && !open) setResetTarget(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reset Password</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Sets a new password for{' '}
+              <span className="font-medium text-foreground">{resetTarget?.full_name}</span>{' '}
+              ({resetTarget?.email}). They are not notified — pass it on directly.
+            </p>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="reset-password">New Password</Label>
+              <div className="relative">
+                <Input
+                  id="reset-password"
+                  type={showResetPassword ? 'text' : 'password'}
+                  placeholder={`Min. ${PASSWORD_MIN_LENGTH} characters`}
+                  value={resetPassword}
+                  onChange={e => { setResetPassword(e.target.value); setResetError('') }}
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowResetPassword(!showResetPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showResetPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {resetPassword === DEFAULT_PASSWORD && (
+                <p className="text-xs text-muted-foreground">
+                  This is the shared default. Type a different one for admin accounts.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="reset-confirm">Confirm Password</Label>
+              <Input
+                id="reset-confirm"
+                type={showResetPassword ? 'text' : 'password'}
+                placeholder="Re-enter the password"
+                value={resetConfirm}
+                onChange={e => { setResetConfirm(e.target.value); setResetError('') }}
+              />
+            </div>
+          </div>
+
+          {resetError && (
+            <Alert variant="destructive" className="py-2">
+              <AlertDescription className="text-xs">{resetError}</AlertDescription>
+            </Alert>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResetTarget(null)} disabled={saving}>Cancel</Button>
+            <Button onClick={handleReset} disabled={saving}>
+              {saving ? 'Resetting…' : 'Reset Password'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  )
+}
+
+/**
+ * A clickable column header. Carries a faint neutral arrow when idle so the
+ * column reads as sortable before anyone hovers it, and a solid directional
+ * arrow once it is the active sort.
+ */
+function SortHeader({
+  label, sortKey, sort, onSort, className,
+}: {
+  label: string
+  sortKey: SortKey
+  sort: SortState
+  onSort: (key: SortKey) => void
+  className?: string
+}) {
+  const active = sort.key === sortKey
+  const Icon = !active ? ArrowUpDown : sort.dir === 'asc' ? ArrowUp : ArrowDown
+
+  return (
+    <th
+      className={`text-left px-5 py-3 font-medium ${className ?? ''}`}
+      aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`inline-flex items-center gap-1.5 transition-colors hover:text-foreground ${
+          active ? 'text-foreground' : ''
+        }`}
+      >
+        {label}
+        <Icon className={`w-3.5 h-3.5 ${active ? '' : 'opacity-40'}`} />
+      </button>
+    </th>
   )
 }
 
@@ -512,10 +902,19 @@ interface UserFormProps {
   setShowPassword: (v: boolean) => void
   isCreate: boolean
   teams: TeamRow[]
+  users: UserRow[]
   canCreateAdmins: boolean
+  avatarPreview: string | null
+  onAvatarPick: (file: File) => void
+  onAvatarClear: () => void
 }
 
-function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, teams, canCreateAdmins }: UserFormProps) {
+function UserForm({
+  form, setForm, showPassword, setShowPassword, isCreate, teams, users, canCreateAdmins,
+  avatarPreview, onAvatarPick, onAvatarClear,
+}: UserFormProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
   function set(field: keyof UserFormData, value: string) {
     setForm(prev => ({ ...prev, [field]: value }))
   }
@@ -525,14 +924,74 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
     setForm(prev => ({
       ...prev,
       role,
+      // Only admins carry a category; anything else must go back to 'all' or
+      // the DB's profiles_admin_scope_role_check rejects the row.
+      admin_scope: role === 'admin' ? prev.admin_scope : 'all',
       team_id: validTeamIds.includes(prev.team_id) ? prev.team_id : '',
     }))
   }
 
   const availableTeams = teams.filter(t => teamIdsForRole(form.role).includes(t.id))
+  const managers = users.filter(u => u.role === 'sales_manager')
+
+  function managerNameForTeam(teamId: string): string | undefined {
+    return managerForTeam(teamId, managers)?.full_name
+  }
+
+  const selectedTeamManager = form.team_id ? managerNameForTeam(form.team_id) : undefined
 
   return (
     <div className="space-y-4 py-2">
+      {/* Profile photo — mobile users can set their own from the app, but an
+          admin can supply one here so field agents show a face on map pins. */}
+      <div className="flex items-center gap-4">
+        <Avatar className="size-16 shrink-0">
+          {avatarPreview && <AvatarImage src={avatarPreview} alt="" />}
+          <AvatarFallback className="bg-primary/20 text-lg font-bold text-primary">
+            {form.full_name.trim().charAt(0).toUpperCase() || '?'}
+          </AvatarFallback>
+        </Avatar>
+        <div className="space-y-1.5 min-w-0">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <ImagePlus className="w-3.5 h-3.5" />
+              {avatarPreview ? 'Change photo' : 'Upload photo'}
+            </Button>
+            {avatarPreview && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 text-destructive hover:text-destructive"
+                onClick={onAvatarClear}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Remove
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">JPG, PNG or WebP — cropped square, max 5 MB.</p>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={AVATAR_ACCEPT_ATTR}
+          className="hidden"
+          onChange={e => {
+            const file = e.target.files?.[0]
+            // Reset so re-picking the same file still fires a change event.
+            e.target.value = ''
+            if (file) onAvatarPick(file)
+          }}
+        />
+      </div>
+
       <div className="space-y-1.5">
         <Label htmlFor="full_name">Full Name</Label>
         <Input
@@ -590,6 +1049,7 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
             <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
             <SelectItem value="rsr">RSR</SelectItem>
             <SelectItem value="collector">Collector</SelectItem>
+            <SelectItem value="delivery">Delivery</SelectItem>
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">{ROLE_DESCRIPTION[form.role]}</p>
@@ -604,6 +1064,32 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
         })()}
       </div>
 
+      {/* Admin category (migration 024). Hidden for every other role — scope is
+          meaningless there and the DB constraint forbids narrowing it. */}
+      {form.role === 'admin' && (
+        <div className="space-y-1.5">
+          <Label>Admin Category</Label>
+          <Select
+            value={form.admin_scope}
+            onValueChange={v => set('admin_scope', (v as AdminScope | null) ?? 'all')}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ADMIN_SCOPES.map(scope => (
+                <SelectItem key={scope} value={scope}>
+                  {scope === 'all' ? 'Admin (all modules)' : ADMIN_SCOPE_LABEL[scope]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {ADMIN_SCOPE_DESCRIPTION[form.admin_scope]}
+          </p>
+        </div>
+      )}
+
       <div className="space-y-1.5">
         <Label>Team <span className="text-muted-foreground">(optional)</span></Label>
         <Select
@@ -611,16 +1097,28 @@ function UserForm({ form, setForm, showPassword, setShowPassword, isCreate, team
           onValueChange={v => set('team_id', v === 'none' ? '' : (v ?? ''))}
           disabled={availableTeams.length === 0}
         >
-          <SelectTrigger>
+          <SelectTrigger className="w-full">
             <SelectValue placeholder={availableTeams.length === 0 ? 'This role has no teams' : 'No team'} />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className="min-w-[280px]">
             <SelectItem value="none">No team</SelectItem>
-            {availableTeams.map(t => (
-              <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-            ))}
+            {availableTeams.map(t => {
+              const manager = managerNameForTeam(t.id)
+              return (
+                <SelectItem key={t.id} value={t.id}>
+                  {`${t.name} — ${manager ?? 'No manager assigned'}`}
+                </SelectItem>
+              )
+            })}
           </SelectContent>
         </Select>
+        {form.team_id && (
+          <p className="text-xs text-muted-foreground">
+            {selectedTeamManager
+              ? <>Managed by <span className="text-foreground font-medium">{selectedTeamManager}</span></>
+              : 'No manager is currently assigned to this team.'}
+          </p>
+        )}
       </div>
     </div>
   )

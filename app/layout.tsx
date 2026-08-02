@@ -18,6 +18,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${dmSans.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col bg-background text-foreground">
         {children}
+        {/* Pinned light on purpose: sonner.tsx falls back to theme="system", and
+            the app has no ThemeProvider, so an OS-dark user would otherwise get a
+            dark toast over a light app. Remove this pin only alongside a real
+            theme toggle. */}
         <Toaster richColors theme="light" />
       </body>
     </html>

@@ -7,6 +7,14 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-brand: var(--biz-brand);
+  --color-ink: var(--biz-ink);
+  --color-navy: var(--biz-navy);
+  --color-canvas: var(--biz-canvas);
+  --color-tint-a: var(--biz-tint-a);
+  --color-tint-b: var(--biz-tint-b);
+  --color-line: var(--biz-line);
+  --color-soft: var(--biz-soft);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-sans);
@@ -48,73 +56,132 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* ============================================================================
+   Emerald BizLink — shared design tokens.
+
+   Kept as literal hex so this block can be eyeballed against the mobile side's
+   source of truth: OracleSalesApp-Vault/projects/OracleSalesApp-Mobile/
+   Design-System-Catalog.md §1. Do not "tidy" these into oklch — the whole point
+   is that a human can diff them against that table without a converter.
+
+   Scope note: we adopt the token + badge layer only. BizLink's phone-specific
+   layout language (floating pill nav, one-dark-hero-per-screen, hatched bar
+   charts) is deliberately NOT ported — this is a dense admin surface.
+   ============================================================================ */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.09 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.09 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.09 0 0);
-  --primary: oklch(0.52 0.20 145);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.96 0 0);
-  --secondary-foreground: oklch(0.09 0 0);
-  --muted: oklch(0.96 0 0);
-  --muted-foreground: oklch(0.45 0 0);
-  --accent: oklch(0.52 0.20 145 / 10%);
-  --accent-foreground: oklch(0.42 0.18 145);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0 0 0 / 10%);
-  --input: oklch(0 0 0 / 6%);
-  --ring: oklch(0.52 0.20 145);
-  --chart-1: oklch(0.52 0.20 145);
-  --chart-2: oklch(0.42 0.16 145);
-  --chart-3: oklch(0.32 0.12 145);
-  --chart-4: oklch(0.62 0.14 145);
-  --chart-5: oklch(0.72 0.10 145);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.94 0.012 145);
-  --sidebar-foreground: oklch(0.15 0 0);
-  --sidebar-primary: oklch(0.52 0.20 145);
-  --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.52 0.20 145 / 10%);
-  --sidebar-accent-foreground: oklch(0.42 0.18 145);
-  --sidebar-border: oklch(0 0 0 / 8%);
-  --sidebar-ring: oklch(0.52 0.20 145);
+  /* Core Emerald (ADR-011) — identical in light and dark */
+  --biz-brand: #005b36;
+  --biz-ink: #003d24;
+  --biz-navy: #0b2545;
+  --biz-red: #c0311b;
+  --biz-orange: #b4740a;
+  --biz-yellow: #c99a2e;
+
+  /* Surfaces & tints — these are what invert in dark mode */
+  --biz-canvas: #eff3f1;
+  --biz-card: #ffffff;
+  --biz-soft: #e7ece9;
+  --biz-line: #dfe7e2;
+  --biz-tint-a: #e4f0ea;
+  --biz-tint-b: #fbe7e2;
+  --biz-amber-soft: #fbf0dc;
+  --biz-blue-soft: #e8ecf2;
+  --biz-purple-soft: #e7ecf3;
+  --biz-text: #12271c;
+  --biz-muted: #6b7a73;
+
+  /* Badge families — every status/role/channel pill in the app resolves to one
+     of these six. All pairs are >=4.5:1 (verified). Note --badge-amber-fg is
+     #8c5a08, NOT the catalog's --orange #b4740a: that orange lands at 3.42:1 on
+     amber-soft and fails AA at 11px. The catalog orange is still correct for
+     icons and large text, just not for badge labels. */
+  --badge-brand-bg: #e4f0ea;
+  --badge-brand-fg: #005b36;
+  --badge-navy-bg: #e8ecf2;
+  --badge-navy-fg: #0b2545;
+  --badge-purple-bg: #e7ecf3;
+  --badge-purple-fg: #24406b;
+  --badge-amber-bg: #fbf0dc;
+  --badge-amber-fg: #8c5a08;
+  --badge-red-bg: #fbe7e2;
+  --badge-red-fg: #c0311b;
+  --badge-neutral-bg: #e7ece9;
+  --badge-neutral-fg: #45534c;
+
+  /* --- shadcn semantic layer, mapped onto the tokens above --- */
+  --background: var(--biz-canvas);
+  --foreground: var(--biz-text);
+  --card: var(--biz-card);
+  --card-foreground: var(--biz-text);
+  --popover: var(--biz-card);
+  --popover-foreground: var(--biz-text);
+  --primary: var(--biz-brand);
+  --primary-foreground: #ffffff;
+  --secondary: var(--biz-soft);
+  --secondary-foreground: var(--biz-text);
+  --muted: var(--biz-soft);
+  --muted-foreground: var(--biz-muted);
+  --accent: var(--biz-tint-a);
+  --accent-foreground: var(--biz-brand);
+  --destructive: var(--biz-red);
+  --border: var(--biz-line);
+  --input: var(--biz-line);
+  --ring: var(--biz-brand);
+  --chart-1: #005b36;
+  --chart-2: #0b7a44;
+  --chart-3: #003d24;
+  --chart-4: #0b2545;
+  --chart-5: #6b7a73;
+  --radius: 0.875rem;
+  --sidebar: var(--biz-card);
+  --sidebar-foreground: var(--biz-text);
+  --sidebar-primary: var(--biz-brand);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--biz-tint-a);
+  --sidebar-accent-foreground: var(--biz-brand);
+  --sidebar-border: var(--biz-line);
+  --sidebar-ring: var(--biz-brand);
 }
 
+/* Dark palette per Design-System-Catalog.md §6 (ADR-031): invert surfaces only,
+   leave brand/navy/ink/red/orange/yellow untouched.
+
+   ⚠️ UNVERIFIED against mobile: the catalog documents an ADR-031 dark mode, but
+   OracleSalesApp-Mobile @ main has no bizlinkDark token set and no useBizlinkColors
+   hook (`grep -ri bizlink` → 0 hits). These values come from the doc, not from
+   shipped code. Confirm with Carter before treating dark mode as cross-platform
+   consistent. This block previously duplicated :root verbatim, so dark mode was
+   a silent no-op. */
 .dark {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.09 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.09 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.09 0 0);
-  --primary: oklch(0.52 0.20 145);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.96 0 0);
-  --secondary-foreground: oklch(0.09 0 0);
-  --muted: oklch(0.96 0 0);
-  --muted-foreground: oklch(0.45 0 0);
-  --accent: oklch(0.52 0.20 145 / 10%);
-  --accent-foreground: oklch(0.42 0.18 145);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0 0 0 / 10%);
-  --input: oklch(0 0 0 / 6%);
-  --ring: oklch(0.52 0.20 145);
-  --chart-1: oklch(0.52 0.20 145);
-  --chart-2: oklch(0.42 0.16 145);
-  --chart-3: oklch(0.32 0.12 145);
-  --chart-4: oklch(0.62 0.14 145);
-  --chart-5: oklch(0.72 0.10 145);
-  --sidebar: oklch(0.94 0.012 145);
-  --sidebar-foreground: oklch(0.15 0 0);
-  --sidebar-primary: oklch(0.52 0.20 145);
-  --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.52 0.20 145 / 10%);
-  --sidebar-accent-foreground: oklch(0.42 0.18 145);
-  --sidebar-border: oklch(0 0 0 / 8%);
-  --sidebar-ring: oklch(0.52 0.20 145);
+  --biz-canvas: #0f1a18;
+  --biz-card: #1a2621;
+  --biz-soft: #23312c;
+  --biz-line: #2a3a33;
+  --biz-tint-a: #1e453e;
+  --biz-tint-b: #3d2421;
+  --biz-amber-soft: #3d3620;
+  --biz-blue-soft: #23312c;
+  --biz-purple-soft: #23312c;
+  --biz-text: #e8f0eb;
+  --biz-muted: #8b9a93;
+
+  /* Badge foregrounds must lighten in dark mode. The catalog's "brand/navy stay
+     unchanged" rule holds for fills and buttons, but #005b36 text on the dark
+     tint #1e453e is ~1.2:1 — unreadable. Pills get lightened foregrounds only. */
+  --badge-brand-fg: #7fd4a8;
+  --badge-navy-bg: #23312c;
+  --badge-navy-fg: #9fc0e8;
+  --badge-purple-bg: #23312c;
+  --badge-purple-fg: #afc3e0;
+  --badge-amber-fg: #e8c168;
+  --badge-red-fg: #f0a090;
+  --badge-neutral-fg: #c2cfc8;
+  --badge-brand-bg: var(--biz-tint-a);
+  --badge-amber-bg: var(--biz-amber-soft);
+  --badge-red-bg: var(--biz-tint-b);
+  --badge-neutral-bg: var(--biz-soft);
+
+  --chart-5: #8b9a93;
 }
 
 @layer base {

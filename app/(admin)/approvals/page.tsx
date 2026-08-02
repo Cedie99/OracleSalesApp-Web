@@ -1,23 +1,20 @@
 'use client'
 
-import { useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { mockEditRequests } from '@/lib/mock/data'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
+import { useEditRequests } from '@/lib/hooks/use-edit-requests'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import type { ApprovalStatus } from '@/types'
-import { ClipboardCheck, Check, X, Clock, ArrowRight } from 'lucide-react'
+import type { ClientEditRequest } from '@/types'
+import { ClipboardCheck, Check, X, Clock, ArrowRight, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
-
-const STATUS_STYLE: Record<ApprovalStatus, string> = {
-  pending: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  approved: 'bg-primary/15 text-primary border-primary/30',
-  rejected: 'bg-destructive/15 text-destructive border-destructive/30',
-}
+import { APPROVAL_TONE, TONE_CLASS, VALUE_LABEL } from '@/lib/status-styles'
 
 const FIELD_LABEL: Record<string, string> = {
   sales_channel: 'Sales Channel',
@@ -28,14 +25,8 @@ const FIELD_LABEL: Record<string, string> = {
   contact_position: 'Contact Position',
 }
 
-const VALUE_LABEL: Record<string, string> = {
-  distributor: 'Distributor', dealer: 'Dealer', end_user: 'End-User', private_label: 'Private Label',
-  existing: 'Existing', new: 'New', prospect: 'Prospect',
-}
-
 export default function ApprovalsPage() {
-  const [requests, setRequests] = useState(mockEditRequests)
-
+  const { requests, loading, error, review } = useEditRequests()
   const { profile } = useCurrentProfile()
 
   const pending = requests
@@ -45,16 +36,19 @@ export default function ApprovalsPage() {
     .filter(r => r.status !== 'pending')
     .sort((a, b) => new Date(b.reviewed_at ?? b.created_at).getTime() - new Date(a.reviewed_at ?? a.created_at).getTime())
 
-  function handleReview(id: string, action: 'approved' | 'rejected') {
-    setRequests(prev => prev.map(r =>
-      r.id === id
-        ? { ...r, status: action, reviewed_at: new Date().toISOString(), reviewed_by: profile?.id ?? null, reviewer: profile ?? undefined }
-        : r
-    ))
+  const pendingPage = usePagination(pending, 9, 'pending')
+  const resolvedPage = usePagination(resolved, 9, 'resolved')
+
+  async function handleReview(id: string, action: 'approved' | 'rejected') {
+    const reviewError = await review(id, action, profile?.id ?? null)
+    if (reviewError) {
+      toast.error(`Couldn't ${action === 'approved' ? 'approve' : 'reject'}: ${reviewError}`)
+      return
+    }
     toast.success(`Request ${action === 'approved' ? 'approved' : 'rejected'} successfully`)
   }
 
-  function RequestCard({ req }: { req: typeof mockEditRequests[0] }) {
+  function RequestCard({ req }: { req: ClientEditRequest }) {
     return (
       <Card key={req.id} className="bg-card border-border">
         <CardContent className="p-4">
@@ -65,7 +59,7 @@ export default function ApprovalsPage() {
                 Requested by <span className="text-foreground">{req.requester?.full_name}</span> · {format(new Date(req.created_at), 'MMM d, h:mm a')}
               </p>
             </div>
-            <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${STATUS_STYLE[req.status]}`}>
+            <Badge variant="tone" className={TONE_CLASS[APPROVAL_TONE[req.status]]}>
               {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
             </Badge>
           </div>
@@ -124,6 +118,14 @@ export default function ApprovalsPage() {
       <Header title="Edit Approvals" subtitle="Client detail change requests" pendingApprovals={pending.length} />
 
       <div className="flex-1 p-6">
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription className="text-xs">
+              Couldn&apos;t load approval requests: {error}
+            </AlertDescription>
+          </Alert>
+        )}
+
         <Tabs defaultValue="pending">
           <TabsList className="bg-card border border-border mb-5">
             <TabsTrigger value="pending" className="text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
@@ -135,22 +137,39 @@ export default function ApprovalsPage() {
           </TabsList>
 
           <TabsContent value="pending">
-            {pending.length === 0 ? (
+            {loading ? (
+              <div className="text-center py-16 text-muted-foreground">
+                <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
+                <p className="text-sm">Loading approval requests…</p>
+              </div>
+            ) : pending.length === 0 ? (
               <div className="text-center py-16 text-muted-foreground">
                 <ClipboardCheck className="w-8 h-8 mx-auto mb-2 opacity-40" />
                 <p className="text-sm">No pending approvals</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {pending.map(req => <RequestCard key={req.id} req={req} />)}
-              </div>
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {pendingPage.pageItems.map(req => <RequestCard key={req.id} req={req} />)}
+                </div>
+                <Pagination
+                  className="mt-4"
+                  page={pendingPage.page} pageCount={pendingPage.pageCount} onPageChange={pendingPage.setPage}
+                  from={pendingPage.from} to={pendingPage.to} total={pendingPage.total} itemLabel="requests"
+                />
+              </>
             )}
           </TabsContent>
 
           <TabsContent value="resolved">
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {resolved.map(req => <RequestCard key={req.id} req={req} />)}
+              {resolvedPage.pageItems.map(req => <RequestCard key={req.id} req={req} />)}
             </div>
+            <Pagination
+              className="mt-4"
+              page={resolvedPage.page} pageCount={resolvedPage.pageCount} onPageChange={resolvedPage.setPage}
+              from={resolvedPage.from} to={resolvedPage.to} total={resolvedPage.total} itemLabel="requests"
+            />
           </TabsContent>
         </Tabs>
       </div>

@@ -6,16 +6,17 @@ import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { mockClockRecords } from '@/lib/mock/data'
-import { ROLE_LABEL } from '@/lib/permissions'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Pagination } from '@/components/ui/pagination'
+import { DateRangeFilter } from '@/components/ui/date-range-filter'
+import { usePagination } from '@/lib/hooks/use-pagination'
+import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
+import { useClockRecords } from '@/lib/hooks/use-clock-records'
+import { roleLabel } from '@/lib/permissions'
 import type { ClockRecord, ClockType, Profile } from '@/types'
-import { Search, Clock, MapPin, Calendar } from 'lucide-react'
+import { Search, Clock, MapPin, Calendar, Loader2 } from 'lucide-react'
 import { format, differenceInMinutes } from 'date-fns'
-
-const TYPE_STYLE: Record<ClockType, string> = {
-  office: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  event: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
-}
+import { CLOCK_TYPE_TONE, TONE_CLASS } from '@/lib/status-styles'
 
 interface AttendanceRow {
   key: string
@@ -75,36 +76,48 @@ export default function ClockRecordsPage() {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [agentFilter, setAgentFilter] = useState<string>('all')
-  const [dateFrom, setDateFrom] = useState<string>('')
-  const [dateTo, setDateTo] = useState<string>('')
+  const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+
+  const { records, loading, error } = useClockRecords()
 
   const agentOptions = useMemo(() => {
     const byId = new Map<string, string>()
-    mockClockRecords.forEach(r => {
+    records.forEach(r => {
       if (r.agent) byId.set(r.agent.id, r.agent.full_name)
     })
     return Array.from(byId, ([id, full_name]) => ({ id, full_name }))
       .sort((a, b) => a.full_name.localeCompare(b.full_name))
-  }, [])
+  }, [records])
 
-  const rows = useMemo(() => pairIntoAttendanceRows(mockClockRecords), [])
+  const rows = useMemo(() => pairIntoAttendanceRows(records), [records])
 
   const filtered = rows.filter(row => {
     const matchSearch = (row.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
       (row.eventName ?? '').toLowerCase().includes(search.toLowerCase())
     const matchType = typeFilter === 'all' || row.type === typeFilter
     const matchAgent = agentFilter === 'all' || row.agent?.id === agentFilter
-    const d = new Date(row.day)
-    const afterFrom = !dateFrom || d >= new Date(dateFrom)
-    const beforeTo = !dateTo || d <= new Date(`${dateTo}T23:59:59`)
-    return matchSearch && matchType && matchAgent && afterFrom && beforeTo
+    return matchSearch && matchType && matchAgent && dateFilter.inRange(row.day)
   })
 
-  const grouped = filtered.reduce<Record<string, AttendanceRow[]>>((acc, row) => {
-    if (!acc[row.day]) acc[row.day] = []
-    acc[row.day].push(row)
+  // Pre-sort by day (newest first), then agent, so a paginated slice still
+  // groups cleanly into whole day sections in the right order.
+  const sortedRows = [...filtered].sort(
+    (a, b) =>
+      new Date(b.day).getTime() - new Date(a.day).getTime() ||
+      (a.agent?.full_name ?? '').localeCompare(b.agent?.full_name ?? ''),
+  )
+
+  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
+    sortedRows, 12, `${search}|${typeFilter}|${agentFilter}|${dateFilter.key}`,
+  )
+
+  // Group only the current page's rows; a Map keeps the day order from the sort.
+  const grouped = pageItems.reduce((acc, row) => {
+    const bucket = acc.get(row.day) ?? []
+    bucket.push(row)
+    acc.set(row.day, bucket)
     return acc
-  }, {})
+  }, new Map<string, AttendanceRow[]>())
 
   return (
     <div className="flex flex-col flex-1">
@@ -143,26 +156,13 @@ export default function ClockRecordsPage() {
               ))}
             </SelectContent>
           </Select>
-          <Input
-            type="date"
-            value={dateFrom}
-            onChange={e => setDateFrom(e.target.value)}
-            className="w-40 h-9 bg-card border-border"
-          />
-          <span className="text-sm text-muted-foreground self-center">to</span>
-          <Input
-            type="date"
-            value={dateTo}
-            onChange={e => setDateTo(e.target.value)}
-            className="w-40 h-9 bg-card border-border"
-          />
+          <DateRangeFilter filter={dateFilter} />
         </div>
 
         {/* Separate table per day, but every table shares the exact same
             table-fixed + colgroup widths so columns still align vertically
             down the page without merging everything into one giant table. */}
-        {Object.entries(grouped)
-          .sort(([a], [b]) => new Date(b).getTime() - new Date(a).getTime())
+        {Array.from(grouped.entries())
           .map(([day, dayRows]) => (
             <div key={day}>
               <div className="flex items-center gap-2 mb-2">
@@ -194,13 +194,13 @@ export default function ClockRecordsPage() {
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2 min-w-0">
                                 <p className="font-medium text-foreground truncate">{row.agent?.full_name ?? '—'}</p>
-                                <Badge variant="outline" className={`text-[10px] px-1.5 h-4 shrink-0 ${TYPE_STYLE[row.type]}`}>
+                                <Badge variant="tone" className={`h-4 shrink-0 ${TONE_CLASS[CLOCK_TYPE_TONE[row.type]]}`}>
                                   {row.type === 'office' ? 'Office' : 'Event'}
                                 </Badge>
                               </div>
                             </td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">
-                              {row.agent ? ROLE_LABEL[row.agent.role] : '—'}
+                              {roleLabel(row.agent?.role)}
                             </td>
                             <td className="px-4 py-3 text-muted-foreground">
                               {row.clockIn ? format(new Date(row.clockIn.timestamp), 'h:mm a') : '—'}
@@ -228,10 +228,41 @@ export default function ClockRecordsPage() {
             </div>
           ))}
 
-        {filtered.length === 0 && (
+        {!loading && !error && (
+          <Pagination
+            page={page} pageCount={pageCount} onPageChange={setPage}
+            from={from} to={to} total={total} itemLabel="records"
+          />
+        )}
+
+        {loading && (
+          <div className="text-center py-16 text-muted-foreground">
+            <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
+            <p className="text-sm">Loading clock records…</p>
+          </div>
+        )}
+
+        {!loading && error && (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">
+              Couldn&apos;t load clock records: {error}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
           <div className="text-center py-16 text-muted-foreground">
             <Clock className="w-8 h-8 mx-auto mb-2 opacity-40" />
-            <p className="text-sm">No clock records found</p>
+            {records.length === 0 ? (
+              <>
+                <p className="text-sm">No clock records yet</p>
+                <p className="text-xs mt-1 text-muted-foreground/70">
+                  The table exists but is empty — the mobile app hasn&apos;t shipped clock in/out.
+                </p>
+              </>
+            ) : (
+              <p className="text-sm">No clock records match these filters</p>
+            )}
           </div>
         )}
       </div>

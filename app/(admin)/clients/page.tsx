@@ -1,7 +1,6 @@
 'use client'
 
-import { useState } from 'react'
-import dynamic from 'next/dynamic'
+import { useMemo, useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -9,62 +8,30 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { mockClients, mockMeetings, mockProfiles } from '@/lib/mock/data'
+import { CircularProgress } from '@/components/ui/circular-progress'
+import { Pagination } from '@/components/ui/pagination'
+import { usePagination } from '@/lib/hooks/use-pagination'
+import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
+import { getClientProgress } from '@/lib/client-progress'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import type { Client, CustomerType, SalesChannel, ClientStatus, MeetingOutcome, Profile } from '@/types'
-import { Search, Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Plus, Pencil, Star, X as XIcon } from 'lucide-react'
+import { useClients } from '@/lib/hooks/use-clients'
+import { useMeetings } from '@/lib/hooks/use-meetings'
+import { useProfiles } from '@/lib/hooks/use-profiles'
+import { createClient as createSupabaseClient } from '@/lib/supabase/client'
+import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
+import { Search, Building2, Phone, MapPin, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users } from 'lucide-react'
 import { format, addDays } from 'date-fns'
 import { toast } from 'sonner'
-
-const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex-1 h-full flex items-center justify-center text-xs text-muted-foreground">
-      Loading map…
-    </div>
-  ),
-})
-
-const OUTCOME_STYLE: Record<MeetingOutcome, string> = {
-  successful: 'bg-primary/15 text-primary border-primary/30',
-  follow_up: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-  no_decision: 'bg-muted text-muted-foreground border-border',
-  lost_opportunity: 'bg-destructive/15 text-destructive border-destructive/30',
-}
-
-const OUTCOME_LABEL: Record<MeetingOutcome, string> = {
-  successful: 'Successful',
-  follow_up: 'Follow-up Required',
-  no_decision: 'No Decision',
-  lost_opportunity: 'Lost Opportunity',
-}
-
-const CUSTOMER_TYPE_STYLE: Record<CustomerType, string> = {
-  existing: 'bg-primary/15 text-primary border-primary/30',
-  new: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  prospect: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-}
-
-const CHANNEL_STYLE: Record<SalesChannel, string> = {
-  distributor: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
-  dealer: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30',
-  end_user: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
-  private_label: 'bg-pink-500/15 text-pink-400 border-pink-500/30',
-}
-
-const STATUS_STYLE: Record<ClientStatus, string> = {
-  active: 'bg-primary/15 text-primary border-primary/30',
-  lost: 'bg-destructive/15 text-destructive border-destructive/30',
-  deleted: 'bg-muted text-muted-foreground border-border',
-}
-
-const LABEL: Record<string, string> = {
-  existing: 'Existing', new: 'New', prospect: 'Prospect',
-  distributor: 'Distributor', dealer: 'Dealer', end_user: 'End-User', private_label: 'Private Label',
-  active: 'Active', lost: 'Lost', deleted: 'Deleted',
-}
+import {
+  CHANNEL_TONE,
+  CLIENT_STATUS_TONE,
+  CUSTOMER_TYPE_TONE,
+  TONE_CLASS,
+  VALUE_LABEL as LABEL,
+} from '@/lib/status-styles'
+import { managerForTeam } from '@/lib/teams'
 
 const ASSIGNABLE_ROLES = ['sales_specialist', 'sales_manager', 'rsr']
 
@@ -92,24 +59,6 @@ const EMPTY_CLIENT_FORM: ClientFormData = {
   assigned_agent_id: '',
 }
 
-function StarRating({ value, onChange, size = 'w-4 h-4' }: { value: number; onChange?: (v: number) => void; size?: string }) {
-  return (
-    <div className="flex items-center gap-0.5">
-      {[1, 2, 3, 4, 5].map(n => (
-        <button
-          key={n}
-          type="button"
-          disabled={!onChange}
-          onClick={() => onChange?.(n)}
-          className={onChange ? 'cursor-pointer' : 'cursor-default'}
-        >
-          <Star className={`${size} ${n <= value ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground/30'}`} />
-        </button>
-      ))}
-    </div>
-  )
-}
-
 export default function ClientsPage() {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<string>('all')
@@ -117,21 +66,43 @@ export default function ClientsPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const { profile } = useCurrentProfile()
   const isAdmin = profile?.role === 'admin' || profile?.role === 'superadmin'
-  const [clients, setClients] = useState<Client[]>(mockClients)
+  const { clients, loading, error, refresh } = useClients()
+  // Meetings drive the progress ring (see lib/client-progress.ts), so the page
+  // needs them even though it never lists a meeting.
+  const { meetings } = useMeetings()
+  const { byRole } = useProfiles()
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
-  const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string; date: string; by: string } | null>(null)
+  const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Client | null>(null)
   const [form, setForm] = useState<ClientFormData>(EMPTY_CLIENT_FORM)
   const [formError, setFormError] = useState('')
+  const [phoneTouched, setPhoneTouched] = useState(false)
+  const [saving, setSaving] = useState(false)
 
   const selectedClient = clients.find(c => c.id === selectedClientId) ?? null
 
-  const assignableAgents = mockProfiles.filter(p => ASSIGNABLE_ROLES.includes(p.role))
+  const assignableAgents = byRole(ASSIGNABLE_ROLES)
   const canEditClient = (client: Client) => isAdmin || profile?.id === client.assigned_agent_id
 
-  const filtered = clients.filter(c => {
+  // The actual managers, so the top of the hierarchy lists real people ("Test
+  // manager Two") instead of a generic RSR/Sales bucket. byRole() is stable
+  // across renders unless `profiles` itself changes, so this only recomputes
+  // on a real profile refresh.
+  const managers = useMemo(
+    () => [...byRole(['sales_manager'])].sort((a, b) => a.full_name.localeCompare(b.full_name)),
+    [byRole],
+  )
+
+  // Deleted clients (see app/api/cron/prospect-cleanup) are gone from this
+  // page entirely — there's no "Deleted" option in the Status filter, so
+  // "All Status" must not silently include them. They're only surfaced via
+  // the header's notification bell.
+  const visibleClients = clients.filter(c => c.status !== 'deleted')
+
+  const filtered = visibleClients.filter(c => {
     const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
       c.contact_person.toLowerCase().includes(search.toLowerCase()) ||
       (c.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase())
@@ -141,9 +112,58 @@ export default function ClientsPage() {
     return matchSearch && matchType && matchChannel && matchStatus
   })
 
+  // Group clients by agent so the grid isn't a wall of 60+ cards at once —
+  // the hierarchy view (manager -> agent -> clients) reveals one level at a
+  // time on click. Each agent is bucketed under whichever manager shares
+  // their team_id ('unassigned' if no manager leads that team).
+  interface AgentGroup { agentId: string; agentName: string; managerKey: string; clients: Client[] }
+  const groups = useMemo(() => {
+    const map = new Map<string, AgentGroup>()
+    for (const c of filtered) {
+      const agentId = c.assigned_agent_id ?? 'unassigned'
+      const agentName = c.agent?.full_name ?? 'Unassigned'
+      let group = map.get(agentId)
+      if (!group) {
+        const managerKey = managerForTeam(c.agent?.team_id, managers)?.id ?? 'unassigned'
+        group = { agentId, agentName, managerKey, clients: [] }
+        map.set(agentId, group)
+      }
+      group.clients.push(c)
+    }
+    return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
+  }, [filtered, managers])
+
+  // Level 0: one bucket per real manager, plus "Unassigned" only if it has anyone in it.
+  const managerBuckets = useMemo(() => {
+    const buckets = managers.map(m => {
+      const managerGroups = groups.filter(g => g.managerKey === m.id)
+      const clientCount = managerGroups.reduce((sum, g) => sum + g.clients.length, 0)
+      return { key: m.id, label: m.full_name, agentCount: managerGroups.length, clientCount }
+    })
+    const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
+    if (unassignedGroups.length > 0) {
+      buckets.push({
+        key: 'unassigned',
+        label: 'Unassigned',
+        agentCount: unassignedGroups.length,
+        clientCount: unassignedGroups.reduce((sum, g) => sum + g.clients.length, 0),
+      })
+    }
+    return buckets
+  }, [managers, groups])
+
+  // The selected agent's clients (drill-down screen, unchanged regardless of
+  // which team's dropdown is open).
+  const selectedGroup = selectedAgentId ? groups.find(g => g.agentId === selectedAgentId) ?? null : null
+
+  const { pageItems: pageClients, page: clientPage, pageCount: clientPageCount, from: clientFrom, to: clientTo, total: clientTotal, setPage: setClientPage } = usePagination(
+    selectedGroup?.clients ?? [], 9, `${selectedAgentId}|${search}|${typeFilter}|${channelFilter}|${statusFilter}`,
+  )
+
   function openCreate() {
     setForm({ ...EMPTY_CLIENT_FORM, assigned_agent_id: assignableAgents[0]?.id ?? '' })
     setFormError('')
+    setPhoneTouched(false)
     setCreateOpen(true)
   }
 
@@ -160,26 +180,25 @@ export default function ClientsPage() {
       assigned_agent_id: client.assigned_agent_id,
     })
     setFormError('')
+    setPhoneTouched(false)
     setEditTarget(client)
   }
+
+  /** Sentinel returned instead of a message: the phone field shows its own red outline. */
+  const PHONE_INVALID = 'PHONE_INVALID'
 
   function validateForm(): string {
     if (!form.company_name.trim()) return 'Company name is required.'
     if (!form.contact_person.trim()) return 'Contact person is required.'
-    if (!/^\d{7,15}$/.test(form.contact_number.replace(/[\s-]/g, ''))) return 'Enter a valid phone number.'
+    if (!/^\d{11}$/.test(form.contact_number)) { setPhoneTouched(true); return PHONE_INVALID }
     if (!form.office_address.trim()) return 'Office address is required.'
     if (!form.assigned_agent_id) return 'Assign an agent to this client.'
     return ''
   }
 
-  function handleCreate() {
-    const err = validateForm()
-    if (err) { setFormError(err); return }
-    const now = new Date().toISOString()
-    const agent = mockProfiles.find(p => p.id === form.assigned_agent_id)
-    const isLost = form.status === 'lost'
-    const newClient: Client = {
-      id: `client-${Date.now()}`,
+  /** The form fields that map 1:1 onto columns, trimmed. */
+  function formColumns() {
+    return {
       company_name: form.company_name.trim(),
       contact_person: form.contact_person.trim(),
       contact_position: form.contact_position.trim() || null,
@@ -189,55 +208,78 @@ export default function ClientsPage() {
       sales_channel: form.sales_channel,
       assigned_agent_id: form.assigned_agent_id,
       status: form.status,
-      lost_at: isLost ? now : null,
-      reassignable_at: isLost ? addDays(new Date(), 14).toISOString() : null,
-      created_at: now,
-      updated_at: now,
-      agent,
     }
-    setClients(prev => [newClient, ...prev])
-    setCreateOpen(false)
-    toast.success('Client created successfully')
   }
 
-  function handleEdit() {
+  async function handleCreate() {
+    const err = validateForm()
+    if (err) { setFormError(err); return }
+
+    setSaving(true)
+    setFormError('')
+    const now = new Date().toISOString()
+    const isLost = form.status === 'lost'
+
+    const { error: insertError } = await createSupabaseClient()
+      .from('clients')
+      .insert({
+        ...formColumns(),
+        lost_at: isLost ? now : null,
+        // 14-day cooling-off before a lost client can be reassigned.
+        reassignable_at: isLost ? addDays(new Date(), 14).toISOString() : null,
+      })
+
+    setSaving(false)
+    if (insertError) {
+      setFormError(insertError.message)
+      return
+    }
+
+    setCreateOpen(false)
+    toast.success('Client created successfully')
+    await refresh()
+  }
+
+  async function handleEdit() {
     if (!editTarget) return
     const err = validateForm()
     if (err) { setFormError(err); return }
-    const agent = mockProfiles.find(p => p.id === form.assigned_agent_id)
+
+    setSaving(true)
+    setFormError('')
     const wasLost = editTarget.status === 'lost'
     const isLost = form.status === 'lost'
-    setClients(prev => prev.map(c => {
-      if (c.id !== editTarget.id) return c
-      return {
-        ...c,
-        company_name: form.company_name.trim(),
-        contact_person: form.contact_person.trim(),
-        contact_position: form.contact_position.trim() || null,
-        contact_number: form.contact_number.trim(),
-        office_address: form.office_address.trim(),
-        customer_type: form.customer_type,
-        sales_channel: form.sales_channel,
-        assigned_agent_id: form.assigned_agent_id,
-        status: form.status,
-        lost_at: isLost ? (c.lost_at ?? new Date().toISOString()) : (wasLost && !isLost ? null : c.lost_at),
-        reassignable_at: isLost ? (c.reassignable_at ?? addDays(new Date(), 14).toISOString()) : (wasLost && !isLost ? null : c.reassignable_at),
-        updated_at: new Date().toISOString(),
-        agent,
-      }
-    }))
+
+    // Only stamp lost_at/reassignable_at on the transition. Re-saving an
+    // already-lost client must not restart its 14-day reassignment clock.
+    const lostFields = isLost
+      ? {
+          lost_at: editTarget.lost_at ?? new Date().toISOString(),
+          reassignable_at: editTarget.reassignable_at ?? addDays(new Date(), 14).toISOString(),
+        }
+      : wasLost
+        ? { lost_at: null, reassignable_at: null }
+        : {}
+
+    const { error: updateError } = await createSupabaseClient()
+      .from('clients')
+      .update({ ...formColumns(), ...lostFields, updated_at: new Date().toISOString() })
+      .eq('id', editTarget.id)
+
+    setSaving(false)
+    if (updateError) {
+      setFormError(updateError.message)
+      return
+    }
+
     setEditTarget(null)
     toast.success('Client updated successfully')
-  }
-
-  function handleRate(clientId: string, rating: number) {
-    setClients(prev => prev.map(c => c.id === clientId ? { ...c, rating, updated_at: new Date().toISOString() } : c))
-    toast.success('Rating saved')
+    await refresh()
   }
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Clients" subtitle={`${filtered.length} of ${mockClients.length} clients`} />
+      <Header title="Clients" subtitle={`${filtered.length} of ${visibleClients.length} clients`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Filters */}
@@ -284,303 +326,211 @@ export default function ClientsPage() {
               <SelectItem value="lost">Lost</SelectItem>
             </SelectContent>
           </Select>
+          <Button variant="outline" size="sm" className="h-9 gap-2" onClick={refresh} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
           <Button onClick={openCreate} size="sm" className="h-9 gap-2">
             <Plus className="w-4 h-4" />
             New Client
           </Button>
         </div>
 
-        {/* Client cards grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map(client => (
-            <Card
-              key={client.id}
-              onClick={() => setSelectedClientId(client.id)}
-              className="bg-card border-border hover:border-primary/30 transition-colors cursor-pointer"
-            >
-              <CardContent className="p-4">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                      <Building2 className="w-4 h-4 text-primary" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-foreground truncate leading-tight">{client.company_name}</p>
-                      <Badge variant="outline" className={`text-[10px] px-1.5 h-4 mt-0.5 ${STATUS_STYLE[client.status]}`}>
-                        {LABEL[client.status]}
-                      </Badge>
-                    </div>
-                  </div>
-                </div>
+        {!selectedGroup ? (
+          <>
+            {/* Managers — click one to drop down their team's agents right below it */}
+            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+              Managers
+            </p>
+            <div className="space-y-3">
+              {managerBuckets.map(({ key, label, agentCount, clientCount }) => {
+                const isOpen = expandedManagerKey === key
+                const bucketGroups = groups.filter(g => g.managerKey === key)
+                return (
+                  <div key={key} className="rounded-lg border border-border bg-card overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedManagerKey(isOpen ? null : key)}
+                      aria-expanded={isOpen}
+                      className="w-full flex items-center justify-between gap-3 p-4 text-left hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                          <Users className="w-4 h-4 text-primary" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-foreground truncate">{label}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {agentCount} agent{agentCount === 1 ? '' : 's'} · {clientCount} client{clientCount === 1 ? '' : 's'}
+                          </p>
+                        </div>
+                      </div>
+                      <ChevronDown className={`w-4 h-4 text-muted-foreground shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                    </button>
 
-                <div className="space-y-1.5 text-xs text-muted-foreground mb-3">
-                  <div className="flex items-center gap-1.5">
-                    <User className="w-3 h-3 shrink-0" />
-                    <span className="truncate">{client.contact_person}{client.contact_position ? ` · ${client.contact_position}` : ''}</span>
+                    {isOpen && (
+                      <div className="bg-muted/40 border-t border-border p-4 pl-6 space-y-2.5">
+                        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                          Agents under {label}
+                        </p>
+                        {bucketGroups.map(group => (
+                          <button
+                            key={group.agentId}
+                            type="button"
+                            onClick={() => setSelectedAgentId(group.agentId)}
+                            className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-border shadow-sm text-left hover:border-primary/40 hover:bg-accent/30 transition-colors"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                                <span className="text-xs font-bold text-primary">
+                                  {group.agentName.charAt(0)}
+                                </span>
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {group.clients.length} client{group.clients.length === 1 ? '' : 's'}
+                                </p>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <Phone className="w-3 h-3 shrink-0" />
-                    <span>{client.contact_number}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <MapPin className="w-3 h-3 shrink-0" />
-                    <span className="truncate">{client.office_address}</span>
-                  </div>
-                </div>
+                )
+              })}
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Selected agent's clients */}
+            <div className="space-y-3">
+              <Button variant="outline" size="sm" className="h-9 gap-2" onClick={() => setSelectedAgentId(null)}>
+                <ArrowLeft className="w-4 h-4" />
+                Back to agents
+              </Button>
 
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex flex-wrap gap-1.5">
-                    <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${CUSTOMER_TYPE_STYLE[client.customer_type]}`}>
-                      {LABEL[client.customer_type]}
-                    </Badge>
-                    <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${CHANNEL_STYLE[client.sales_channel]}`}>
-                      {LABEL[client.sales_channel]}
-                    </Badge>
-                  </div>
-                  {client.rating != null && <StarRating value={client.rating} size="w-3 h-3" />}
-                </div>
-
-                <div className="flex items-center justify-between pt-2 border-t border-border">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center">
-                      <span className="text-[9px] font-bold text-primary">
-                        {client.agent?.full_name?.charAt(0)}
-                      </span>
-                    </div>
-                    <span className="text-xs text-muted-foreground">{client.agent?.full_name}</span>
-                  </div>
-                  <span className="text-xs text-muted-foreground">
-                    {format(new Date(client.created_at), 'MMM d, yyyy')}
+              <div className="flex items-center gap-3 p-4 rounded-lg border border-border bg-card">
+                <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                  <span className="text-sm font-bold text-primary">
+                    {selectedGroup.agentName.charAt(0)}
                   </span>
                 </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Agent</p>
+                  <p className="text-base font-semibold text-foreground truncate">{selectedGroup.agentName}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedGroup.clients.length} client{selectedGroup.clients.length === 1 ? '' : 's'}
+                  </p>
+                </div>
+              </div>
+            </div>
 
-        {filtered.length === 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {pageClients.map(client => (
+                <Card
+                  key={client.id}
+                  onClick={() => setSelectedClientId(client.id)}
+                  className="bg-card border-border hover:border-primary/30 transition-colors cursor-pointer"
+                >
+                  <CardContent className="p-4 flex-1 flex flex-col">
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2.5 mb-3">
+                          <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                            <Building2 className="w-4 h-4 text-primary" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-foreground truncate leading-tight">{client.company_name}</p>
+                            <Badge variant="tone" className={`h-4 mt-0.5 ${TONE_CLASS[CLIENT_STATUS_TONE[client.status]]}`}>
+                              {LABEL[client.status]}
+                            </Badge>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5 text-xs text-muted-foreground mb-3">
+                          <div className="flex items-center gap-1.5">
+                            <User className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{client.contact_person}{client.contact_position ? ` · ${client.contact_position}` : ''}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Phone className="w-3 h-3 shrink-0" />
+                            <span>{client.contact_number}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <MapPin className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{client.office_address}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-1.5">
+                          <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[client.customer_type]]}>
+                            {LABEL[client.customer_type]}
+                          </Badge>
+                          <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[client.sales_channel]]}>
+                            {LABEL[client.sales_channel]}
+                          </Badge>
+                        </div>
+                      </div>
+
+                      <CircularProgress value={getClientProgress(client.id, meetings)} size={80} strokeWidth={7} className="shrink-0" />
+                    </div>
+
+                    <div className="flex-1" />
+
+                    <div className="flex items-center justify-end pt-2 border-t border-border">
+                      <span className="text-sm text-muted-foreground">
+                        {format(new Date(client.created_at), 'MMM d, yyyy')}
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+
+            {!loading && !error && (
+              <Pagination
+                page={clientPage} pageCount={clientPageCount} onPageChange={setClientPage}
+                from={clientFrom} to={clientTo} total={clientTotal} itemLabel="clients"
+              />
+            )}
+          </>
+        )}
+
+        {loading && (
+          <div className="text-center py-16 text-muted-foreground">
+            <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
+            <p className="text-sm">Loading clients…</p>
+          </div>
+        )}
+
+        {!loading && error && (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">
+              Couldn&apos;t load clients: {error}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
           <div className="text-center py-16 text-muted-foreground">
             <Building2 className="w-8 h-8 mx-auto mb-2 opacity-40" />
-            <p className="text-sm">No clients found</p>
+            <p className="text-sm">
+              {visibleClients.length === 0 ? 'No clients yet' : 'No clients match these filters'}
+            </p>
           </div>
         )}
       </div>
 
-      <Dialog open={!!selectedClient} onOpenChange={open => { if (!open) setSelectedClientId(null) }}>
-        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto" showCloseButton={false}>
-          {selectedClient && (() => {
-            const clientMeetings = mockMeetings
-              .filter(m => m.client_id === selectedClient.id)
-              .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
-            const meetingPhotos = clientMeetings.filter(m => m.photo_url)
-
-            return (
-              <>
-                <DialogHeader>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-11 h-11 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                        <Building2 className="w-5 h-5 text-primary" />
-                      </div>
-                      <div className="min-w-0">
-                        <DialogTitle className="text-lg">{selectedClient.company_name}</DialogTitle>
-                        <div className="flex flex-wrap gap-1.5 mt-1.5">
-                          <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${STATUS_STYLE[selectedClient.status]}`}>
-                            {LABEL[selectedClient.status]}
-                          </Badge>
-                          <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${CUSTOMER_TYPE_STYLE[selectedClient.customer_type]}`}>
-                            {LABEL[selectedClient.customer_type]}
-                          </Badge>
-                          <Badge variant="outline" className={`text-[10px] px-1.5 h-5 ${CHANNEL_STYLE[selectedClient.sales_channel]}`}>
-                            {LABEL[selectedClient.sales_channel]}
-                          </Badge>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {canEditClient(selectedClient) && (
-                        <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => openEdit(selectedClient)}>
-                          <Pencil className="w-3.5 h-3.5" />
-                          Edit
-                        </Button>
-                      )}
-                      <DialogClose render={<Button variant="ghost" size="icon-sm" />}>
-                        <XIcon className="w-4 h-4" />
-                        <span className="sr-only">Close</span>
-                      </DialogClose>
-                    </div>
-                  </div>
-                </DialogHeader>
-
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-                  {/* Left column: client details */}
-                  <div className="md:col-span-3 space-y-4">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="rounded-lg border border-border p-3.5">
-                        <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Contact Person</p>
-                        <div className="flex items-center gap-2 text-sm text-foreground">
-                          <User className="w-4 h-4 text-muted-foreground shrink-0" />
-                          <span>{selectedClient.contact_person}</span>
-                        </div>
-                        {selectedClient.contact_position && (
-                          <p className="text-xs text-muted-foreground mt-1 pl-6">{selectedClient.contact_position}</p>
-                        )}
-                      </div>
-                      <div className="rounded-lg border border-border p-3.5">
-                        <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Phone Number</p>
-                        <div className="flex items-center gap-2 text-sm text-foreground">
-                          <Phone className="w-4 h-4 text-muted-foreground shrink-0" />
-                          <span>{selectedClient.contact_number}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-border p-3.5 space-y-3">
-                      <div>
-                        <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Office Address</p>
-                        <div className="flex items-start gap-2 text-sm text-foreground">
-                          <MapPin className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
-                          <span>{selectedClient.office_address}</span>
-                        </div>
-                      </div>
-
-                      {selectedClient.office_lat != null && selectedClient.office_lng != null && (
-                        <div className="space-y-1.5">
-                          <div className="h-48 rounded-md overflow-hidden border border-border">
-                            <ClientMap
-                              clients={[selectedClient]}
-                              selectedId={selectedClient.id}
-                              onSelect={() => {}}
-                              mapType="standard"
-                            />
-                          </div>
-                          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                            <Navigation className="w-3 h-3 shrink-0" />
-                            <span className="font-mono">
-                              {selectedClient.office_lat.toFixed(4)}, {selectedClient.office_lng.toFixed(4)}
-                            </span>
-                            <span className="text-muted-foreground/70">(mock GPS)</span>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="rounded-lg border border-border p-3.5 flex items-center justify-between">
-                      <p className="text-[11px] font-medium text-muted-foreground">Client Rating</p>
-                      <StarRating
-                        value={selectedClient.rating ?? 0}
-                        onChange={canEditClient(selectedClient) ? (v) => handleRate(selectedClient.id, v) : undefined}
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center">
-                          <span className="text-[9px] font-bold text-primary">
-                            {selectedClient.agent?.full_name?.charAt(0)}
-                          </span>
-                        </div>
-                        <span>{selectedClient.agent?.full_name}</span>
-                      </div>
-                      <span>Added {format(new Date(selectedClient.created_at), 'MMM d, yyyy')}</span>
-                    </div>
-
-                    {selectedClient.status === 'lost' && selectedClient.lost_at && (
-                      <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
-                        Marked lost on {format(new Date(selectedClient.lost_at), 'MMM d, yyyy')}
-                        {selectedClient.reassignable_at && (
-                          <> · reassignable after {format(new Date(selectedClient.reassignable_at), 'MMM d, yyyy')}</>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right column: visit photos + meeting history */}
-                  <div className="md:col-span-2 space-y-4">
-                    <div>
-                      <p className="text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5">
-                        <Camera className="w-3.5 h-3.5 text-muted-foreground" />
-                        Visit Photos
-                      </p>
-                      {meetingPhotos.length > 0 ? (
-                        <div className="grid grid-cols-3 gap-2">
-                          {meetingPhotos.slice(0, 6).map(m => {
-                            const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
-                            const dateLabel = format(new Date(m.meeting_date), 'MMM d, yyyy')
-                            return (
-                              <button
-                                key={m.id}
-                                type="button"
-                                onClick={() => setLightboxPhoto({ url: m.photo_url!, date: dateLabel, by: submittedBy })}
-                                className="relative aspect-square rounded-md overflow-hidden border border-border group cursor-pointer"
-                              >
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img src={m.photo_url!} alt={`Visit on ${dateLabel}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
-                                <span className="absolute bottom-1 right-1 text-[9px] bg-black/60 text-white rounded px-1 py-0.5">
-                                  {format(new Date(m.meeting_date), 'MMM d')}
-                                </span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border p-3.5">
-                          No visit photos yet
-                        </p>
-                      )}
-                    </div>
-
-                    <div>
-                      <p className="text-xs font-semibold text-foreground mb-2">Meeting History</p>
-                      <div className="space-y-2">
-                        {clientMeetings.slice(0, 5).map(m => {
-                          const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
-                          return (
-                            <div key={m.id} className="flex items-center justify-between gap-2 text-xs bg-muted/40 rounded-md px-3 py-2">
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  <CalendarCheck className="w-3 h-3 text-muted-foreground shrink-0" />
-                                  <span className="truncate">{format(new Date(m.meeting_date), 'MMM d, yyyy')}</span>
-                                </div>
-                                <div className="flex items-center gap-1.5 mt-1 pl-[18px] text-muted-foreground">
-                                  <User className="w-3 h-3 shrink-0" />
-                                  <span className="truncate">{submittedBy}</span>
-                                </div>
-                              </div>
-                              <Badge variant="outline" className={`text-[10px] px-1.5 h-5 shrink-0 ${OUTCOME_STYLE[m.outcome]}`}>
-                                {OUTCOME_LABEL[m.outcome]}
-                              </Badge>
-                            </div>
-                          )
-                        })}
-                        {clientMeetings.length === 0 && (
-                          <p className="text-xs text-muted-foreground">No meetings recorded yet</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </>
-            )
-          })()}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={!!lightboxPhoto} onOpenChange={open => { if (!open) setLightboxPhoto(null) }}>
-        <DialogContent className="sm:max-w-2xl p-0 overflow-hidden">
-          {lightboxPhoto && (
-            <>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={lightboxPhoto.url} alt="Visit photo" className="w-full max-h-[75vh] object-contain bg-black" />
-              <div className="flex items-center justify-between text-xs text-muted-foreground p-3">
-                <span>Submitted by {lightboxPhoto.by}</span>
-                <span>{lightboxPhoto.date}</span>
-              </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+      <ClientDetailDialog
+        client={selectedClient}
+        meetings={meetings}
+        onOpenChange={open => { if (!open) setSelectedClientId(null) }}
+        canEdit={!!selectedClient && canEditClient(selectedClient)}
+        onEdit={openEdit}
+      />
 
       {/* Create Client Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -588,34 +538,50 @@ export default function ClientsPage() {
           <DialogHeader>
             <DialogTitle>New Client</DialogTitle>
           </DialogHeader>
-          <ClientForm form={form} setForm={setForm} agents={assignableAgents} />
-          {formError && (
+          <ClientForm
+            form={form}
+            setForm={setForm}
+            agents={assignableAgents}
+            phoneInvalid={phoneTouched && !/^\d{11}$/.test(form.contact_number)}
+            onPhoneBlur={() => setPhoneTouched(true)}
+          />
+          {formError && formError !== PHONE_INVALID && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
             </Alert>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button onClick={handleCreate}>Create Client</Button>
+            <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={saving}>Cancel</Button>
+            <Button onClick={handleCreate} disabled={saving}>
+              {saving ? 'Creating…' : 'Create Client'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Edit Client Dialog */}
       <Dialog open={!!editTarget} onOpenChange={open => { if (!open) setEditTarget(null) }}>
-        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Client</DialogTitle>
           </DialogHeader>
-          <ClientForm form={form} setForm={setForm} agents={assignableAgents} />
-          {formError && (
+          <ClientForm
+            form={form}
+            setForm={setForm}
+            agents={assignableAgents}
+            phoneInvalid={phoneTouched && !/^\d{11}$/.test(form.contact_number)}
+            onPhoneBlur={() => setPhoneTouched(true)}
+          />
+          {formError && formError !== PHONE_INVALID && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="text-xs">{formError}</AlertDescription>
             </Alert>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditTarget(null)}>Cancel</Button>
-            <Button onClick={handleEdit}>Save Changes</Button>
+            <Button variant="outline" onClick={() => setEditTarget(null)} disabled={saving}>Cancel</Button>
+            <Button onClick={handleEdit} disabled={saving}>
+              {saving ? 'Saving…' : 'Save Changes'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -627,9 +593,11 @@ interface ClientFormProps {
   form: ClientFormData
   setForm: React.Dispatch<React.SetStateAction<ClientFormData>>
   agents: Profile[]
+  phoneInvalid: boolean
+  onPhoneBlur: () => void
 }
 
-function ClientForm({ form, setForm, agents }: ClientFormProps) {
+function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: ClientFormProps) {
   function set<K extends keyof ClientFormData>(field: K, value: ClientFormData[K]) {
     setForm(prev => ({ ...prev, [field]: value }))
   }
@@ -688,7 +656,9 @@ function ClientForm({ form, setForm, agents }: ClientFormProps) {
               id="contact_number"
               placeholder="09171234567"
               value={form.contact_number}
-              onChange={e => set('contact_number', e.target.value)}
+              onChange={e => set('contact_number', e.target.value.replace(/\D/g, '').slice(0, 11))}
+              onBlur={onPhoneBlur}
+              aria-invalid={phoneInvalid}
             />
           </div>
           <div className="space-y-1.5">
@@ -709,7 +679,7 @@ function ClientForm({ form, setForm, agents }: ClientFormProps) {
       <div className="rounded-lg border border-border p-4 space-y-4">
         <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Classification &amp; Assignment</p>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label className="text-xs">Customer Type</Label>
             <Select value={form.customer_type} onValueChange={v => set('customer_type', (v as CustomerType | null) ?? 'new')}>
@@ -735,7 +705,7 @@ function ClientForm({ form, setForm, agents }: ClientFormProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label className="text-xs">Status</Label>
             <Select value={form.status} onValueChange={v => set('status', (v as ClientStatus | null) ?? 'active')}>

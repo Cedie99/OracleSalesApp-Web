@@ -52,6 +52,17 @@ interface ClientMapProps {
   mapType: MapTileType
 }
 
+/**
+ * Plots clients at their own recorded coordinates.
+ *
+ * `office_lat`/`office_lng` do not exist on the live `clients` table yet — the
+ * mobile app does not capture a location when a client is created, so nothing
+ * plots today and the map renders empty by design. Deliberately NOT falling
+ * back to meeting GPS: where an agent stood during a meeting is not the
+ * client's address, and plotting it would assert a location the data cannot
+ * support. Capturing a pin at client creation is a planned app change; when
+ * those columns land, this component already reads them.
+ */
 export default function ClientMap({ clients, selectedId, onSelect, mapType }: ClientMapProps) {
   const plottable = clients.filter(c => c.office_lat != null && c.office_lng != null)
   const selected = plottable.find(c => c.id === selectedId) ?? null
@@ -91,8 +102,12 @@ export default function ClientMap({ clients, selectedId, onSelect, mapType }: Cl
             <Popup>
               <div style={{ fontSize: 12, lineHeight: 1.5 }}>
                 <strong>{client.company_name}</strong>
-                <br />
-                {client.office_address}
+                {client.office_address && (
+                  <>
+                    <br />
+                    {client.office_address}
+                  </>
+                )}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
                   {client.agent?.avatar_url && (
                     // eslint-disable-next-line @next/next/no-img-element
