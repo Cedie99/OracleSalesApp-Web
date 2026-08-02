@@ -4,12 +4,15 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { claimAge, isActiveClaim, isStaleClaim } from '@/lib/claims'
+import { isActiveClaim, staleClaimCount } from '@/lib/claims'
+import {
+  ClaimLine, ReleaseClaimButton, StaleClaimBadge, claimRowClass,
+} from '@/components/claim-indicator'
 import { TRIP_CAP, dwellMinutes, hasMissingProof, tripProgress, type TripList } from '@/lib/delivery'
 import { peso } from '@/lib/money'
 import { DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
 import type { PurchaseOrder } from '@/types'
-import { AlertTriangle, CalendarClock, ImageOff, Navigation, Plus, Truck, X } from 'lucide-react'
+import { CalendarClock, ImageOff, Plus, Truck, X } from 'lucide-react'
 import { format, isToday, isTomorrow, isYesterday } from 'date-fns'
 
 /** "Today" reads faster than a date the admin has to compare against a calendar. */
@@ -60,6 +63,8 @@ export function TripBoard({
       {lists.map(list => {
         const progress = tripProgress(list)
         const done = list.openCount === 0
+        // Claims left on a past day — see the same note on ListBoard.
+        const stuck = staleClaimCount(list.stops)
 
         return (
           <Card key={list.id}>
@@ -73,13 +78,24 @@ export function TripBoard({
                     {list.stops.length === 1 ? 'stop' : 'stops'} · {list.areas.join(', ')}
                   </p>
                 </div>
-                <Badge
-                  variant="tone"
-                  className={`shrink-0 ${done ? TONE_CLASS.brand : TONE_CLASS.amber}`}
-                >
-                  {done ? 'Run cleared' : `${list.openCount} left`}
-                </Badge>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <StaleClaimBadge count={stuck} />
+                  <Badge
+                    variant="tone"
+                    className={done ? TONE_CLASS.brand : TONE_CLASS.amber}
+                  >
+                    {done ? 'Run cleared' : `${list.openCount} left`}
+                  </Badge>
+                </div>
               </div>
+
+              {stuck > 0 && (
+                <p className={`text-[11px] ${TONE_TEXT.red}`}>
+                  {stuck === 1 ? 'A stop is' : `${stuck} stops are`} still claimed from this day.
+                  A claim never expires and each driver may hold only one, so whoever holds{' '}
+                  {stuck === 1 ? 'it' : 'them'} cannot take anything new until released.
+                </p>
+              )}
 
               {/* The driver's PO list decrements as they go; this mirrors it. */}
               <div>
@@ -189,7 +205,6 @@ function StopRow({
   // Held right now — the stop is locked to this driver and is using up their
   // single claim slot.
   const claimed = isActiveClaim(stop)
-  const stale = isStaleClaim(stop)
   // Only an untouched stop can be pulled back off the list. Once a driver has
   // been there the record is theirs, and removing it would erase captured proof
   // — or, on a COD stop, captured money. A claimed stop is also off limits:
@@ -197,7 +212,9 @@ function StopRow({
   const removable = stop.status === 'pending' && !claimed
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 hover:bg-muted/20 transition-colors">
+    <div
+      className={`flex items-center gap-2 px-3 py-2 transition-colors hover:bg-muted/20 ${claimRowClass(stop, claimed)}`}
+    >
       {/* The driver's own sequence number, assigned when they got there. */}
       <span
         className={`w-5 shrink-0 text-center text-[11px] font-semibold tabular-nums ${
@@ -247,38 +264,16 @@ function StopRow({
 
         {/* Who is on their way. A live lock, unlike the plate/driver above which
             are recorded after the stop was actually run. */}
-        {claimed && (
-          <div
-            className={`flex items-center gap-1 mt-1 text-[10px] font-medium ${
-              stale ? TONE_TEXT.red : TONE_TEXT.brand
-            }`}
-          >
-            {stale ? (
-              <AlertTriangle className="w-3 h-3 shrink-0" />
-            ) : (
-              <Navigation className="w-3 h-3 shrink-0" />
-            )}
-            <span className="truncate">
-              {stale ? 'Still held from an earlier day by ' : 'On the way · '}
-              {stop.claimed_by_name ?? 'a driver'}
-            </span>
-            {claimAge(stop) && (
-              <span className="text-muted-foreground tabular-nums shrink-0">{claimAge(stop)}</span>
-            )}
-          </div>
-        )}
+        {claimed && <ClaimLine row={stop} holder="driver" />}
       </button>
 
       {claimed && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={`Release ${stop.claimed_by_name ?? 'the driver'}'s claim on ${stop.po_number}`}
-          title="Release claim"
-          onClick={onCancelClaim}
-        >
-          <Navigation className={stale ? TONE_TEXT.red : undefined} />
-        </Button>
+        <ReleaseClaimButton
+          row={stop}
+          holder="driver"
+          target={stop.po_number}
+          onRelease={onCancelClaim}
+        />
       )}
 
       {removable && (

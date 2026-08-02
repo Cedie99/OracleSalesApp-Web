@@ -31,11 +31,21 @@ export interface TripStopDetail {
 export interface TripStop {
   id: string
   /**
-   * 1-based position in this worker's own run. Delivery records this on the row
-   * (`sequence_no`, assigned by the driver at the stop); Collection has no such
-   * column, so its trips derive the order from `visited_at`. Either way the
-   * number counts within ONE worker's run — two workers on the same day's list
-   * each have a #1.
+   * 1-based position in this worker's own run, ALWAYS derived from the stop's
+   * position inside its (worker, day) group — never read off a stored counter.
+   *
+   * A run resets at the start of every day for every person: two collectors on
+   * Monday's list each have a #1, and each of them has a #1 again on Tuesday.
+   * That is the only numbering the office reads, because the number answers
+   * "which stop of this day was it?" and nothing else.
+   *
+   * Delivery does carry a stored `sequence_no`, but it cannot be shown: the
+   * phone assigns it as `MAX(sequence_no) + 1` over the driver's whole history
+   * with no day filter, so it keeps climbing across days (a driver's second day
+   * starts at #4). It survives here only as an ordering key — within one day it
+   * still increases in true visit order — while the number on screen comes from
+   * the position. Collection has no such column and derives order from
+   * `visited_at`; both modules then number identically.
    */
   sequence: number
   /** Store or customer name. */

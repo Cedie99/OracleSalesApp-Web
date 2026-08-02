@@ -6,6 +6,8 @@
 
 ## Read this first
 
+**Status, 2026-07-31 → see §12.** It answers mobile's `COLLECTION_DELIVERY_STATUS_MOBILE.md` point by point. Short version: the claim display it lists as the one thing blocking mobile has been shipped since `c9e0bf8`, remittance reconciliation is now built, and the Phase 2b/2c photos are rendering in the admin. Nothing on this doc is waiting on web.
+
 **Status, 2026-07-28: 043/044 are merged to main and deployed.** Commit `9c40364`; CI's `db push` ran on merge. The paragraph below describes the pre-merge state and is kept for the numbering rationale, which still applies.
 
 **045 is now taken** by `045_denormalize_client_on_lists.sql` — see §4a. The location-pings proposal in §7 that reserved the name `045_location_pings.sql` moves to **046** if it is ever approved.
@@ -469,3 +471,53 @@ Same trap as 045's `client_name`, and it would have bitten in exactly the same w
 ### Sequencing
 
 045 and 046 land together. 046 is the first feature riding on top of the sync, so if a claim misbehaves, confirm the plain read works first — that isolates it fast.
+
+---
+
+## 12. Reply to `COLLECTION_DELIVERY_STATUS_MOBILE.md` — 2026-07-31
+
+Written after reading mobile's status doc at its 2026-07-28 revision plus commit `938b76d` (Phase 2b/2c). Two of the three things it asks web for were already done when it was written; the third is done now.
+
+### ❌ "The one thing waiting on web now: the admin board doesn't display claims yet"
+
+**This has been shipped since commit `c9e0bf8`** — the same commit that unblocked the sync and added claiming, so it landed *with* 046 rather than after it. The status doc's TL;DR is reading a stale snapshot; please drop it, because it is currently the headline item and it is blocking nothing.
+
+What has been on the board the whole time, both modules:
+
+- `claimed_by_name` and `claimed_at` on the row, as an **"On the way · {name} · 12m"** line with the age ticking up.
+- A **release control** on every claimed row, wired to an admin update that nulls all three columns together (the CHECK in 046 rejects a partial claim).
+- The §11 ask — *"the web board should visually flag a claim on a past-dated pending row"* — as a distinct red treatment, not the same styling as a live claim.
+
+### ✅ Improved on 2026-07-31, same area
+
+Since the flagging in §11 was per-row only, an admin still had to *find* the stale row on a day card they had stopped scrolling to. Now:
+
+- A claimed row is **tinted with a coloured leading rule** — brand for a live claim, red for a stale one — so the lock is legible while scanning rather than only on the row being read.
+- Each day header carries a **"⚠ N stuck"** badge and a one-line explanation of *why* it matters (the holder cannot claim anything new until it is released). That is the one-claim rule's consequence, which is not obvious from the row alone.
+- The release button is an **opening padlock**, not the navigation arrow it shared with the indicator. Same glyph for "a claim exists" and "press to remove the claim" made the action read as decoration.
+
+### ✅ "The admin board should show submitted remittances and reconcile them"
+
+**Display** has been there since the module shipped: both `remittances` and `cod_remittances` get a card each with destination, amounts, computed variance, a signature-missing warning, and a CSV export column.
+
+**Reconciliation is now built** (2026-07-31). A `submitted` row offers **Reconcile** and **Flag variance**; a settled row offers **Reopen**, so a misclick isn't permanent. Both write straight to `status`.
+
+Worth stating explicitly, since it drove the design: **web is the only thing that can ever move that column.** 043/044 give field roles INSERT and SELECT on the remittance tables and no UPDATE policy at all — which mobile correctly worked around by putting photo URLs in the insert. The flip side is that `status` would have sat on its default forever. It doesn't now.
+
+Both actions are always offered on a submitted row; the amounts only decide which is styled as the default. Deriving the status from the arithmetic would be wrong in both directions — an admin legitimately reconciles a row whose totals disagree (the gap was explained and accepted), and legitimately flags one whose totals agree (the signature is missing, or the proof doesn't match). The arithmetic is evidence; the status is a judgement.
+
+### ✅ Phase 2b/2c landed cleanly — proofs are now readable, not just present
+
+Confirmed against live data on 2026-07-31: real captures from the phone are arriving and rendering in the admin — proof-of-delivery, COD payment, and a receiver signature on `PO-1239`, and a signature on the one COD remittance. The column names in `938b76d` match what web reads.
+
+The thumbnails predate the uploads working, and were sized to answer *"did the capture arrive?"* — the only question worth asking while every URL was null. Now that they hold real images the office's question is *"what does it say?"*, and a GCash confirmation screenshot is unreadable at tile size. Every capture is therefore **clickable to a full-size view**, captioned with who brought it back and when. Signatures render contained on white rather than cropped to fill, so the loops aren't cut off.
+
+No action needed from mobile — this is web catching up to work you had already done.
+
+### What web still owes
+
+Nothing outstanding from the current mobile status doc. The next items on this side are our own: verifying the Collection page against a collection-scoped admin account (it was exercised end-to-end on Delivery only, since the test account is `admin_scope = 'delivery'`), and the trip-list ownership question in §10 that is still unanswered.
+
+### One thing worth a second look on mobile
+
+`sequence_no` is assigned as `MAX(sequence_no) + 1` over the driver's whole history with no day in the `WHERE` clause, so it never resets — a driver's second day starts at #4. Web now renumbers from the position within each (driver, day) group and uses the stored value only as an ordering key, which is correct for the board either way. Flagging it because anything on the phone that shows the raw number to a driver will drift further every day.

@@ -178,6 +178,10 @@ export function dayProgress(day: CollectionDay): number {
  * list is a shared pool with no routing in it, so the sequence a collector
  * worked is only knowable after they worked it. Stores still pending have no
  * collector and no time, and belong to no trip at all.
+ *
+ * Stops are numbered from their position in this one group, so every collector's
+ * every day starts again at #1 — the same rule `deliveryTrips` follows. See
+ * `TripStop.sequence` for why neither module may show a stored counter.
  */
 export function collectionTrips(visits: CollectionVisit[]): Trip[] {
   const groups = groupByWorkerDay(visits, v => v.collector_id, v => v.scheduled_for)
@@ -185,6 +189,7 @@ export function collectionTrips(visits: CollectionVisit[]): Trip[] {
 
   return groups.map(({ workerId, day, rows }) => {
     const ordered = [...rows].sort(byVisitedAt)
+    // Position in this collector's own day — resets with every group.
     const stops = ordered.map((visit, i) => collectionStop(visit, i + 1))
     const collected = ordered.reduce((sum, s) => sum + (s.amount_collected ?? 0), 0)
     const times = ordered.map(s => s.visited_at).filter((t): t is string => !!t)

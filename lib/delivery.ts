@@ -272,10 +272,15 @@ export function deliveryTrips(orders: PurchaseOrder[]): Trip[] {
 
   return groups.map(({ workerId, day, rows }) => {
     const ordered = [...rows].sort(byRunOrder)
-    // The driver's own sequence number is what the paper trip report carries, so
-    // show theirs rather than renumbering from the array position — a gap in it
-    // is information (a stop that never closed out), not an error.
-    const stops = ordered.map((po, i) => deliveryStop(po, po.sequence_no ?? i + 1))
+    // Numbered from the position in THIS day's run, not from the stored
+    // `sequence_no`. The phone takes that value from `MAX(sequence_no) + 1` over
+    // everything the driver has ever delivered, with no day in the WHERE clause,
+    // so it never resets — a driver on their second day shows #4, #5, #6 for a
+    // three-stop run. Ordering still leans on it (see `byRunOrder`), because
+    // inside one day a running counter and the true visit order are the same
+    // sequence; only its absolute value is meaningless. Renumbering here gives
+    // both maps the same rule: per person, per day, starting at 1.
+    const stops = ordered.map((po, i) => deliveryStop(po, i + 1))
     const cod = ordered.reduce((sum, po) => sum + (po.cod_amount ?? 0), 0)
     const anyCod = ordered.some(po => po.cod)
     const times = ordered.map(po => po.time_out).filter((t): t is string => !!t)
@@ -300,6 +305,11 @@ export function deliveryTrips(orders: PurchaseOrder[]): Trip[] {
   })
 }
 
+/**
+ * The order one driver actually drove one day. Comparing `sequence_no` is safe
+ * even though it never resets — both sides come from the same driver's counter,
+ * so the comparison is unaffected by wherever that counter happens to start.
+ */
 function byRunOrder(a: PurchaseOrder, b: PurchaseOrder): number {
   if (a.sequence_no !== null && b.sequence_no !== null) return a.sequence_no - b.sequence_no
   if (!a.time_out) return 1

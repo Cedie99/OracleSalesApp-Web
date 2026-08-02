@@ -26,7 +26,11 @@ import {
   COD_METHODS, DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, PAYMENT_METHOD_LABEL,
   REMITTANCE_STATUS_LABEL, REMITTANCE_STATUS_TONE, TONE_CLASS, TONE_TEXT,
 } from '@/lib/status-styles'
-import type { DeliveryStatus, PaymentMethod, PurchaseOrder } from '@/types'
+import {
+  PhotoLightbox, RemittanceProofThumb, captionFor, type LightboxPhoto,
+} from '@/components/photo-lightbox'
+import { RemittanceActions } from '@/components/remittance-actions'
+import type { DeliveryStatus, PaymentMethod, PurchaseOrder, RemittanceStatus } from '@/types'
 import {
   Search, Truck, Camera, PenLine, AlertTriangle, Banknote, Clock, ImageOff, Plus, PackageCheck,
   PackageX, Loader2,
@@ -81,7 +85,9 @@ export default function DeliveryPage() {
   const {
     orders, loading: ordersLoading, error: ordersError, createOrder, removeOrder, cancelClaim,
   } = usePurchaseOrders()
-  const { codRemittances, error: codError } = useCodRemittances()
+  const {
+    codRemittances, error: codError, setStatus: setCodRemittanceStatus,
+  } = useCodRemittances()
   const { clients } = useClients()
   const { profiles, byRole } = useProfiles()
   // Surfaces the reason a publish failed — an RLS rejection or a constraint
@@ -97,6 +103,9 @@ export default function DeliveryPage() {
   // Bumped on every opening so the dialog remounts with fresh fields — see the
   // note on AddPoDialog about why this isn't an effect.
   const [addSession, setAddSession] = useState(0)
+  // Which remittance is mid-write, so only that card's buttons go quiet.
+  const [remittanceBusyId, setRemittanceBusyId] = useState<string | null>(null)
+  const [lightboxPhoto, setLightboxPhoto] = useState<LightboxPhoto | null>(null)
 
   const drivers = useMemo(() => byRole(['delivery']), [byRole])
 
@@ -242,6 +251,21 @@ export default function DeliveryPage() {
       setActionError(message ?? '')
     },
     [cancelClaim]
+  )
+
+  /**
+   * Close out a COD remittance, or reopen one. The driver's app can't — migration
+   * 044 gives it no UPDATE on `cod_remittances` — so the status only ever moves
+   * off `submitted` from here.
+   */
+  const handleRemittanceStatus = useCallback(
+    async (id: string, status: RemittanceStatus) => {
+      setRemittanceBusyId(id)
+      const message = await setCodRemittanceStatus(id, status)
+      setRemittanceBusyId(null)
+      setActionError(message ?? '')
+    },
+    [setCodRemittanceStatus]
   )
 
   const listedByName = selected
@@ -584,16 +608,34 @@ export default function DeliveryPage() {
                         </span>
                         {/* Office is the only destination here, so the signature is
                             never optional the way it is on a 7-11 collection drop. */}
-                        {r.receiver_signature_url ? (
-                          <span className="inline-flex items-center gap-1">
-                            <PenLine className="w-3 h-3" /> Signature
-                          </span>
-                        ) : (
+                        {!r.receiver_signature_url && (
                           <span className={`inline-flex items-center gap-1 font-medium ${TONE_TEXT.red}`}>
                             <AlertTriangle className="w-3 h-3" /> Signature missing
                           </span>
                         )}
                       </div>
+
+                      {/* The evidence the reconcile decision below rests on, so
+                          it has to be readable — not just ticked off. */}
+                      {r.receiver_signature_url && (
+                        <div className="flex gap-2">
+                          <RemittanceProofThumb
+                            url={r.receiver_signature_url}
+                            label="Signature"
+                            caption={captionFor(r.receiver_name, r.submitted_at)}
+                            signature
+                            icon={<PenLine className="w-3 h-3" />}
+                            onOpen={setLightboxPhoto}
+                          />
+                        </div>
+                      )}
+
+                      <RemittanceActions
+                        status={r.status}
+                        delta={delta}
+                        busy={remittanceBusyId === r.id}
+                        onSetStatus={status => handleRemittanceStatus(r.id, status)}
+                      />
                     </CardContent>
                   </Card>
                 )
@@ -653,6 +695,13 @@ export default function DeliveryPage() {
         po={selected}
         onOpenChange={open => !open && setSelected(null)}
         listedByName={listedByName}
+      />
+
+      {/* Opened from the remittance cards. The detail dialog carries its own,
+          for the captures on a PO. */}
+      <PhotoLightbox
+        photo={lightboxPhoto}
+        onOpenChange={open => !open && setLightboxPhoto(null)}
       />
     </div>
   )
