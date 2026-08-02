@@ -26,6 +26,9 @@ import {
   COD_METHODS, DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, PAYMENT_METHOD_LABEL,
   REMITTANCE_STATUS_LABEL, REMITTANCE_STATUS_TONE, TONE_CLASS, TONE_TEXT,
 } from '@/lib/status-styles'
+import {
+  PhotoLightbox, RemittanceProofThumb, captionFor, type LightboxPhoto,
+} from '@/components/photo-lightbox'
 import { RemittanceActions } from '@/components/remittance-actions'
 import type { DeliveryStatus, PaymentMethod, PurchaseOrder, RemittanceStatus } from '@/types'
 import {
@@ -102,6 +105,7 @@ export default function DeliveryPage() {
   const [addSession, setAddSession] = useState(0)
   // Which remittance is mid-write, so only that card's buttons go quiet.
   const [remittanceBusyId, setRemittanceBusyId] = useState<string | null>(null)
+  const [lightboxPhoto, setLightboxPhoto] = useState<LightboxPhoto | null>(null)
 
   const drivers = useMemo(() => byRole(['delivery']), [byRole])
 
@@ -604,16 +608,27 @@ export default function DeliveryPage() {
                         </span>
                         {/* Office is the only destination here, so the signature is
                             never optional the way it is on a 7-11 collection drop. */}
-                        {r.receiver_signature_url ? (
-                          <span className="inline-flex items-center gap-1">
-                            <PenLine className="w-3 h-3" /> Signature
-                          </span>
-                        ) : (
+                        {!r.receiver_signature_url && (
                           <span className={`inline-flex items-center gap-1 font-medium ${TONE_TEXT.red}`}>
                             <AlertTriangle className="w-3 h-3" /> Signature missing
                           </span>
                         )}
                       </div>
+
+                      {/* The evidence the reconcile decision below rests on, so
+                          it has to be readable — not just ticked off. */}
+                      {r.receiver_signature_url && (
+                        <div className="flex gap-2">
+                          <RemittanceProofThumb
+                            url={r.receiver_signature_url}
+                            label="Signature"
+                            caption={captionFor(r.receiver_name, r.submitted_at)}
+                            signature
+                            icon={<PenLine className="w-3 h-3" />}
+                            onOpen={setLightboxPhoto}
+                          />
+                        </div>
+                      )}
 
                       <RemittanceActions
                         status={r.status}
@@ -680,6 +695,13 @@ export default function DeliveryPage() {
         po={selected}
         onOpenChange={open => !open && setSelected(null)}
         listedByName={listedByName}
+      />
+
+      {/* Opened from the remittance cards. The detail dialog carries its own,
+          for the captures on a PO. */}
+      <PhotoLightbox
+        photo={lightboxPhoto}
+        onOpenChange={open => !open && setLightboxPhoto(null)}
       />
     </div>
   )

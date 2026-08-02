@@ -1,7 +1,11 @@
 'use client'
 
+import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  PhotoLightbox, ProofTile, captionFor, type LightboxPhoto,
+} from '@/components/photo-lightbox'
 import { dwellMinutes, poProofs } from '@/lib/delivery'
 import { peso } from '@/lib/money'
 import {
@@ -9,7 +13,7 @@ import {
   TONE_CLASS, TONE_TEXT,
 } from '@/lib/status-styles'
 import type { PurchaseOrder } from '@/types'
-import { AlertTriangle, Camera, Clock, MapPin, PackageX, PenLine, Truck, UserCog } from 'lucide-react'
+import { AlertTriangle, Clock, MapPin, PackageX, Truck, UserCog } from 'lucide-react'
 
 import { format } from 'date-fns'
 
@@ -25,16 +29,29 @@ interface PoDetailDialogProps {
  * brought back — including whether the required captures arrived.
  */
 export function PoDetailDialog({ po, onOpenChange, listedByName }: PoDetailDialogProps) {
+  const [photo, setPhoto] = useState<LightboxPhoto | null>(null)
+
   return (
-    <Dialog open={!!po} onOpenChange={open => !open && onOpenChange(false)}>
-      <DialogContent className="max-w-md">
-        {po && <PoDetail po={po} listedByName={listedByName} />}
-      </DialogContent>
-    </Dialog>
+    <>
+      <Dialog open={!!po} onOpenChange={open => !open && onOpenChange(false)}>
+        <DialogContent className="max-w-md">
+          {po && <PoDetail po={po} listedByName={listedByName} onOpenPhoto={setPhoto} />}
+        </DialogContent>
+      </Dialog>
+
+      {/* A sibling, not a child — see PhotoLightbox. */}
+      <PhotoLightbox photo={photo} onOpenChange={open => !open && setPhoto(null)} />
+    </>
   )
 }
 
-function PoDetail({ po, listedByName }: { po: PurchaseOrder; listedByName: string | null }) {
+function PoDetail({
+  po, listedByName, onOpenPhoto,
+}: {
+  po: PurchaseOrder
+  listedByName: string | null
+  onOpenPhoto: (photo: LightboxPhoto) => void
+}) {
   const proofs = poProofs(po)
   const missing = proofs.filter(p => p.required && !p.url)
   const run = po.driver_id !== null
@@ -176,36 +193,19 @@ function PoDetail({ po, listedByName }: { po: PurchaseOrder; listedByName: strin
               {proofs.map(proof => {
                 const isSignature = proof.label === 'Receiver signature'
                 return (
-                  <div key={proof.label} className="space-y-1">
-                    {proof.url ? (
-                      /* eslint-disable-next-line @next/next/no-img-element */
-                      <img
-                        src={proof.url}
-                        alt={proof.label}
-                        className={`w-full aspect-4/3 rounded-lg border border-border ${
-                          // A signature is a thin wide strip; cropping it to fill
-                          // the tile cuts the loops off.
-                          isSignature ? 'object-contain bg-muted/30 p-1' : 'object-cover'
-                        }`}
-                      />
-                    ) : (
-                      <div
-                        className={`w-full aspect-4/3 rounded-lg border border-dashed flex items-center justify-center ${
-                          proof.required ? 'border-destructive/40' : 'border-border'
-                        }`}
-                      >
-                        {isSignature ? (
-                          <PenLine className="w-4 h-4 text-muted-foreground opacity-50" />
-                        ) : (
-                          <Camera className="w-4 h-4 text-muted-foreground opacity-50" />
-                        )}
-                      </div>
+                  <ProofTile
+                    key={proof.label}
+                    label={proof.label}
+                    url={proof.url}
+                    missing={proof.required}
+                    signature={isSignature}
+                    note={!proof.required && !proof.url ? ' — not signed' : undefined}
+                    caption={captionFor(
+                      isSignature ? po.receiver_name : po.driver?.full_name,
+                      po.time_out ?? po.scheduled_for
                     )}
-                    <p className="text-[10px] text-muted-foreground leading-tight">
-                      {proof.label}
-                      {!proof.required && !proof.url && ' — not signed'}
-                    </p>
-                  </div>
+                    onOpen={onOpenPhoto}
+                  />
                 )
               })}
             </div>
