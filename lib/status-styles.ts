@@ -75,16 +75,46 @@ export const OUTCOME_LABEL_SHORT: Record<MeetingOutcome, string> = {
 
 // --- Client ----------------------------------------------------------------
 
+/**
+ * Ordered most-established first, matching the Clients page filter. `in_progress`
+ * takes the one remaining unused tone — purple — which the Dashboard uses for its
+ * own metric card. Record surfaces do NOT use it directly; see customerTypeBadge.
+ */
 export const CUSTOMER_TYPE_TONE: Record<CustomerType, BadgeTone> = {
   existing: 'brand',
   new: 'navy',
+  in_progress: 'purple',
   prospect: 'amber',
 }
 
 export const CUSTOMER_TYPE_LABEL: Record<CustomerType, string> = {
   existing: 'Existing',
   new: 'New',
+  in_progress: 'In Progress',
   prospect: 'Prospect',
+}
+
+/**
+ * How a client's stage reads on a *record* surface — a row in the Clients table,
+ * the detail dialog, the map's selected-client badge.
+ *
+ * In Progress renders as a qualified prospect ("Prospect · In Progress") in the
+ * prospect tone, rather than as a fourth peer pill. The distinction is real —
+ * migration 040 will not advance a client to New from anything but 'in_progress'
+ * — but at record level the question an admin is asking is "customer, or not
+ * yet", and a fourth colour in that vocabulary costs more than it explains.
+ *
+ * Deliberately NOT how the Dashboard renders it. There the count IS the subject
+ * (in-progress is the near-term pipeline: a successful qualifying meeting has
+ * happened and only the PO is outstanding), so it keeps its own card, its own
+ * purple, and its own Success Rate row.
+ */
+export function customerTypeBadge(type: CustomerType): { tone: BadgeTone; label: string } {
+  if (type !== 'in_progress') return { tone: CUSTOMER_TYPE_TONE[type], label: CUSTOMER_TYPE_LABEL[type] }
+  return {
+    tone: CUSTOMER_TYPE_TONE.prospect,
+    label: `${CUSTOMER_TYPE_LABEL.prospect} · ${CUSTOMER_TYPE_LABEL.in_progress}`,
+  }
 }
 
 /**

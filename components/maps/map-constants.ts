@@ -1,7 +1,19 @@
 import type { Client, ClientStatus, CustomerType, Meeting, MeetingOutcome } from '@/types'
+import { CUSTOMER_TYPE_LABEL } from '@/lib/status-styles'
 
-export type MapStatus = CustomerType | Extract<ClientStatus, 'lost'>
+/**
+ * The map's status vocabulary is deliberately one narrower than CustomerType:
+ * 'in_progress' shares the prospect pin, so there is no such key here. See
+ * getMapStatus.
+ */
+export type MapStatus = Exclude<CustomerType, 'in_progress'> | Extract<ClientStatus, 'lost'>
 
+/**
+ * Key order is the legend and filter order — most-established stage first,
+ * mirroring CUSTOMER_TYPE_TONE. Colours are the map's own palette rather than
+ * the badge tones: pins sit on satellite imagery, where the badge greens and
+ * navies disappear into the ground.
+ */
 export const STATUS_META: Record<MapStatus, { label: string; color: string }> = {
   existing: { label: 'Existing', color: '#60a5fa' },
   new: { label: 'New', color: '#fbbf24' },
@@ -9,9 +21,41 @@ export const STATUS_META: Record<MapStatus, { label: string; color: string }> = 
   lost: { label: 'Lost Opportunity', color: '#f87171' },
 }
 
+/**
+ * Fallback for a customer_type this build doesn't model. The database is shared
+ * with the mobile repo and its lifecycle has grown twice by hand already
+ * (migrations 038 and 040 added 'in_progress'), so an unrecognised value is a
+ * question of when, not if. Grey and unlabelled beats a crash — which is
+ * literally what the previous `STATUS_META[…].color` did on the first
+ * 'in_progress' row to reach the map.
+ */
+const UNKNOWN_STATUS_META = { label: 'Unspecified', color: '#94a3b8' }
+
 export function getMapStatus(client: Client): MapStatus {
   if (client.status === 'lost') return 'lost'
+  // In Progress is a qualified prospect, not a peer stage — one pin colour covers
+  // the whole pre-customer family, and the legend carries the subset as a
+  // sub-count. Five pin colours on satellite imagery was one too many to read.
+  if (client.customer_type === 'in_progress') return 'prospect'
   return client.customer_type
+}
+
+/** True where the client is a prospect that has cleared its qualifying meeting. */
+export function isInProgress(client: Client): boolean {
+  return client.status !== 'lost' && client.customer_type === 'in_progress'
+}
+
+/**
+ * Pin colour and legend label for a client, drift-proof. Prefer this over
+ * indexing STATUS_META directly.
+ *
+ * In Progress takes the prospect colour but keeps its name in the label, for the
+ * surfaces with room to show it — the selected-client badge. The legend and the
+ * list dots use the colour only, so they stay a four-colour vocabulary.
+ */
+export function mapStatusMeta(client: Client): { label: string; color: string } {
+  const meta = STATUS_META[getMapStatus(client)] ?? UNKNOWN_STATUS_META
+  return isInProgress(client) ? { ...meta, label: `${meta.label} · ${CUSTOMER_TYPE_LABEL.in_progress}` } : meta
 }
 
 /**

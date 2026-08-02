@@ -14,7 +14,7 @@ import { format } from 'date-fns'
 import {
   CHANNEL_TONE,
   CLIENT_STATUS_TONE,
-  CUSTOMER_TYPE_TONE,
+  customerTypeBadge,
   OUTCOME_LABEL,
   OUTCOME_TONE,
   TONE_CLASS,
@@ -108,8 +108,8 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                           <Badge variant="tone" className={TONE_CLASS[CLIENT_STATUS_TONE[client.status]]}>
                             {LABEL[client.status]}
                           </Badge>
-                          <Badge variant="tone" className={TONE_CLASS[CUSTOMER_TYPE_TONE[client.customer_type]]}>
-                            {LABEL[client.customer_type]}
+                          <Badge variant="tone" className={TONE_CLASS[customerTypeBadge(client.customer_type).tone]}>
+                            {customerTypeBadge(client.customer_type).label}
                           </Badge>
                           <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[client.sales_channel]]}>
                             {LABEL[client.sales_channel]}
