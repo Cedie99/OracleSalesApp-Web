@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Client, CodRemittance, Profile, PurchaseOrder } from '@/types'
+import type { Client, CodRemittance, Profile, PurchaseOrder, RemittanceStatus } from '@/types'
 
 /**
  * Live Delivery data (migration 044) — the Collection twin of use-collection.ts,
@@ -184,8 +184,16 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
   return { orders, loading, error, refresh, createOrder, removeOrder, cancelClaim }
 }
 
+interface UseCodRemittancesResult {
+  codRemittances: CodRemittance[]
+  loading: boolean
+  error: string
+  refresh: () => Promise<void>
+  setStatus: (id: string, status: RemittanceStatus) => Promise<string | null>
+}
+
 /** COD handed over by drivers, most recent first. */
-export function useCodRemittances() {
+export function useCodRemittances(): UseCodRemittancesResult {
   const [codRemittances, setCodRemittances] = useState<CodRemittance[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -218,5 +226,25 @@ export function useCodRemittances() {
     load()
   }, [load])
 
-  return { codRemittances, loading, error, refresh }
+  /**
+   * The collection twin's `setStatus`, against `cod_remittances` — see the note
+   * there. Same asymmetry in migration 044: drivers get INSERT and SELECT on
+   * their own rows, no UPDATE, so reconciliation only ever happens from here.
+   */
+  const setStatus = useCallback(
+    async (id: string, status: RemittanceStatus): Promise<string | null> => {
+      const supabase = createClient()
+      const { error: updateError } = await supabase
+        .from('cod_remittances')
+        .update({ status })
+        .eq('id', id)
+
+      if (updateError) return updateError.message
+      await load()
+      return null
+    },
+    [load]
+  )
+
+  return { codRemittances, loading, error, refresh, setStatus }
 }
