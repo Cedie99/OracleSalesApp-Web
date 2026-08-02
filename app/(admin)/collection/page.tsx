@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Header } from '@/components/header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -9,7 +10,9 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Pagination } from '@/components/ui/pagination'
+import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { usePagination } from '@/lib/hooks/use-pagination'
+import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
 import { useClients } from '@/lib/hooks/use-clients'
@@ -18,10 +21,18 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AddStoreDialog, type AddStoreDraft } from '@/components/collection/add-store-dialog'
 import { ListBoard } from '@/components/collection/list-board'
 import { VisitDetailDialog } from '@/components/collection/visit-detail-dialog'
-import { buildDays, hasMissingProof, remittanceVariance, type CollectionDay } from '@/lib/collection'
+import { TripRuns } from '@/components/trip-runs'
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import {
+  NeedsAttention, type AttentionKey, type AttentionSignal,
+} from '@/components/needs-attention'
+import { isNotWorked, isStaleClaim, staleClaimCount } from '@/lib/claims'
+import {
+  buildDays, collectionTrips, hasMissingProof, remittanceVariance, type CollectionDay,
+} from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
 import {
-  PAYMENT_METHODS, PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE,
+  PAYMENT_METHODS, PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE, paymentMethodLabel,
   REMITTANCE_DESTINATION_LABEL, REMITTANCE_STATUS_LABEL, REMITTANCE_STATUS_TONE,
   TONE_CLASS, TONE_TEXT, VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
@@ -69,6 +80,9 @@ import { format } from 'date-fns'
  * existence.
  */
 
+/** How the Activity tab groups the same set of rows. */
+type ActivityView = 'person' | 'store'
+
 export default function CollectionPage() {
   const { profile } = useCurrentProfile()
 
@@ -97,7 +111,97 @@ export default function CollectionPage() {
   const [remittanceBusyId, setRemittanceBusyId] = useState<string | null>(null)
   const [lightboxPhoto, setLightboxPhoto] = useState<LightboxPhoto | null>(null)
 
+  const router = useRouter()
   const collectors = useMemo(() => byRole(['collector']), [byRole])
+
+  /**
+   * Opens on ALL dates. A published list does not stop mattering at midnight —
+   * a store still pending, a claim still held, money still unremitted all stay
+   * the admin's problem on later days, so hiding them behind today's window
+   * would mean the board only ever showed part of the job. The `‹ ›` stepper is
+   * there to narrow deliberately.
+   *
+   * The needs-attention strip below still reads ALL visits rather than the
+   * windowed set, so narrowing to a day never silences it.
+   */
+  const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+  const [attention, setAttention] = useState<AttentionKey | null>(null)
+  /** True when isolating a signal widened the window the admin had narrowed. */
+  const [widened, setWidened] = useState(false)
+  const [activityView, setActivityView] = useState<ActivityView>('person')
+
+  /**
+   * Counted over ALL visits, never the windowed set — see NeedsAttention for
+   * why. `unremitted` is money a collector is still holding: collected on a
+   * closed-out store but not yet handed over at any remittance.
+   */
+  const signals = useMemo<AttentionSignal[]>(() => {
+    const remitted = allRemittances.reduce((sum, r) => sum + r.amount_collected, 0)
+    const collected = visits.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0)
+    return [
+      {
+        key: 'stuck',
+        count: staleClaimCount(visits),
+        label: ['claimed, never worked', 'claimed, never worked'],
+        hint: 'A collector said they were on their way and never went. Different from "not worked", which nobody picked up at all — this one has a name on it. Claims never expire and each collector may hold only one, so that person cannot take any new store until an admin releases it.',
+      },
+      {
+        key: 'proof',
+        count: visits.filter(hasMissingProof).length,
+        label: ['missing proof', 'missing proofs'],
+        hint: 'Collected without a capture the phone should have required. Chase the collector while they still remember the store.',
+      },
+      {
+        key: 'unremitted',
+        // A magnitude, not a tally — see `display` on AttentionSignal.
+        count: Math.max(0, Math.round(collected - remitted)),
+        label: ['unremitted', 'unremitted'],
+        display: `${peso(Math.max(0, collected - remitted))} unremitted`,
+        hint: 'Collected but not yet handed over at any remittance — money still on a collector.',
+      },
+      {
+        key: 'notworked',
+        count: visits.filter(isNotWorked).length,
+        label: ['not worked', 'not worked'],
+        hint: 'Listed for a day that has passed and never claimed by anyone — the day was over-listed. Different from "rescheduled" (a collector went and agreed another date) and from "claimed, never worked" (a collector committed and did not go). Nothing re-lists these, so they sit here until an admin puts them on a later day.',
+      },
+    ]
+  }, [visits, allRemittances])
+
+  /**
+   * Isolating a signal only makes sense across all of history — the offending
+   * row is usually on an older day, which is the whole reason it needs chasing.
+   *
+   * Widening is a no-op at the default, and only kicks in when the admin has
+   * stepped to a specific day. Tracked so the strip mentions it only when it
+   * actually happened, rather than narrating a change nobody saw.
+   */
+  const toggleAttention = useCallback((key: AttentionKey | null) => {
+    setAttention(key)
+    if (key) {
+      if (dateFilter.preset !== 'all') {
+        setWidened(true)
+        dateFilter.setPreset('all')
+      }
+    } else if (widened) {
+      setWidened(false)
+      dateFilter.reset()
+    }
+  }, [dateFilter, widened])
+
+  /** Rows matching the isolated signal. Identity when nothing is isolated. */
+  const matchesAttention = useCallback(
+    (v: CollectionVisit) => {
+      if (attention === 'stuck') return isStaleClaim(v)
+      if (attention === 'proof') return hasMissingProof(v)
+      // 'unremitted' is a peso total, not a per-row flag — the closest useful
+      // row set is everything collected, which is what the money came from.
+      if (attention === 'unremitted') return v.status === 'collected'
+      if (attention === 'notworked') return isNotWorked(v)
+      return true
+    },
+    [attention]
+  )
 
   const filteredVisits = useMemo(() => {
     const needle = search.toLowerCase()
@@ -108,24 +212,59 @@ export default function CollectionPage() {
       const matchCollector = collectorFilter === 'all' || v.collector_id === collectorFilter
       const matchMethod = methodFilter === 'all' || v.payment_method === methodFilter
       return matchSearch && matchCollector && matchMethod
+        && dateFilter.inRange(v.scheduled_for) && matchesAttention(v)
     })
-  }, [visits, search, collectorFilter, methodFilter])
+  }, [visits, search, collectorFilter, methodFilter, dateFilter, matchesAttention])
 
   /**
-   * The daily lists honour the search box but ignore the collector and method
-   * filters. Both of those only have a value once a store has been collected,
-   * so filtering by either would silently drop every store still waiting to be
-   * picked up — which is the main thing an admin opens this tab to see.
+   * The daily lists honour the search box and the date window, but still ignore
+   * the collector and method filters. Both of those only have a value once a
+   * store has been collected, so filtering by either would silently drop every
+   * store still waiting to be picked up — the main thing an admin opens this tab
+   * to see.
+   *
+   * The collector selection is not discarded, though: it is handed to ListBoard
+   * as a FOCUS, which dims other people's rows instead of removing them. That
+   * answers "show me Marisa's stores" without hiding the shared pool.
+   *
+   * The date window is safe to apply here because `scheduled_for` is set when
+   * the admin publishes the row — every store has one, pending or not. Filtering
+   * on `visited_at` would reintroduce exactly the bug described above.
    */
   const days = useMemo(() => {
     const needle = search.toLowerCase()
     const scoped = visits.filter(
       v =>
-        (v.client?.company_name ?? '').toLowerCase().includes(needle) ||
-        (v.collector?.full_name ?? '').toLowerCase().includes(needle)
+        ((v.client?.company_name ?? '').toLowerCase().includes(needle) ||
+          (v.collector?.full_name ?? '').toLowerCase().includes(needle)) &&
+        dateFilter.inRange(v.scheduled_for) &&
+        matchesAttention(v)
     )
     return buildDays(scoped)
-  }, [visits, search])
+  }, [visits, search, dateFilter, matchesAttention])
+
+  /**
+   * One entry per collector per day, in the order they worked it — the other
+   * half of the Activity tab, over the same rows as `filteredVisits`.
+   *
+   * ⚠️ Runs are filtered WHOLE, never stop-by-stop. `collectionTrips` numbers
+   * each stop by its position within the group it is given, so handing it a
+   * filtered subset would renumber the survivors: a five-store run matching on
+   * two would render them ① and ② when they were really the 3rd and 5th stores
+   * of the day. That is the same class of lie as the stored `sequence_no` the
+   * board stopped showing. So the window and the collector scope build the run
+   * (both are day/person selectors, which is exactly what a run IS), and every
+   * other filter only decides whether the run appears at all.
+   */
+  const trips = useMemo(() => {
+    const scoped = visits.filter(
+      v =>
+        (collectorFilter === 'all' || v.collector_id === collectorFilter) &&
+        dateFilter.inRange(v.scheduled_for)
+    )
+    const matched = new Set(filteredVisits.map(v => v.id))
+    return collectionTrips(scoped).filter(t => t.stops.some(s => matched.has(s.id)))
+  }, [visits, collectorFilter, dateFilter, filteredVisits])
 
   const remittances = useMemo(() => {
     const scoped = allRemittances.filter(
@@ -139,16 +278,26 @@ export default function CollectionPage() {
     })
   }, [allRemittances, collectorFilter])
 
-  const visitsPage = usePagination(filteredVisits, 10, `${search}|${collectorFilter}|${methodFilter}`)
+  const visitsPage = usePagination(
+    filteredVisits, 10, `${search}|${collectorFilter}|${methodFilter}|${dateFilter.key}`
+  )
   const remittancesPage = usePagination(remittances, 9, collectorFilter)
 
   const stats = useMemo(() => {
     const collectedVisits = filteredVisits.filter(v => v.status === 'collected')
     const collected = collectedVisits.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0)
 
-    const byMethod = { cash: 0, check: 0, gcash: 0, counter: 0 } as Record<PaymentMethod, number>
+    // Built from PAYMENT_METHODS rather than a hand-written literal: a literal
+    // silently went stale when 'delivery_receipt' landed, and the miss showed up
+    // as `undefined + n` → NaN in a bucket, which the `> 0` filter below then
+    // hid completely. A wrong total that hides itself is worse than a crash.
+    const byMethod = Object.fromEntries(
+      PAYMENT_METHODS.map(m => [m, 0])
+    ) as Record<PaymentMethod, number>
     collectedVisits.forEach(v => {
-      if (v.payment_method) byMethod[v.payment_method] += v.amount_collected ?? 0
+      if (v.payment_method && byMethod[v.payment_method] !== undefined) {
+        byMethod[v.payment_method] += v.amount_collected ?? 0
+      }
     })
 
     const remitted = remittances.reduce((sum, r) => sum + r.amount_remitted, 0)
@@ -208,26 +357,27 @@ export default function CollectionPage() {
   )
 
   /** Only ever called for stores no collector has touched — see ListBoard. */
-  const handleRemoveStore = useCallback(
-    async (visit: CollectionVisit) => {
-      const message = await removeVisit(visit.id)
-      setActionError(message ?? '')
-    },
-    [removeVisit]
-  )
-
   /**
-   * Release a collector's hold so the store goes back in the pool. Claims never
-   * expire, and a collector may only hold one at a time, so a claim left on an
-   * unworked store blocks that person entirely until an admin clears it.
+   * Both board actions are icon-only and both reach the field, so neither fires
+   * on the first click — they stage a confirmation instead. Removing a store
+   * takes it off a collector's phone; releasing a claim unlocks a store someone
+   * may already be driving to.
    */
-  const handleCancelClaim = useCallback(
-    async (visit: CollectionVisit) => {
-      const message = await cancelClaim(visit.id)
-      setActionError(message ?? '')
-    },
-    [cancelClaim]
-  )
+  const [pendingAction, setPendingAction] =
+    useState<{ kind: 'remove' | 'release'; visit: CollectionVisit } | null>(null)
+  const [actionBusy, setActionBusy] = useState(false)
+
+  const runPendingAction = useCallback(async () => {
+    if (!pendingAction) return
+    setActionBusy(true)
+    const { kind, visit } = pendingAction
+    const message = kind === 'remove'
+      ? await removeVisit(visit.id)
+      : await cancelClaim(visit.id)
+    setActionError(message ?? '')
+    setActionBusy(false)
+    setPendingAction(null)
+  }, [pendingAction, removeVisit, cancelClaim])
 
   /**
    * Close out a remittance, or reopen one. The collector's app can't do this —
@@ -368,15 +518,25 @@ export default function CollectionPage() {
               ))}
             </SelectContent>
           </Select>
+          <DateRangeFilter filter={dateFilter} />
           <Button className="h-9" onClick={() => openAdd()}>
             <Plus /> Add store
           </Button>
         </div>
 
+        <NeedsAttention
+          signals={signals} active={attention} widened={widened} onToggle={toggleAttention}
+        />
+
         <Tabs defaultValue="lists">
           <TabsList>
-            <TabsTrigger value="lists">Collection Lists ({days.length})</TabsTrigger>
-            <TabsTrigger value="visits">Store Visits ({filteredVisits.length})</TabsTrigger>
+            {/* One tab per JOB, not per data shape. Lists is the only one with
+                write actions; Activity is read-only review; Remittances is
+                money. An earlier pass split Activity into "Trips" and "Store
+                Visits" — two names for one job, which left an admin guessing
+                which to open. They are now one tab and a grouping switch. */}
+            <TabsTrigger value="lists">Lists ({days.length})</TabsTrigger>
+            <TabsTrigger value="activity">Activity ({filteredVisits.length})</TabsTrigger>
             <TabsTrigger value="remittances">Remittances ({remittances.length})</TabsTrigger>
           </TabsList>
 
@@ -384,15 +544,49 @@ export default function CollectionPage() {
           <TabsContent value="lists" className="mt-4 space-y-4">
             <ListBoard
               days={days}
+              focusWorkerId={collectorFilter}
               onOpenVisit={setSelectedVisit}
               onAddStore={handleAddStoreToDay}
-              onRemoveStore={handleRemoveStore}
-              onCancelClaim={handleCancelClaim}
+              onRemoveStore={visit => setPendingAction({ kind: 'remove', visit })}
+              onCancelClaim={visit => setPendingAction({ kind: 'release', visit })}
             />
           </TabsContent>
 
-          {/* --- Store visits: what came back --- */}
-          <TabsContent value="visits" className="mt-4">
+          {/* --- Activity: what came back, grouped the way you need to read it --- */}
+          <TabsContent value="activity" className="mt-4 space-y-3">
+            {/* Same rows either way — only the grouping changes. "By collector"
+                answers "what did Marisa do?", "By store" answers "what happened
+                at this store?".
+
+                The two counts differ on purpose and are not in conflict: one
+                counts RUNS, the other counts STORES. A run is shown whole once
+                any of its stores matches, so its untouched stops keep their true
+                numbers rather than being renumbered by the filter. */}
+            <Tabs value={activityView} onValueChange={v => setActivityView(v as ActivityView)}>
+              <TabsList className="h-8">
+                <TabsTrigger value="person" className="text-xs px-3">
+                  By collector ({trips.length})
+                </TabsTrigger>
+                <TabsTrigger value="store" className="text-xs px-3">
+                  By store ({filteredVisits.length})
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            {activityView === 'person' ? (
+              <TripRuns
+                trips={trips}
+                nouns={{ stop: ['store', 'stores'], worker: ['collector', 'collectors'] }}
+                onOpenStop={id => {
+                  const visit = visits.find(v => v.id === id)
+                  if (visit) setSelectedVisit(visit)
+                }}
+                onViewOnMap={trip => router.push(
+                  `/maps?module=collection&trip=${encodeURIComponent(trip.id)}`
+                )}
+              />
+            ) : (
+            <>
             <Card className="overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -439,7 +633,7 @@ export default function CollectionPage() {
                           <td className="px-4 py-3">
                             {v.payment_method ? (
                               <Badge variant="tone" className={TONE_CLASS[PAYMENT_METHOD_TONE[v.payment_method]]}>
-                                {PAYMENT_METHOD_LABEL[v.payment_method]}
+                                {paymentMethodLabel(v.payment_method)}
                               </Badge>
                             ) : (
                               <span className="text-xs text-muted-foreground">—</span>
@@ -503,6 +697,8 @@ export default function CollectionPage() {
               page={visitsPage.page} pageCount={visitsPage.pageCount} onPageChange={visitsPage.setPage}
               from={visitsPage.from} to={visitsPage.to} total={visitsPage.total} itemLabel="visits"
             />
+            </>
+            )}
           </TabsContent>
 
           {/* --- Remittances --- */}
@@ -616,6 +812,40 @@ export default function CollectionPage() {
         visits={visits}
         defaults={addDefaults}
         onAdd={handleAdd}
+      />
+
+      <ConfirmDialog
+        open={!!pendingAction}
+        busy={actionBusy}
+        destructive={pendingAction?.kind === 'remove'}
+        title={pendingAction?.kind === 'remove' ? 'Remove this store?' : 'Release this claim?'}
+        confirmLabel={pendingAction?.kind === 'remove' ? 'Remove store' : 'Release claim'}
+        description={
+          pendingAction?.kind === 'remove' ? (
+            <>
+              <span className="font-medium text-foreground">
+                {pendingAction.visit.client?.company_name}
+              </span>{' '}
+              comes off this day&apos;s list and disappears from the collectors&apos; phones. Only a
+              store nobody has worked or claimed can be removed, so nothing collected is lost —
+              but if it still owes money, re-list it on another day.
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-foreground">
+                {pendingAction?.visit.claimed_by_name ?? 'The collector'}
+              </span>{' '}
+              is on their way to{' '}
+              <span className="font-medium text-foreground">
+                {pendingAction?.visit.client?.company_name}
+              </span>
+              . Releasing puts it back in the shared pool for anyone to work, and frees their one
+              claim slot — do it if they have finished for the day or the claim was a mistake.
+            </>
+          )
+        }
+        onConfirm={runPendingAction}
+        onOpenChange={open => !open && setPendingAction(null)}
       />
 
       <VisitDetailDialog

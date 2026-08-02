@@ -211,18 +211,23 @@ export const CLOCK_TYPE_LABEL: Record<ClockType, string> = {
 // --- Collection (F-007) ----------------------------------------------------
 
 /** Every payment method, in the order the collector's app tiles them. */
-export const PAYMENT_METHODS: PaymentMethod[] = ['cash', 'check', 'gcash', 'counter']
+export const PAYMENT_METHODS: PaymentMethod[] = [
+  'cash', 'check', 'gcash', 'counter', 'delivery_receipt',
+]
 
 /**
  * 'counter' means the customer paid over the counter and the collector
  * photographed that receipt — it became a payment method on 2026-07-26, having
- * previously been a separate proof capture. See the note on PaymentMethod.
+ * previously been a separate proof capture. 'delivery_receipt' (2026-08-01,
+ * migration 061) is the same idea a step further: the delivery receipt settles
+ * the balance and no cash is handed over at all. See the note on PaymentMethod.
  */
 export const PAYMENT_METHOD_LABEL: Record<PaymentMethod, string> = {
   cash: 'Cash',
   check: 'Check',
   gcash: 'GCash',
   counter: 'Counter',
+  delivery_receipt: 'Delivery Receipt',
 }
 
 /** Payment method is a taxonomy like sales channel, so it stays neutral. */
@@ -231,12 +236,40 @@ export const PAYMENT_METHOD_TONE: Record<PaymentMethod, BadgeTone> = {
   check: 'neutral',
   gcash: 'neutral',
   counter: 'neutral',
+  delivery_receipt: 'neutral',
 }
 
+/**
+ * Label for a method that may not be one we know about. The database is shared
+ * with mobile, which can ship a value before web widens the union — so anything
+ * rendering a method straight off a row goes through this rather than indexing
+ * PAYMENT_METHOD_LABEL and trusting the result. An unknown value renders
+ * readably instead of blank, and tells whoever sees it what to grep for.
+ */
+export function paymentMethodLabel(method: string | null): string {
+  if (!method) return '—'
+  return PAYMENT_METHOD_LABEL[method as PaymentMethod] ?? method.replace(/_/g, ' ')
+}
+
+/**
+ * One scale across both operational modules: **brand = done, amber = still to
+ * do, navy = deferred, red = went wrong.**
+ *
+ * `pending` was `neutral` here and `navy` on Delivery — two modules disagreeing
+ * about the same idea. Worse, neutral's foreground is a dark slate that at
+ * status-dot size is nearly indistinguishable from the brand green, so a
+ * finished store and an untouched one looked alike on the day board. Amber is
+ * what the rest of the card already uses for outstanding work (the "N left"
+ * badge, the "Still out" figure), so pending now matches it.
+ *
+ * `rescheduled` moves to navy to keep amber meaning exactly one thing. It is a
+ * deferral, not a shortfall — the store is someone else's problem on another
+ * day — so it should not compete with the stores still owed today.
+ */
 export const VISIT_STATUS_TONE: Record<CollectionVisitStatus, BadgeTone> = {
   collected: 'brand',
-  rescheduled: 'amber',
-  pending: 'neutral',
+  rescheduled: 'navy',
+  pending: 'amber',
 }
 
 export const VISIT_STATUS_LABEL: Record<CollectionVisitStatus, string> = {
@@ -271,10 +304,11 @@ export const REMITTANCE_DESTINATION_LABEL: Record<RemittanceDestination, string>
  * failed delivery is the single outcome that needs someone in the office to act
  * — the goods are back in the warehouse and nothing re-lists itself.
  */
+/** Same scale as VISIT_STATUS_TONE — see the note there. */
 export const DELIVERY_STATUS_TONE: Record<DeliveryStatus, BadgeTone> = {
   delivered: 'brand',
   failed: 'red',
-  pending: 'navy',
+  pending: 'amber',
 }
 
 export const DELIVERY_STATUS_LABEL: Record<DeliveryStatus, string> = {

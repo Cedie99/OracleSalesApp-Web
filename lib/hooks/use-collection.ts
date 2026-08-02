@@ -20,6 +20,12 @@ const CLIENT_JOIN = `
 
 const PROFILE_JOIN = `id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at`
 
+// ⚠️ `customer_signature_url` is deliberately ABSENT until migration 061 is
+// deployed. PostgREST rejects the ENTIRE select on one unknown column, so naming
+// it early doesn't degrade to a null field — it returns zero rows and takes the
+// whole Collection page down with a "column does not exist" banner. Add it back
+// as the first step after 061 merges; `normalizeVisit` already defaults it to
+// null so nothing else has to change on the day.
 const VISIT_COLUMNS = `
   id, client_id, client_name, area, status, scheduled_for, listed_by, listed_at, amount_due,
   claimed_by, claimed_at, claimed_by_name,
@@ -60,6 +66,9 @@ function one<T>(value: unknown): T | undefined {
 function normalizeVisit(row: Record<string, unknown>): CollectionVisit {
   return {
     ...(row as unknown as CollectionVisit),
+    // Not selected until 061 deploys (see VISIT_COLUMNS), so default it rather
+    // than let the type claim a field the row doesn't carry.
+    customer_signature_url: (row.customer_signature_url as string | null) ?? null,
     amount_due: num(row.amount_due) ?? 0,
     amount_collected: num(row.amount_collected),
     gps_lat: num(row.gps_lat),

@@ -8,7 +8,7 @@ import { useProfiles } from '@/lib/hooks/use-profiles'
 import { hasMissingProof, remittanceVariance } from '@/lib/collection'
 import { peso } from '@/lib/money'
 import {
-  PAYMENT_METHOD_LABEL, REMITTANCE_DESTINATION_LABEL,
+  REMITTANCE_DESTINATION_LABEL, paymentMethodLabel,
   REMITTANCE_STATUS_LABEL, VISIT_STATUS_LABEL,
 } from '@/lib/status-styles'
 import { Store, Wallet } from 'lucide-react'
@@ -77,12 +77,16 @@ export function CollectionReports() {
             // stop them anchoring to it. It belongs in an admin export.
             'Amount Due': v.amount_due,
             'Amount Collected': v.amount_collected ?? '',
-            'Payment Method': v.payment_method ? PAYMENT_METHOD_LABEL[v.payment_method] : '',
+            'Payment Method': v.payment_method ? paymentMethodLabel(v.payment_method) : '',
             'Collector': v.collector?.full_name ?? '',
             'Visited At': v.visited_at ? format(new Date(v.visited_at), 'MMM d, yyyy h:mm a') : '',
             'GPS': v.gps_lat != null ? `${v.gps_lat}, ${v.gps_lng}` : '',
             'Payment Photo': v.payment_photo_url ? 'Yes' : 'No',
-            'Delivery Receipt': v.delivery_receipt_photo_url ? 'Yes' : 'No',
+            // "Photo" is in the header because 'Delivery Receipt' is now also a
+            // payment method, and a column that could mean either is a column
+            // someone will misread.
+            'Delivery Receipt Photo': v.delivery_receipt_photo_url ? 'Yes' : 'No',
+            'Customer Signature': v.customer_signature_url ? 'Yes' : 'No',
             'Missing Proof': hasMissingProof(v) ? 'Yes' : 'No',
             'Rescheduled To': v.rescheduled_to ? format(new Date(v.rescheduled_to), 'MMM d, yyyy') : '',
             'Remarks': v.remarks ?? '',

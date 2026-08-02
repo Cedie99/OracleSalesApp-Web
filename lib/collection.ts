@@ -8,9 +8,10 @@
  * gets there collects it, and their name lands on the record at that moment.
  * Everything below either builds a day's list or reports on one.
  */
-import type { CollectionVisit, Remittance } from '@/types'
+import type { CollectionVisit, PaymentMethod, Remittance } from '@/types'
+import { numberStopsByWorker, type WorkerStopNumber } from '@/lib/board-numbering'
 import { peso } from '@/lib/money'
-import { PAYMENT_METHOD_LABEL } from '@/lib/status-styles'
+import { paymentMethodLabel } from '@/lib/status-styles'
 import { groupByWorkerDay, tripColor, workerColors, type Trip, type TripStop } from '@/lib/trips'
 
 /** Remitted minus collected. Negative means the collector handed over less. */
@@ -19,34 +20,89 @@ export function remittanceVariance(r: Remittance): number {
 }
 
 /**
- * The camera captures a collected visit must carry, in the order the collector
+ * The camera captures a collected visit can carry, in the order the collector
  * takes them. Counter used to be a third entry here; the 2026-07-26 wireframe
  * change turned it into a payment method whose proof rides on the shared
- * payment photo, so there are two captures now, not three.
+ * payment photo.
+ *
+ * ⚠️ Which of these is REQUIRED depends on the payment method — see
+ * `proofRequired`. Treating all three as always-required is the bug this
+ * structure exists to prevent.
  */
 export const VISIT_PROOFS = [
   { key: 'payment_photo_url', label: 'Payment photo' },
   { key: 'delivery_receipt_photo_url', label: 'Delivery receipt' },
+  { key: 'customer_signature_url', label: 'Customer signature' },
 ] as const satisfies readonly { key: keyof CollectionVisit; label: string }[]
+
+type ProofKey = (typeof VISIT_PROOFS)[number]['key']
+
+/**
+ * The methods where cash actually changes hands, and so the only ones where the
+ * collector hands over a receipt worth photographing. Mirrors mobile's
+ * `showReceiptPhoto` (app/(collection)/visit.tsx, 2026-08-01): Counter takes no
+ * receipt slot, and a delivery-receipt payment IS the receipt already.
+ */
+const METHODS_WITH_RECEIPT_PHOTO: PaymentMethod[] = ['cash', 'check', 'gcash']
+
+/**
+ * Whether the phone would have refused "✓ Collected" without this capture.
+ *
+ * Anything answering `false` here can be legitimately absent, so flagging it
+ * would send an admin chasing a collector for a photo their app never asked for.
+ */
+function proofRequired(key: ProofKey, visit: CollectionVisit): boolean {
+  switch (key) {
+    case 'payment_photo_url':
+      // Required on every method — it is the record of how the store settled.
+      return true
+    case 'delivery_receipt_photo_url':
+      return visit.payment_method !== null
+        && METHODS_WITH_RECEIPT_PHOTO.includes(visit.payment_method)
+    case 'customer_signature_url':
+      // Mobile REQUIRES this on every method as of 2026-08-01, but does not yet
+      // upload it: migration 061 created the column and mobile's queuePhoto call
+      // is still unwritten (lib/collection-delivery-write.ts). Marking it
+      // required now would flag every collected visit in the database as
+      // incomplete. Flip to `true` once signatures start arriving.
+      return false
+  }
+}
 
 export interface ProofState {
   label: string
   url: string | null
+  /** False for a capture this payment method never asked the collector for. */
+  required: boolean
+  /** Signatures render contained on white rather than cropped to fill. */
+  signature: boolean
 }
 
 /**
- * Proof state for a visit. Only meaningful once the visit is collected — the
- * phone blocks "✓ Collected" until both exist, so a gap here means the record
- * either predates the rule or arrived through a path that skipped it. Pending
- * and rescheduled visits legitimately have none.
+ * Proof state for a visit, limited to the captures that are meaningful for it:
+ * everything its payment method requires, plus anything that arrived anyway.
+ * That second half matters for rows collected under an older rule — a Counter
+ * visit from before 2026-08-01 carries a receipt photo, and it should still be
+ * shown even though nothing asks for one now.
+ *
+ * Only meaningful once the visit is collected. Pending and rescheduled visits
+ * legitimately have none.
  */
 export function visitProofs(visit: CollectionVisit): ProofState[] {
-  return VISIT_PROOFS.map(p => ({ label: p.label, url: visit[p.key] as string | null }))
+  return VISIT_PROOFS
+    .map(p => ({
+      label: p.label,
+      url: visit[p.key] as string | null,
+      required: proofRequired(p.key, visit),
+      signature: p.key === 'customer_signature_url',
+    }))
+    .filter(p => p.required || p.url)
 }
 
-/** True when a collected visit is missing at least one required capture. */
+/** True when a collected visit is missing a capture its method required. */
 export function hasMissingProof(visit: CollectionVisit): boolean {
-  return visit.status === 'collected' && visitProofs(visit).some(p => !p.url)
+  return visit.status === 'collected'
+    && visitProofs(visit).some(p => p.required && !p.url)
 }
 
 /** A collector who worked at least one store on a given day's list. */
@@ -81,6 +137,13 @@ export interface CollectionDay {
    * were actually collected — nobody is assigned to a day up front.
    */
   contributors: DayContributor[]
+  /**
+   * Each store's position within its own collector's stops for this day, keyed
+   * by store id. Absent for a store nobody has worked or claimed, which stays
+   * unnumbered because it belongs to the shared pool. See lib/board-numbering.ts
+   * for why this deliberately differs from the trip map's numbering.
+   */
+  numbers: Map<string, WorkerStopNumber>
 }
 
 function dayKey(iso: string): string {
@@ -123,6 +186,16 @@ export function buildDays(visits: CollectionVisit[]): CollectionDay[] {
         .filter(s => s.status === 'pending')
         .reduce((sum, s) => sum + s.amount_due, 0),
       contributors: buildContributors(stores),
+      // Per day, never across days — a collector's count restarts each morning.
+      numbers: numberStopsByWorker(stores, {
+        id: s => s.id,
+        workedBy: s => s.collector_id,
+        workedByName: s => s.collector?.full_name ?? null,
+        claimedBy: s => s.claimed_by,
+        claimedByName: s => s.claimed_by_name,
+        // Collection's only ordering signal — there is no sequence column.
+        at: s => s.visited_at,
+      }),
     })
   }
 
@@ -233,7 +306,7 @@ function collectionStop(visit: CollectionVisit, sequence: number): TripStop {
     },
     {
       label: 'Method',
-      value: visit.payment_method ? PAYMENT_METHOD_LABEL[visit.payment_method] : '—',
+      value: paymentMethodLabel(visit.payment_method),
     },
   ]
   if (visit.remarks) details.push({ label: 'Remarks', value: visit.remarks })

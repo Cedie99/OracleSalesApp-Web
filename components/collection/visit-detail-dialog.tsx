@@ -10,7 +10,7 @@ import {
 import { visitProofs } from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
 import {
-  PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE, TONE_CLASS, TONE_TEXT,
+  PAYMENT_METHOD_TONE, TONE_CLASS, TONE_TEXT, paymentMethodLabel,
   VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
 import type { CollectionVisit } from '@/types'
@@ -55,7 +55,13 @@ function VisitDetail({
   onOpenPhoto: (photo: LightboxPhoto) => void
 }) {
   const proofs = visitProofs(visit)
-  const missing = visit.status === 'collected' ? proofs.filter(p => !p.url) : []
+  // Only captures this payment method actually asked for. Counter and
+  // delivery-receipt payments take no separate receipt photo (mobile,
+  // 2026-08-01), so counting every empty slot would send the admin chasing a
+  // collector for something their app never offered to take.
+  const missing = visit.status === 'collected'
+    ? proofs.filter(p => p.required && !p.url)
+    : []
   const shortfall =
     visit.status === 'collected' && visit.amount_collected !== null
       ? visit.amount_collected - visit.amount_due
@@ -74,7 +80,7 @@ function VisitDetail({
           </Badge>
           {visit.payment_method && (
             <Badge variant="tone" className={TONE_CLASS[PAYMENT_METHOD_TONE[visit.payment_method]]}>
-              {PAYMENT_METHOD_LABEL[visit.payment_method]}
+              {paymentMethodLabel(visit.payment_method)}
             </Badge>
           )}
         </div>
@@ -129,7 +135,9 @@ function VisitDetail({
           )}
         </div>
 
-        {/* Both are required before the phone accepts "✓ Collected". */}
+        {/* Which captures are required depends on the payment method — see
+            visitProofs. A capture that arrived but is no longer required (an
+            older Counter visit's receipt photo) is still shown. */}
         <div className="space-y-1.5">
           <p className="text-xs font-medium text-foreground">Proof captures</p>
           {missing.length > 0 && (
@@ -144,7 +152,8 @@ function VisitDetail({
                 key={proof.label}
                 label={proof.label}
                 url={proof.url}
-                missing={visit.status === 'collected'}
+                signature={proof.signature}
+                missing={visit.status === 'collected' && proof.required}
                 caption={captionFor(visit.collector?.full_name, visit.visited_at ?? visit.scheduled_for)}
                 onOpen={onOpenPhoto}
               />

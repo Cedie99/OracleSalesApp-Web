@@ -116,8 +116,17 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
     ) as Record<PaymentMethod, { count: number; amount: number }>
     for (const visit of visits) {
       if (!visit.payment_method) continue
-      counts[visit.payment_method].count += 1
-      counts[visit.payment_method].amount += visit.amount_collected ?? 0
+      // Guarded, not indexed directly: the database is shared with mobile, which
+      // can ship a payment method before web widens PaymentMethod — exactly how
+      // 'delivery_receipt' arrived on 2026-08-01. Indexing a Record keyed off
+      // our union then crashed the whole dashboard on one unknown string, the
+      // same failure an `executive` role once caused on the Users page. An
+      // unrecognised method is now simply left out of this breakdown until
+      // someone adds it, which is a gap rather than an outage.
+      const bucket = counts[visit.payment_method]
+      if (!bucket) continue
+      bucket.count += 1
+      bucket.amount += visit.amount_collected ?? 0
     }
     return counts
   }, [visits])
