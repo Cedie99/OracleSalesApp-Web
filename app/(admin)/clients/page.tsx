@@ -300,6 +300,10 @@ export default function ClientsPage() {
               className="pl-9 bg-card border-border h-9"
             />
           </div>
+          <Button variant="outline" size="sm" className="h-9 gap-2" onClick={refresh} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
           <Select value={typeFilter} onValueChange={v => setTypeFilter(v ?? 'all')}>
             <SelectTrigger className="w-36 h-9 bg-card border-border">
               <SelectValue placeholder="Customer Type" />
@@ -335,14 +339,11 @@ export default function ClientsPage() {
               <SelectItem value="lost">Lost</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" className="h-9 gap-2" onClick={refresh} disabled={loading}>
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-          <Button onClick={openCreate} size="sm" className="h-9 gap-2">
+          {/* Hidden for now, will bring back later */}
+          {/* <Button onClick={openCreate} size="sm" className="h-9 gap-2">
             <Plus className="w-4 h-4" />
             New Client
-          </Button>
+          </Button> */}
         </div>
 
         {!selectedGroup ? (
