@@ -25,6 +25,11 @@
 -- current_profile_id() (migration 029, already live).
 -- ============================================================================
 
+-- Idempotent per the 2026-07-29 standing convention (Migration-052-Report):
+-- CI must be able to re-run this file safely. drop-then-create is the only
+-- idempotent shape for a policy, since Postgres has no CREATE OR REPLACE
+-- POLICY.
+drop policy if exists "Agents read own client cycles" on public.client_cycles;
 create policy "Agents read own client cycles" on public.client_cycles
   for select using (owner_id = public.current_profile_id());
 
