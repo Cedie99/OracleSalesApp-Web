@@ -1,5 +1,6 @@
 import type { Client, ClientStatus, CustomerType, Meeting, MeetingOutcome } from '@/types'
 import { CUSTOMER_TYPE_LABEL } from '@/lib/status-styles'
+import type { QuotaState } from '@/lib/cutoff'
 
 /**
  * The map's status vocabulary is deliberately one narrower than CustomerType:
@@ -68,6 +69,22 @@ export const OUTCOME_META: Record<MeetingOutcome, { label: string; color: string
   follow_up: { label: 'Follow-up', color: '#60a5fa' },
   no_decision: { label: 'No Decision', color: '#94a3b8' },
   lost_opportunity: { label: 'Lost', color: '#f87171' },
+}
+
+/**
+ * Colours for the "visit quota" lens — how heavily an account has been worked
+ * this cutoff, rather than what it is or how the visit went. A third palette
+ * for the same reason OUTCOME_META is a second one: only ever shown alone.
+ *
+ * Ordered best-to-worst so the legend reads as a scale. 'exempt' sits last and
+ * borrows the prospect purple, because in practice that IS the prospect bucket
+ * — uncapped is a property of the lifecycle stage, not a quota outcome.
+ */
+export const QUOTA_META: Record<QuotaState, { label: string; color: string }> = {
+  under: { label: 'Within limit', color: '#34d399' },
+  at: { label: 'At limit', color: '#fbbf24' },
+  over: { label: 'Over limit', color: '#f87171' },
+  exempt: { label: 'Uncapped', color: '#c084fc' },
 }
 
 /**

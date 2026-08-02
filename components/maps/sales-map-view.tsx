@@ -20,16 +20,19 @@ import {
   mapStatusMeta,
   parseLatLng,
   OUTCOME_META,
+  QUOTA_META,
   STATUS_META,
   TILE_LAYERS,
   type MapStatus,
   type MapTileType,
 } from '@/components/maps/map-constants'
+import { isWithinPeriod, quotaState, shiftPeriod, visitCapFor, type QuotaState } from '@/lib/cutoff'
+import { useQuotaConfig } from '@/lib/hooks/use-quota-config'
 import type { MapPin, FocusTarget, HighlightMarker } from '@/components/maps/field-map'
 import type { Client, Meeting, MeetingOutcome } from '@/types'
 import {
   Search, Building2, Phone, User, History, ShieldCheck, MapPin as MapPinIcon, Layers,
-  LockOpen, ChevronDown, Check, Info, PanelLeftClose,
+  LockOpen, ChevronDown, ChevronLeft, ChevronRight, CalendarDays, Check, Info, PanelLeftClose,
   PanelLeftOpen, X, Crosshair, Video, Navigation,
 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -54,9 +57,25 @@ const OUTCOME_LABEL: Record<string, string> = {
 
 const STATUS_KEYS = Object.keys(STATUS_META) as MapStatus[]
 const OUTCOME_KEYS = Object.keys(OUTCOME_META) as MeetingOutcome[]
+const QUOTA_KEYS = Object.keys(QUOTA_META) as QuotaState[]
 const TILE_KEYS = Object.keys(TILE_LAYERS) as MapTileType[]
 
 type TypeFilter = 'all' | 'f2f' | 'online'
+
+/** Worst first — the quota list exists to surface violations, not to be alphabetical. */
+const QUOTA_RANK: Record<QuotaState, number> = { over: 0, at: 1, under: 2, exempt: 3 }
+
+/** A client measured against its per-cutoff visit ceiling. */
+interface QuotaRow {
+  client: Client
+  /** Visits inside the CUTOFF period — not inside the toolbar date range. */
+  visits: number
+  /** Null for prospects, which are deliberately uncapped. */
+  cap: number | null
+  state: QuotaState
+  /** Most recent locatable visit this cutoff, so the lens still has pins. */
+  plotMeeting: Meeting | null
+}
 
 /** How a meeting's location reads in the list / detail. */
 function meetingWhere(m: Meeting): string {
@@ -83,7 +102,17 @@ interface SalesMapViewProps {
  * day is a set of appointments, not a published run worked in order, so joining
  * one agent's meetings into a line would assert a route nobody drove. The
  * question here is "when was this account last seen, and by whom" — which is why
- * the list partitions into visited / not-visited rather than into routes.
+ * the list partitions by coverage rather than into routes.
+ *
+ * The second lens used to be "Not visited", which partitioned against the
+ * toolbar date range. That range defaults to a single day, so it really meant
+ * "had no meeting today" — i.e. almost every client in the database, listed
+ * alphabetically, every day, with nothing actionable in it and a blank map
+ * beside it. It is now a VISIT QUOTA lens instead: the rule agreed with the
+ * supervisor on 2026-08-02 caps new and existing accounts at 2 visits per
+ * cutoff (prospects uncapped), so the useful question is which accounts are
+ * being over-worked, which is a short list. A client at zero still appears, so
+ * genuine neglect is not hidden — it just no longer drowns the page.
  */
 export function SalesMapView({ headerAction }: SalesMapViewProps) {
   const [search, setSearch] = useState('')
@@ -93,7 +122,17 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
   const dateFilter = useDateRangeFilter({ defaultPreset: 'day' })
   const [teamFilter, setTeamFilter] = useState<'all' | string>('all')
   const [colorBy, setColorBy] = useState<'status' | 'outcome'>('status')
-  const [listMode, setListMode] = useState<'visited' | 'unvisited'>('visited')
+  const [listMode, setListMode] = useState<'visited' | 'quota'>('visited')
+  /**
+   * How many cutoff periods back the quota lens is looking. 0 is the current
+   * period; negative steps into the past. Never positive — there is nothing to
+   * review in a period that hasn't happened.
+   *
+   * Separate from `dateFilter` on purpose. The toolbar filter measures days and
+   * drives the Visited lens; this measures cutoffs. Sharing one control between
+   * them is what the stepper swap below is for.
+   */
+  const [cutoffOffset, setCutoffOffset] = useState(0)
 
   const [mapType, setMapType] = useState<MapTileType>('satellite')
   const [mapTypeMenuOpen, setMapTypeMenuOpen] = useState(false)
@@ -108,6 +147,30 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
   const { clients } = useClients()
   const { meetings } = useMeetings()
   const { teams } = useTeams()
+  // Cutoff boundaries and the visit cap are admin-configured, never hardcoded
+  // (team decision, 2026-08-02). `period` is null when no cutoff has been set,
+  // and that must disable the lens rather than fall back to a guessed
+  // 1-15/16-EOM — see the note on CutoffCalendar in types/index.ts.
+  const { calendar, policies, period: currentPeriod, isConfigured } = useQuotaConfig()
+
+  // An admin can clear the calendar while the quota lens is open. Snap back
+  // during render rather than in an effect, matching the filterKey reset below,
+  // so the panel never paints a frame of a lens with no data behind it.
+  const effectiveListMode = isConfigured ? listMode : 'visited'
+  if (effectiveListMode !== listMode) setListMode(effectiveListMode)
+
+  // The period the quota lens is actually showing — `currentPeriod` stepped back
+  // `cutoffOffset` times. Walked one period at a time rather than computed
+  // directly because anchor spacing is uneven (Aug 1–15 is 15 days, Aug 16–31 is
+  // 16), so there is no single interval to multiply.
+  const period = useMemo(() => {
+    if (!calendar || !currentPeriod) return null
+    let result: ReturnType<typeof shiftPeriod> = currentPeriod
+    for (let i = 0; i < -cutoffOffset && result; i++) {
+      result = shiftPeriod(result, calendar, -1)
+    }
+    return result
+  }, [calendar, currentPeriod, cutoffOffset])
 
   useEffect(() => {
     if (!mapTypeMenuOpen) return
@@ -136,6 +199,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
   // changing which clients are listed, so there's nothing stale to close.
   const filterKey = [
     statusFilter, teamFilter, agentFilter, typeFilter, dateFilter.key, listMode,
+    cutoffOffset,
   ].join('|')
   const [lastFilterKey, setLastFilterKey] = useState(filterKey)
   if (lastFilterKey !== filterKey) {
@@ -196,8 +260,14 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
     }
   }
 
-  // --- Partition the filtered clients into visited / not-visited for the range -
-  const { visited, unvisited } = useMemo(() => {
+  // --- Filtered clients, as visits-in-range and as quota-against-cutoff -------
+  //
+  // Two different windows on purpose. `visited` answers "what happened during
+  // the dates I'm looking at" and follows the toolbar. `quota` answers "how far
+  // through its allowance is this account" and follows the CUTOFF PERIOD, which
+  // the toolbar must not influence — stepping the date filter to yesterday
+  // would otherwise report every client at 0 of 2.
+  const { visited, quota } = useMemo(() => {
     const q = coord ? '' : search.toLowerCase().trim()
     const vis: {
       client: Client
@@ -205,7 +275,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
       plotMeeting: Meeting | null
       lastVisit: string
     }[] = []
-    const unvis: { client: Client; lastEver: string | null }[] = []
+    const quotaRows: QuotaRow[] = []
 
     for (const client of clients) {
       // Client-level filters apply to both buckets.
@@ -222,6 +292,24 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
       }
 
       const all = meetingsByClient.get(client.id) ?? []
+
+      // Quota: every filtered client gets a row, including those with no visit
+      // this cutoff — a 0-of-2 account is real information, it just isn't
+      // urgent, so it sorts to the bottom instead of getting its own tab.
+      // The meeting-type tabs deliberately do NOT apply: the cap counts visits,
+      // and an online meeting is a visit.
+      if (period) {
+        const thisCutoff = all.filter(m => isWithinPeriod(m.meeting_date, period))
+        const cap = visitCapFor(client.customer_type, policies)
+        quotaRows.push({
+          client,
+          visits: thisCutoff.length,
+          cap,
+          state: quotaState(thisCutoff.length, cap),
+          plotMeeting: thisCutoff.find(isPlottableMeeting) ?? null,
+        })
+      }
+
       const inRange = all.filter(m => {
         if (typeFilter !== 'all' && m.meeting_type !== typeFilter) return false
         if (!range) return true
@@ -229,11 +317,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
         return t >= range.start.getTime() && t <= range.end.getTime()
       })
 
-      if (inRange.length === 0) {
-        // Neglected in this window — carry the most recent visit ever for context.
-        unvis.push({ client, lastEver: all[0]?.meeting_date ?? null })
-        continue
-      }
+      if (inRange.length === 0) continue
 
       // Pin sits at the most recent plottable f2f visit in range.
       const plotMeeting = inRange.find(isPlottableMeeting) ?? null
@@ -241,32 +325,64 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
     }
 
     vis.sort((a, b) => new Date(b.lastVisit).getTime() - new Date(a.lastVisit).getTime())
-    unvis.sort((a, b) => a.client.company_name.localeCompare(b.client.company_name))
-    return { visited: vis, unvisited: unvis }
-  }, [clients, meetingsByClient, teamFilter, statusFilter, agentFilter, typeFilter, range, search, coord])
+    quotaRows.sort(
+      (a, b) =>
+        QUOTA_RANK[a.state] - QUOTA_RANK[b.state] ||
+        b.visits - a.visits ||
+        a.client.company_name.localeCompare(b.client.company_name)
+    )
+    return { visited: vis, quota: quotaRows }
+  }, [
+    clients, meetingsByClient, teamFilter, statusFilter, agentFilter, typeFilter,
+    range, search, coord, period, policies,
+  ])
 
-  const pins = useMemo<MapPin[]>(
-    () =>
-      // Not-visited accounts have no in-range location, so the map clears.
-      listMode === 'unvisited'
-        ? []
-        : visited
-            .filter(v => v.plotMeeting)
-            .map(v => ({
-              id: v.client.id,
-              lat: v.plotMeeting!.gps_lat!,
-              lng: v.plotMeeting!.gps_lng!,
-              color:
-                colorBy === 'outcome'
-                  ? OUTCOME_META[v.plotMeeting!.outcome].color
-                  : mapStatusMeta(v.client).color,
-              active: v.client.id === selectedId,
-              label: v.client.company_name,
-              sublabel: `${meetingWhere(v.plotMeeting!)} · ${format(new Date(v.plotMeeting!.meeting_date), 'MMM d')}`,
-              avatarUrl: v.client.agent?.avatar_url,
-            })),
-    [visited, selectedId, colorBy, listMode]
-  )
+  /** Over/at-limit tallies for the tab and the legend header. */
+  const quotaCounts = useMemo(() => {
+    const acc = Object.fromEntries(QUOTA_KEYS.map(k => [k, 0])) as Record<QuotaState, number>
+    for (const row of quota) acc[row.state] += 1
+    return acc
+  }, [quota])
+
+  const pins = useMemo<MapPin[]>(() => {
+    // The quota lens keeps its pins, unlike the not-visited lens it replaced —
+    // an over-worked account has visits this cutoff, so it has a location, and
+    // seeing WHERE over-visiting clusters is most of the value. Clients with no
+    // visit this cutoff simply have nothing to plot and stay list-only.
+    if (listMode === 'quota') {
+      return quota
+        .filter(r => r.plotMeeting)
+        .map(r => ({
+          id: r.client.id,
+          lat: r.plotMeeting!.gps_lat!,
+          lng: r.plotMeeting!.gps_lng!,
+          color: QUOTA_META[r.state].color,
+          active: r.client.id === selectedId,
+          label: r.client.company_name,
+          sublabel:
+            r.cap == null
+              ? `${r.visits} ${r.visits === 1 ? 'visit' : 'visits'} · uncapped`
+              : `${r.visits} of ${r.cap} this cutoff`,
+          avatarUrl: r.client.agent?.avatar_url,
+        }))
+    }
+
+    return visited
+      .filter(v => v.plotMeeting)
+      .map(v => ({
+        id: v.client.id,
+        lat: v.plotMeeting!.gps_lat!,
+        lng: v.plotMeeting!.gps_lng!,
+        color:
+          colorBy === 'outcome'
+            ? OUTCOME_META[v.plotMeeting!.outcome].color
+            : mapStatusMeta(v.client).color,
+        active: v.client.id === selectedId,
+        label: v.client.company_name,
+        sublabel: `${meetingWhere(v.plotMeeting!)} · ${format(new Date(v.plotMeeting!.meeting_date), 'MMM d')}`,
+        avatarUrl: v.client.agent?.avatar_url,
+      }))
+  }, [visited, quota, selectedId, colorBy, listMode])
 
   // Built from STATUS_KEYS, not a literal, so adding a lifecycle stage to
   // STATUS_META can't leave a legend row counting `undefined + 1` (NaN). A
@@ -310,13 +426,18 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
 
   function selectClient(id: string) {
     setSelectedId(id)
-    const row = visited.find(v => v.client.id === id)
-    if (row?.plotMeeting) {
+    // Each lens pins a different meeting — the latest in the date range vs the
+    // latest this cutoff — so fly to whichever one the visible list is showing.
+    const plotMeeting =
+      listMode === 'quota'
+        ? quota.find(r => r.client.id === id)?.plotMeeting
+        : visited.find(v => v.client.id === id)?.plotMeeting
+    if (plotMeeting) {
       focusNonce.current += 1
       setHighlight(null)
       setFocus({
-        lat: row.plotMeeting.gps_lat!,
-        lng: row.plotMeeting.gps_lng!,
+        lat: plotMeeting.gps_lat!,
+        lng: plotMeeting.gps_lng!,
         zoom: 15,
         nonce: focusNonce.current,
       })
@@ -344,7 +465,14 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
     <>
       <Header
         title="Meetings Map"
-        subtitle={`${rangeLabel} · ${visited.length} ${visited.length === 1 ? 'client' : 'clients'} visited · ${mappedCount} mapped · ${unlocatedCount} no location`}
+        // Each lens describes its own window — the visited counts say nothing
+        // about a cutoff, and quoting them under the quota list read as if the
+        // date filter were still driving it.
+        subtitle={
+          listMode === 'quota'
+            ? `Cutoff ${period?.label ?? '—'} · ${quota.length} ${quota.length === 1 ? 'client' : 'clients'} · ${quotaCounts.over} over limit · ${quotaCounts.at} at limit`
+            : `${rangeLabel} · ${visited.length} ${visited.length === 1 ? 'client' : 'clients'} visited · ${mappedCount} mapped · ${unlocatedCount} no location`
+        }
         action={headerAction}
       />
 
@@ -417,21 +545,63 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
           </SelectContent>
         </Select>
 
-        {/* Date window: per-day stepper by default, with wider presets. */}
-        <DateRangeFilter filter={dateFilter} />
+        {/* The window control belongs to whichever lens is showing.
 
-        {/* Meeting-type tabs — strong active indicator. */}
-        <Tabs value={typeFilter} onValueChange={v => setTypeFilter(v as TypeFilter)}>
-          <TabsList className="h-9">
-            <TabsTrigger value="all" className="px-3">All</TabsTrigger>
-            <TabsTrigger value="f2f" className="px-3">
-              <Navigation className="w-3.5 h-3.5" /> F2F
-            </TabsTrigger>
-            <TabsTrigger value="online" className="px-3">
-              <Video className="w-3.5 h-3.5" /> Online
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+            Visited measures DAYS, so it gets the day stepper and its presets.
+            Quota measures CUTOFFS, so the same slot becomes a cutoff stepper —
+            step back one and you are looking at last period's over-limit
+            accounts, which is the review a supervisor actually does at payroll
+            time. Leaving the day filter visible there would be a control that
+            changes nothing in the list in front of you.
+
+            The meeting-type tabs go with it, for a different reason: the cap
+            counts VISITS, and an online meeting is a visit. Filtering to F2F
+            would report 1/2 for a client that has genuinely used both slots, so
+            the tabs are withheld rather than allowed to lie. */}
+        {listMode === 'quota' ? (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setCutoffOffset(o => o - 1)}
+              className="h-9 w-8 grid place-items-center rounded-md border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              aria-label="Previous cutoff"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <div className="h-9 flex items-center gap-1.5 px-3 rounded-md border border-border bg-card min-w-[9rem]">
+              <CalendarDays className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <span className="text-sm font-medium text-foreground">{period?.label}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCutoffOffset(o => Math.min(0, o + 1))}
+              // Nothing to review in a cutoff that hasn't happened yet.
+              disabled={cutoffOffset >= 0}
+              className="h-9 w-8 grid place-items-center rounded-md border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+              aria-label="Next cutoff"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Date window: per-day stepper by default, with wider presets. */}
+            <DateRangeFilter filter={dateFilter} />
+
+            {/* Meeting-type tabs — strong active indicator. */}
+            <Tabs value={typeFilter} onValueChange={v => setTypeFilter(v as TypeFilter)}>
+              <TabsList className="h-9">
+                <TabsTrigger value="all" className="px-3">All</TabsTrigger>
+                <TabsTrigger value="f2f" className="px-3">
+                  <Navigation className="w-3.5 h-3.5" /> F2F
+                </TabsTrigger>
+                <TabsTrigger value="online" className="px-3">
+                  <Video className="w-3.5 h-3.5" /> Online
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </>
+        )}
       </div>
 
       <div className="flex-1 flex min-h-0">
@@ -439,14 +609,22 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
         {listOpen ? (
           <div className="w-80 shrink-0 border-r border-border flex flex-col min-h-0">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
-              <Tabs value={listMode} onValueChange={v => setListMode(v as 'visited' | 'unvisited')} className="flex-1">
+              <Tabs value={listMode} onValueChange={v => setListMode(v as 'visited' | 'quota')} className="flex-1">
                 <TabsList className="h-8 w-full">
                   <TabsTrigger value="visited" className="px-2 text-xs">
                     Visited <span className="ml-1 opacity-60">{visited.length}</span>
                   </TabsTrigger>
-                  <TabsTrigger value="unvisited" className="px-2 text-xs">
-                    Not visited <span className="ml-1 opacity-60">{unvisited.length}</span>
-                  </TabsTrigger>
+                  {/* No cutoff configured means no quota to show. Hiding the tab
+                      beats showing an empty one — there is nothing an admin can
+                      do about it from here, and the fix lives in Settings. */}
+                  {isConfigured && (
+                    <TabsTrigger value="quota" className="px-2 text-xs">
+                      Quota
+                      <span className="ml-1 opacity-60">
+                        {quotaCounts.over + quotaCounts.at}/{quota.length}
+                      </span>
+                    </TabsTrigger>
+                  )}
                 </TabsList>
               </Tabs>
               <button
@@ -526,8 +704,26 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                 </>
               ) : (
                 <>
-                  {unvisited.map(({ client, lastEver }) => {
-                    const status = mapStatusMeta(client)
+                  {/* Names the window and tallies it, so every fraction below has
+                      a stated denominator. Sticky because the list is sorted
+                      worst-first and the counts are the summary of what follows. */}
+                  <div className="sticky top-0 z-10 px-4 py-2.5 bg-card border-b border-border">
+                    <p className="text-[11px] font-medium text-foreground">Cutoff {period?.label}</p>
+                    <div className="flex items-center gap-2.5 mt-1 text-[10px] text-muted-foreground">
+                      {(['over', 'at', 'under'] as const).map(key => (
+                        <span key={key} className="flex items-center gap-1">
+                          <span
+                            className="w-1.5 h-1.5 rounded-full shrink-0"
+                            style={{ background: QUOTA_META[key].color }}
+                          />
+                          {quotaCounts[key]} {key === 'under' ? 'within' : key}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {quota.map(({ client, visits, cap, state }) => {
+                    const meta = QUOTA_META[state]
                     const active = client.id === selectedId
                     return (
                       <button
@@ -538,11 +734,16 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                         <div className="flex items-center gap-2">
                           <span
                             className="w-2 h-2 rounded-full shrink-0"
-                            style={{ background: status.color }}
+                            style={{ background: meta.color }}
                           />
                           <p className="text-sm font-medium text-foreground truncate flex-1">{client.company_name}</p>
-                          <span className="text-[10px] text-muted-foreground shrink-0">
-                            {lastEver ? `Last ${format(new Date(lastEver), 'MMM d')}` : 'Never'}
+                          {/* Uncapped accounts show a bare count — a denominator
+                              would imply a ceiling that deliberately isn't there. */}
+                          <span
+                            className="text-[11px] font-semibold shrink-0 tabular-nums"
+                            style={{ color: state === 'under' || state === 'exempt' ? undefined : meta.color }}
+                          >
+                            {cap == null ? visits : `${visits}/${cap}`}
                           </span>
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">
@@ -560,16 +761,20 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                           <p className="text-[11px] text-muted-foreground truncate">
                             {client.agent?.full_name ?? 'Unassigned'}
                           </p>
-                          <Badge variant="outline" className="ml-auto text-[9px] px-1 h-3.5 text-muted-foreground shrink-0">
-                            {lastEver ? 'No recent visit' : 'Never visited'}
+                          <Badge
+                            variant="outline"
+                            className="ml-auto text-[9px] px-1 h-3.5 shrink-0"
+                            style={{ borderColor: `${meta.color}55`, color: meta.color }}
+                          >
+                            {meta.label}
                           </Badge>
                         </div>
                       </button>
                     )
                   })}
-                  {unvisited.length === 0 && (
+                  {quota.length === 0 && (
                     <div className="text-center py-12 text-muted-foreground text-sm px-6">
-                      No neglected accounts for {rangeLabel.toLowerCase()} — everyone in view was visited.
+                      No clients match these filters.
                     </div>
                   )}
                 </>
@@ -585,7 +790,9 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
           >
             <PanelLeftOpen className="w-4 h-4" />
             <span className="text-[10px] font-semibold [writing-mode:vertical-rl]">
-              {listMode === 'visited' ? `${visited.length} visited` : `${unvisited.length} not visited`}
+              {listMode === 'visited'
+                ? `${visited.length} visited`
+                : `${quotaCounts.over + quotaCounts.at} at/over limit`}
             </span>
           </button>
         )}
@@ -609,10 +816,10 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
               <CardContent className="p-3 flex items-start gap-2.5">
                 <Info className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
                 <div className="text-xs text-muted-foreground leading-relaxed">
-                  {listMode === 'unvisited' ? (
+                  {listMode === 'quota' ? (
                     <>
-                      <p className="font-medium text-foreground mb-0.5">Not-visited accounts</p>
-                      These clients have no visit recorded for {rangeLabel.toLowerCase()}, so there&apos;s nothing to plot — they&apos;re listed on the left.
+                      <p className="font-medium text-foreground mb-0.5">Nothing located this cutoff</p>
+                      No visit in {period?.label} carries coordinates, so there are no pins to place. Every account is still counted in the list on the left.
                     </>
                   ) : visited.length === 0 ? (
                     <>
@@ -630,9 +837,31 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
             </Card>
           )}
 
-          {/* Legend — top-left, clear of the detail overlay on the right. Hidden
-              in the not-visited lens, which has no pins to describe. */}
-          {listMode === 'visited' && (
+          {/* Legend — top-left, clear of the detail overlay on the right. */}
+          {listMode === 'quota' ? (
+            /* The quota lens colours pins by how far through the cap an account
+               is, so it carries its own legend and no colour-by toggle — status
+               and outcome would be a second colour vocabulary on the same pins. */
+            <Card className="absolute top-4 left-4 w-48 bg-card/95 border-border backdrop-blur-sm z-10 pt-0 gap-0">
+              <CardContent className="p-3 space-y-1.5">
+                <p className="text-[10px] font-semibold text-foreground mb-2">
+                  Visits · {period?.label}
+                </p>
+                {QUOTA_KEYS.map(key => (
+                  <div key={key} className="flex items-center gap-2">
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                      style={{ background: QUOTA_META[key].color }}
+                    />
+                    <span className="text-xs text-muted-foreground">{QUOTA_META[key].label}</span>
+                    <span className="text-xs text-foreground ml-auto font-medium pl-4">
+                      {quotaCounts[key]}
+                    </span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          ) : (
             <Card className="absolute top-4 left-4 w-48 bg-card/95 border-border backdrop-blur-sm z-10 pt-0 gap-0">
               <CardContent className="p-3 space-y-1.5">
                 {/* Colour-by toggle: what kind of client vs. how the visit went. */}

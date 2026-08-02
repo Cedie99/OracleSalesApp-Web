@@ -557,3 +557,62 @@ export interface ClockRecord {
   created_at: string
   agent?: Profile
 }
+
+// --- Quota configuration ----------------------------------------------------
+//
+// ⚠️ NEITHER TABLE BELOW EXISTS YET, and web must not create them. `quota_policy`
+// was created by mobile (migration 028, hand-applied 2026-07-26) and mobile owns
+// changes to it; `cutoff_calendar` is still unbuilt. These interfaces are the
+// agreed SHAPE, so the web UI can be built against it now and wired up when the
+// migration lands from the mobile side. Until then the values come from
+// lib/quota-config.ts, not from Supabase.
+
+/**
+ * Admin-editable cutoff boundaries, replacing the semi-monthly constant that
+ * was never actually written down. Corresponds to the vault's Batch 0 open
+ * item 1, deferred since 2026-07-25 and settled by the team 2026-08-02.
+ *
+ * Periods are DERIVED from `anchor_days` rather than stored — see lib/cutoff.ts.
+ * There may be no calendar at all, and that is a valid state meaning "the cutoff
+ * is not configured yet": consumers must hide quota UI rather than assume
+ * 1-15/16-EOM, per the register's rule that nothing may enforce a cutoff date
+ * until an admin sets one.
+ */
+export interface CutoffCalendar {
+  id: string
+  name: string
+  /** Days of the month a period starts on, e.g. [1, 16]. Ascending, distinct, 1-28. */
+  anchor_days: number[]
+  timezone: string
+  effective_from: string
+  effective_until: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * A quota rule from `quota_policy` (mobile's migration 028), plus the
+ * `client_visit_cap` extension agreed 2026-08-02 and not yet migrated.
+ *
+ * Two unrelated questions share this table, discriminated by `policy_kind`:
+ *  - `daily_visit_target` / `cutoff_target` — per-AGENT throughput, scoped by
+ *    `role` (the RSR daily target, the Sales per-cutoff target). Unchanged.
+ *  - `client_visit_cap` — a per-CLIENT ceiling, scoped by `applies_to`
+ *    customer types instead. `role` is null on these rows because the cap is a
+ *    property of the account, not of who is visiting it.
+ */
+export type QuotaPolicyKind = 'daily_visit_target' | 'cutoff_target' | 'client_visit_cap'
+
+export interface QuotaPolicy {
+  id: string
+  role: UserRole | null
+  policy_kind: QuotaPolicyKind
+  target_value: number
+  /** Customer types this rule binds. Null for the per-agent rows. */
+  applies_to: CustomerType[] | null
+  timezone: string
+  effective_from: string
+  effective_until: string | null
+  is_active: boolean
+}
