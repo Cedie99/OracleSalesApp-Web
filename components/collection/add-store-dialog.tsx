@@ -81,6 +81,12 @@ export function AddStoreDialog({
   function handleAdd() {
     if (!clientId) return setError('Pick the store to collect from.')
     if (!scheduledFor) return setError('Set the collection day.')
+    // The real guard. `min` on the input is a browser hint only — it is trivially
+    // bypassed by typing, and a store published into a past day is invisible to
+    // the collectors' phones, so it would be born as "not worked".
+    if (scheduledFor < today()) {
+      return setError('That collection day has already passed. Pick today or a later day.')
+    }
 
     const amount = Number(amountDue)
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -131,8 +137,19 @@ export function AddStoreDialog({
                 id="add-day"
                 type="date"
                 value={scheduledFor}
+                // Today is the floor. A store published into a past day is
+                // invisible to the collectors' phones, which work today's list,
+                // so it would be born as "not worked". The day cards disable
+                // their own Add button for the same reason — this closes the
+                // other route in, where the admin types a date by hand.
+                min={today()}
                 onChange={e => setScheduledFor(e.target.value)}
               />
+              {scheduledFor && scheduledFor < today() && (
+                <p className="text-[11px] text-destructive">
+                  That day has already passed. Pick today or a later day.
+                </p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="add-due">Amount due</Label>

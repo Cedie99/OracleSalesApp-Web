@@ -27,6 +27,13 @@ function dayLabel(day: Date): string {
   return format(day, 'EEE, MMM d')
 }
 
+/** True for a collection day earlier than today. Today itself is still open. */
+function isPastDay(day: Date): boolean {
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+  return day.getTime() < startOfToday.getTime()
+}
+
 function initials(name: string): string {
   return name.split(' ').map(p => p[0]).slice(0, 2).join('').toUpperCase()
 }
@@ -203,7 +210,24 @@ export function ListBoard({
                 })}
               </div>
 
-              <Button variant="outline" size="sm" className="w-full" onClick={() => onAddStore(day)}>
+              {/* A day that has already passed cannot be added to. Publishing
+                  into it would put a store on a list no collector will ever see
+                  again — the phone works today's list — so it would land as
+                  "not worked" the moment it was created. Today and future days
+                  stay open: publishing tomorrow's list ahead of time is normal,
+                  which is why the card even has a "Tomorrow" label. */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
+                disabled={isPastDay(day.day)}
+                title={
+                  isPastDay(day.day)
+                    ? 'This day has passed — add the store to today or a later day instead'
+                    : undefined
+                }
+                onClick={() => onAddStore(day)}
+              >
                 <Plus /> Add store
               </Button>
             </CardContent>
