@@ -27,6 +27,13 @@ function dayLabel(day: Date): string {
   return format(day, 'EEE, MMM d')
 }
 
+/** True for a collection day earlier than today. Today itself is still open. */
+function isPastDay(day: Date): boolean {
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+  return day.getTime() < startOfToday.getTime()
+}
+
 function initials(name: string): string {
   return name.split(' ').map(p => p[0]).slice(0, 2).join('').toUpperCase()
 }
@@ -203,9 +210,25 @@ export function ListBoard({
                 })}
               </div>
 
-              <Button variant="outline" size="sm" className="w-full" onClick={() => onAddStore(day)}>
-                <Plus /> Add store
-              </Button>
+              {/* Gone entirely on a past day, not disabled. Publishing into a
+                  day that has already gone would put a store on a list no
+                  collector will ever see again — the phone works today's list —
+                  so it would land as "not worked" the moment it was created.
+                  A greyed-out button still reads as "possible, just not yet",
+                  which is the wrong idea: that day is closed and will not
+                  reopen. Today and future days keep the button, since
+                  publishing tomorrow's list ahead of time is normal — the card
+                  even has a "Tomorrow" label. */}
+              {!isPastDay(day.day) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => onAddStore(day)}
+                >
+                  <Plus /> Add store
+                </Button>
+              )}
             </CardContent>
           </Card>
         )
