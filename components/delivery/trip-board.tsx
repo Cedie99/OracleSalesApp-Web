@@ -218,23 +218,19 @@ export function TripBoard({
                 </p>
               )}
 
-              {/* A day that has already passed cannot be added to — see the
-                  twin note on ListBoard. Today and future days stay open, since
-                  publishing tomorrow's trip list ahead of time is normal. */}
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full"
-                disabled={isPastDay(list.day)}
-                title={
-                  isPastDay(list.day)
-                    ? 'This day has passed — add the PO to today or a later day instead'
-                    : undefined
-                }
-                onClick={() => onAddPo(list)}
-              >
-                <Plus /> Add PO
-              </Button>
+              {/* Gone entirely on a past day, not disabled — see the twin note
+                  on ListBoard. Today and future days keep it, since publishing
+                  tomorrow's trip list ahead of time is normal. */}
+              {!isPastDay(list.day) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => onAddPo(list)}
+                >
+                  <Plus /> Add PO
+                </Button>
+              )}
             </CardContent>
           </Card>
         )
