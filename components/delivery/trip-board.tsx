@@ -27,6 +27,13 @@ function dayLabel(day: Date): string {
   return format(day, 'EEE, MMM d')
 }
 
+/** True for a delivery day earlier than today. Today itself is still open. */
+function isPastDay(day: Date): boolean {
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+  return day.getTime() < startOfToday.getTime()
+}
+
 function initials(name: string): string {
   return name.split(' ').map(p => p[0]).slice(0, 2).join('').toUpperCase()
 }
@@ -211,9 +218,19 @@ export function TripBoard({
                 </p>
               )}
 
-              <Button variant="outline" size="sm" className="w-full" onClick={() => onAddPo(list)}>
-                <Plus /> Add PO
-              </Button>
+              {/* Gone entirely on a past day, not disabled — see the twin note
+                  on ListBoard. Today and future days keep it, since publishing
+                  tomorrow's trip list ahead of time is normal. */}
+              {!isPastDay(list.day) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => onAddPo(list)}
+                >
+                  <Plus /> Add PO
+                </Button>
+              )}
             </CardContent>
           </Card>
         )
