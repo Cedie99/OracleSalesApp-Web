@@ -335,6 +335,210 @@ export function quotaState(usage: Pick<ClientQuotaUsage, 'used' | 'overCap' | 'u
   return 'under'
 }
 
+// --- Reporting buckets -------------------------------------------------------
+//
+// ADR-053 O-5 requires admin reporting to show meetings as distinguishable
+// buckets rather than a binary counted/not-counted, and names five: Counted,
+// Pending, Over-cap, Invalid, Unattributed.
+//
+// Six are reported here, because the schema carries six and five of them would
+// not add up. `excluded_uncapped` — a meeting on a prospect or in-progress
+// client — is absent from the ADR's list but is a real, valid, common outcome:
+// it consumes no client slot yet still counts toward the agent's period target
+// (O-3). Folding it into "Counted" would overstate slot usage, and dropping it
+// would lose meetings between the total and the buckets. It gets its own row.
+
+/** Display names for the ledger's attribution values, worst news first. */
+export const ATTRIBUTION_LABEL: Record<CutoffAttribution, string> = {
+  counted: 'Counted',
+  over_cap: 'Over cap',
+  pending_validity: 'Pending confirmation',
+  excluded_uncapped: 'Uncapped stage',
+  excluded_invalid: 'Invalid',
+  unattributed: 'Unattributed',
+}
+
+/** Bucket display order: what was earned, then what was refused, then noise. */
+export const ATTRIBUTION_ORDER: CutoffAttribution[] = [
+  'counted',
+  'excluded_uncapped',
+  'pending_validity',
+  'over_cap',
+  'excluded_invalid',
+  'unattributed',
+]
+
+/**
+ * How many meetings landed in each bucket for one period.
+ *
+ * Every value is present even at zero — a bucket that vanishes when empty makes
+ * "no invalid meetings" indistinguishable from "invalid meetings not reported",
+ * which is the exact ambiguity O-5 exists to remove.
+ */
+export function attributionBuckets(
+  attributions: MeetingCutoffAttribution[],
+  period: CutoffPeriod
+): Record<CutoffAttribution, number> {
+  const counts = Object.fromEntries(ATTRIBUTION_ORDER.map(k => [k, 0])) as Record<
+    CutoffAttribution,
+    number
+  >
+  for (const row of attributions) {
+    if (row.period_id !== period.id) continue
+    counts[row.attribution] += 1
+  }
+  return counts
+}
+
+/** One agent's period, measured against the target for their role. */
+export interface AgentPeriodUsage {
+  agentId: string
+  buckets: Record<CutoffAttribution, number>
+  /**
+   * Meetings contributing to the role target — `counted` plus
+   * `excluded_uncapped`, per O-3. Not the same as the slot-consuming count.
+   */
+  towardTarget: number
+  /** Null when no target is configured for this agent's role (O-6). */
+  target: number | null
+}
+
+/**
+ * Per-agent rollup for one period.
+ *
+ * `roleOf` is injected rather than joined here because the ledger stores no
+ * role: the target that applies depends on who the agent is *now*, which only
+ * the profiles table knows. Returning null for an unknown role is deliberate —
+ * that renders as "not configured" rather than inventing a denominator.
+ */
+export function agentPeriodUsage(
+  attributions: MeetingCutoffAttribution[],
+  period: CutoffPeriod,
+  roleOf: (agentId: string) => string | undefined
+): Map<string, AgentPeriodUsage> {
+  const byAgent = new Map<string, AgentPeriodUsage>()
+
+  for (const row of attributions) {
+    if (row.period_id !== period.id) continue
+    let entry = byAgent.get(row.agent_id)
+    if (!entry) {
+      const role = roleOf(row.agent_id)
+      entry = {
+        agentId: row.agent_id,
+        buckets: Object.fromEntries(ATTRIBUTION_ORDER.map(k => [k, 0])) as Record<
+          CutoffAttribution,
+          number
+        >,
+        towardTarget: 0,
+        target:
+          role === 'rsr' ? period.rsr_target : role === 'sales_specialist' ? period.sales_target : null,
+      }
+      byAgent.set(row.agent_id, entry)
+    }
+    entry.buckets[row.attribution] += 1
+    if (TARGET_CONTRIBUTING.includes(row.attribution)) entry.towardTarget += 1
+  }
+
+  return byAgent
+}
+
+/** One team's period, aggregated across its roster. */
+export interface TeamPeriodUsage {
+  /** Null for agents with no team — reported rather than dropped. */
+  teamId: string | null
+  buckets: Record<CutoffAttribution, number>
+  towardTarget: number
+  /**
+   * Sum of the roster's individual role targets, or null when not one member
+   * has a configured target. Summed over the ROSTER, not over the agents who
+   * appear in the ledger — see `teamPeriodUsage`.
+   */
+  target: number | null
+  memberCount: number
+  /** Roster members with nothing attributed this period. */
+  idleMembers: number
+}
+
+/** A roster row: the minimum this module needs to know about an agent. */
+export interface RosterMember {
+  id: string
+  team_id: string | null
+  role: string
+}
+
+/**
+ * Per-team rollup for one period.
+ *
+ * Aggregated over the ROSTER rather than over the ledger, which matters for the
+ * denominator: a team of six where two agents recorded nothing has six targets
+ * to hit, not four. Summing only the agents who appear in the ledger would
+ * shrink the target to match whoever happened to work, and a half-idle team
+ * would report as comfortably on quota. The idle members are counted and
+ * surfaced instead, because that is the fact worth acting on.
+ *
+ * Only roles with a configured target contribute to the denominator; a manager
+ * on the roster has no personal period quota (O-6) and so adds nothing to it,
+ * while any meeting they recorded still lands in the buckets.
+ */
+export function teamPeriodUsage(
+  attributions: MeetingCutoffAttribution[],
+  period: CutoffPeriod,
+  roster: RosterMember[]
+): Map<string | null, TeamPeriodUsage> {
+  const blank = (teamId: string | null): TeamPeriodUsage => ({
+    teamId,
+    buckets: Object.fromEntries(ATTRIBUTION_ORDER.map(k => [k, 0])) as Record<
+      CutoffAttribution,
+      number
+    >,
+    towardTarget: 0,
+    target: null,
+    memberCount: 0,
+    idleMembers: 0,
+  })
+
+  const byTeam = new Map<string | null, TeamPeriodUsage>()
+  const teamOf = new Map(roster.map(m => [m.id, m.team_id]))
+
+  // Roster first, so a team whose every agent was idle still gets a row with a
+  // real denominator rather than being absent from the report entirely.
+  for (const member of roster) {
+    const entry = byTeam.get(member.team_id) ?? blank(member.team_id)
+    entry.memberCount += 1
+    const memberTarget =
+      member.role === 'rsr'
+        ? period.rsr_target
+        : member.role === 'sales_specialist'
+          ? period.sales_target
+          : null
+    if (memberTarget != null) entry.target = (entry.target ?? 0) + memberTarget
+    byTeam.set(member.team_id, entry)
+  }
+
+  const active = new Set<string>()
+  for (const row of attributions) {
+    if (row.period_id !== period.id) continue
+    // An agent absent from the roster (deactivated, or another module's staff)
+    // still recorded a real meeting, so it is counted under whatever team the
+    // roster knows — null when it knows none.
+    const teamId = teamOf.get(row.agent_id) ?? null
+    const entry = byTeam.get(teamId) ?? blank(teamId)
+    entry.buckets[row.attribution] += 1
+    if (TARGET_CONTRIBUTING.includes(row.attribution)) entry.towardTarget += 1
+    byTeam.set(teamId, entry)
+    active.add(row.agent_id)
+  }
+
+  for (const member of roster) {
+    if (!active.has(member.id)) {
+      const entry = byTeam.get(member.team_id)
+      if (entry) entry.idleMembers += 1
+    }
+  }
+
+  return byTeam
+}
+
 /** Empty usage for a client with nothing attributed in the period. */
 export function emptyUsage(clientId: string, period: CutoffPeriod): ClientQuotaUsage {
   return {

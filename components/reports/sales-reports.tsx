@@ -6,8 +6,10 @@ import { useMeetings, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useClockRecords } from '@/lib/hooks/use-clock-records'
 import { useProfiles } from '@/lib/hooks/use-profiles'
+import { useTeams } from '@/lib/hooks/use-teams'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { ReportFilters, ReportGrid, downloadSheet, type ReportDefinition } from '@/components/reports/report-grid'
+import { CutoffQuotaReport } from '@/components/reports/cutoff-quota-report'
 import { CUSTOMER_TYPE_LABEL } from '@/lib/status-styles'
 import { Users, CalendarCheck, Clock, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -20,6 +22,7 @@ const OUTCOME_LABEL: Record<string, string> = {
 /** The Sales lens on Reports — meetings, clients, and clock records. */
 export function SalesReports() {
   const [agentFilter, setAgentFilter] = useState<string>('all')
+  const [teamFilter, setTeamFilter] = useState<string>('all')
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
   const { inRange } = dateFilter
 
@@ -27,32 +30,64 @@ export function SalesReports() {
   const { clients, loading: clientsLoading, error: clientsError } = useClients()
   const { records: clockRecords, error: clockError } = useClockRecords()
   const { byRole } = useProfiles()
+  const { teams } = useTeams()
 
-  const agents = byRole(['sales_specialist', 'sales_manager', 'rsr'])
+  // Memoised because these arrays reach Combobox.Root as `items` via
+  // ReportFilters. Rebuilt inline they would carry a new identity on every
+  // render and make the picker re-derive its whole collection each time.
+  const agents = useMemo(
+    () => byRole(['sales_specialist', 'sales_manager', 'rsr']),
+    [byRole]
+  )
+  const agentOptions = useMemo(
+    () => agents.map(a => ({ id: a.id, name: a.full_name, teamId: a.team_id })),
+    [agents]
+  )
+  const teamOptions = useMemo(() => teams.map(t => ({ id: t.id, name: t.name })), [teams])
 
   const loading = meetingsLoading || clientsLoading
   const loadError = meetingsError || clientsError || clockError
+
+  /**
+   * Which agents the team filter admits. Resolved from `profiles` rather than
+   * from each row's embedded agent, because clock records carry no join and a
+   * client's agent may be absent — one membership set keeps the three reports
+   * agreeing on what "Sales Team 1" means.
+   */
+  const teamAgentIds = useMemo(() => {
+    if (teamFilter === 'all') return null
+    return new Set(agents.filter(a => a.team_id === teamFilter).map(a => a.id))
+  }, [agents, teamFilter])
+
+  const inTeam = (agentId: string | null | undefined) =>
+    teamAgentIds == null || (agentId != null && teamAgentIds.has(agentId))
 
   const filteredMeetings = useMemo(
     () =>
       meetings
         .filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
+        .filter(m => inTeam(m.agent_id))
         .filter(m => inRange(m.meeting_date)),
-    [meetings, agentFilter, inRange]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [meetings, agentFilter, teamAgentIds, inRange]
   )
   const filteredClients = useMemo(
     () =>
       clients
         .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter)
+        .filter(c => inTeam(c.assigned_agent_id))
         .filter(c => inRange(c.created_at)),
-    [clients, agentFilter, inRange]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [clients, agentFilter, teamAgentIds, inRange]
   )
   const filteredClock = useMemo(
     () =>
       clockRecords
         .filter(r => agentFilter === 'all' || r.agent_id === agentFilter)
+        .filter(r => inTeam(r.agent_id))
         .filter(r => inRange(r.timestamp)),
-    [clockRecords, agentFilter, inRange]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [clockRecords, agentFilter, teamAgentIds, inRange]
   )
 
   const reports: ReportDefinition[] = [
@@ -177,15 +212,24 @@ export function SalesReports() {
       )}
 
       <ReportFilters
-        label="Filter by agent"
+        label="Agent"
         allLabel="All Agents"
-        options={agents.map(a => ({ id: a.id, name: a.full_name }))}
+        options={agentOptions}
         value={agentFilter}
         onChange={setAgentFilter}
         dateFilter={dateFilter}
+        teams={teamOptions}
+        teamValue={teamFilter}
+        onTeamChange={setTeamFilter}
       />
 
       <ReportGrid reports={reports} />
+
+      {/* Deliberately outside the grid and below it. It answers a different
+          question from the three exports above — those are "what happened",
+          this is "what counted" — and it is scoped by cutoff period rather than
+          by the toolbar's agent and date filters, which do not apply to it. */}
+      <CutoffQuotaReport clients={clients} agents={agents} />
 
       <p className="text-xs text-muted-foreground text-center">
         Reports are exported as .xlsx files and include all data across every team.
