@@ -26,8 +26,16 @@ import {
   type MapStatus,
   type MapTileType,
 } from '@/components/maps/map-constants'
-import { isWithinPeriod, quotaState, shiftPeriod, visitCapFor, type QuotaState } from '@/lib/cutoff'
-import { useQuotaConfig } from '@/lib/hooks/use-quota-config'
+import {
+  clientQuotaUsage,
+  emptyUsage,
+  periodDateLabel,
+  reviewablePeriods,
+  type ClientQuotaUsage,
+  type QuotaState,
+} from '@/lib/cutoff'
+import { useCutoffAttributions, useCutoffPeriods } from '@/lib/hooks/use-cutoff'
+import { useReverseGeocode } from '@/lib/hooks/use-reverse-geocode'
 import type { MapPin, FocusTarget, HighlightMarker } from '@/components/maps/field-map'
 import type { Client, Meeting, MeetingOutcome } from '@/types'
 import {
@@ -65,15 +73,12 @@ type TypeFilter = 'all' | 'f2f' | 'online'
 /** Worst first — the quota list exists to surface violations, not to be alphabetical. */
 const QUOTA_RANK: Record<QuotaState, number> = { over: 0, at: 1, under: 2, exempt: 3 }
 
-/** A client measured against its per-cutoff visit ceiling. */
+/** A client measured against its per-period meeting allowance. */
 interface QuotaRow {
   client: Client
-  /** Visits inside the CUTOFF period — not inside the toolbar date range. */
-  visits: number
-  /** Null for prospects, which are deliberately uncapped. */
-  cap: number | null
-  state: QuotaState
-  /** Most recent locatable visit this cutoff, so the lens still has pins. */
+  /** Server-decided usage from the attribution ledger, never counted here. */
+  usage: ClientQuotaUsage
+  /** A locatable meeting the server attributed to this period, for the pin. */
   plotMeeting: Meeting | null
 }
 
@@ -87,6 +92,23 @@ function meetingWhere(m: Meeting): string {
         : 'Online'
   }
   return m.location_type === 'client_office' ? 'Client office' : m.location_name || 'Other location'
+}
+
+/**
+ * The address on the CLIENT RECORD — never where a meeting was captured.
+ *
+ * Named for what it is because the two were being confused: printed bare next to
+ * a pin, it reads as a caption for that pin. Every caller labels it, and the
+ * `office_address` field is checked first only because it is still the sole
+ * address most rows have (the structured columns from migration 013 are largely
+ * unfilled, even though they supersede it).
+ */
+function registeredAddress(client: Client): string {
+  return (
+    client.office_address ||
+    [client.city, client.province].filter(Boolean).join(', ') ||
+    'No address on file'
+  )
 }
 
 interface SalesMapViewProps {
@@ -124,15 +146,15 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
   const [colorBy, setColorBy] = useState<'status' | 'outcome'>('status')
   const [listMode, setListMode] = useState<'visited' | 'quota'>('visited')
   /**
-   * How many cutoff periods back the quota lens is looking. 0 is the current
-   * period; negative steps into the past. Never positive — there is nothing to
-   * review in a period that hasn't happened.
+   * Index into `reviewablePeriods` — 0 is the newest, higher is further back.
    *
-   * Separate from `dateFilter` on purpose. The toolbar filter measures days and
-   * drives the Visited lens; this measures cutoffs. Sharing one control between
-   * them is what the stepper swap below is for.
+   * An index rather than a date offset because periods are explicit rows now
+   * (migration 057) and need not be contiguous or evenly sized: an admin can
+   * leave a gap between cutoffs, and a superseded period sits beside its
+   * replacement. Stepping the list is the only way to walk them that can't
+   * invent a period that was never defined.
    */
-  const [cutoffOffset, setCutoffOffset] = useState(0)
+  const [periodIndex, setPeriodIndex] = useState(0)
 
   const [mapType, setMapType] = useState<MapTileType>('satellite')
   const [mapTypeMenuOpen, setMapTypeMenuOpen] = useState(false)
@@ -151,26 +173,42 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
   // (team decision, 2026-08-02). `period` is null when no cutoff has been set,
   // and that must disable the lens rather than fall back to a guessed
   // 1-15/16-EOM — see the note on CutoffCalendar in types/index.ts.
-  const { calendar, policies, period: currentPeriod, isConfigured } = useQuotaConfig()
+  const { periods } = useCutoffPeriods()
+  const { attributions, unattributedMeetingCount } = useCutoffAttributions()
 
-  // An admin can clear the calendar while the quota lens is open. Snap back
-  // during render rather than in an effect, matching the filterKey reset below,
-  // so the panel never paints a frame of a lens with no data behind it.
+  // Periods worth reviewing, newest first. Empty until an admin defines one —
+  // migrations 057-060 seed nothing, deliberately, so that no cutoff rule is
+  // enforced before someone sets it.
+  const periodList = useMemo(() => reviewablePeriods(periods), [periods])
+  const isConfigured = periodList.length > 0
+  const period = periodList[Math.min(periodIndex, periodList.length - 1)] ?? null
+
+  // An admin can close or supersede the last period while the lens is open.
+  // Snap back during render rather than in an effect, matching the filterKey
+  // reset below, so the panel never paints a frame of a lens with no data.
   const effectiveListMode = isConfigured ? listMode : 'visited'
   if (effectiveListMode !== listMode) setListMode(effectiveListMode)
 
-  // The period the quota lens is actually showing — `currentPeriod` stepped back
-  // `cutoffOffset` times. Walked one period at a time rather than computed
-  // directly because anchor spacing is uneven (Aug 1–15 is 15 days, Aug 16–31 is
-  // 16), so there is no single interval to multiply.
-  const period = useMemo(() => {
-    if (!calendar || !currentPeriod) return null
-    let result: ReturnType<typeof shiftPeriod> = currentPeriod
-    for (let i = 0; i < -cutoffOffset && result; i++) {
-      result = shiftPeriod(result, calendar, -1)
+  /** Per-client usage for the visible period, folded from the ledger. */
+  const usageByClient = useMemo(
+    () => (period ? clientQuotaUsage(attributions, period) : new Map<string, ClientQuotaUsage>()),
+    [attributions, period]
+  )
+
+  // Which meetings the server attributed to this period, per client — the pin
+  // is placed at one of these rather than at "a meeting whose date falls in
+  // range", so the map can never show a visit the ledger didn't attribute.
+  const attributedMeetingIds = useMemo(() => {
+    const byClient = new Map<string, Set<string>>()
+    if (!period) return byClient
+    for (const row of attributions) {
+      if (row.period_id !== period.id) continue
+      const set = byClient.get(row.client_id)
+      if (set) set.add(row.meeting_id)
+      else byClient.set(row.client_id, new Set([row.meeting_id]))
     }
-    return result
-  }, [calendar, currentPeriod, cutoffOffset])
+    return byClient
+  }, [attributions, period])
 
   useEffect(() => {
     if (!mapTypeMenuOpen) return
@@ -199,7 +237,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
   // changing which clients are listed, so there's nothing stale to close.
   const filterKey = [
     statusFilter, teamFilter, agentFilter, typeFilter, dateFilter.key, listMode,
-    cutoffOffset,
+    period?.id ?? '',
   ].join('|')
   const [lastFilterKey, setLastFilterKey] = useState(filterKey)
   if (lastFilterKey !== filterKey) {
@@ -293,20 +331,17 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
 
       const all = meetingsByClient.get(client.id) ?? []
 
-      // Quota: every filtered client gets a row, including those with no visit
-      // this cutoff — a 0-of-2 account is real information, it just isn't
-      // urgent, so it sorts to the bottom instead of getting its own tab.
-      // The meeting-type tabs deliberately do NOT apply: the cap counts visits,
-      // and an online meeting is a visit.
+      // Quota: every filtered client gets a row, including those the ledger
+      // never touched — an account at 0 of its allowance is real information,
+      // it just isn't urgent, so it sorts to the bottom rather than getting its
+      // own tab. The meeting-type tabs deliberately do NOT apply: the cap
+      // counts meetings, and an online meeting is a meeting.
       if (period) {
-        const thisCutoff = all.filter(m => isWithinPeriod(m.meeting_date, period))
-        const cap = visitCapFor(client.customer_type, policies)
+        const ids = attributedMeetingIds.get(client.id)
         quotaRows.push({
           client,
-          visits: thisCutoff.length,
-          cap,
-          state: quotaState(thisCutoff.length, cap),
-          plotMeeting: thisCutoff.find(isPlottableMeeting) ?? null,
+          usage: usageByClient.get(client.id) ?? emptyUsage(client.id, period),
+          plotMeeting: ids ? all.find(m => ids.has(m.id) && isPlottableMeeting(m)) ?? null : null,
         })
       }
 
@@ -327,20 +362,21 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
     vis.sort((a, b) => new Date(b.lastVisit).getTime() - new Date(a.lastVisit).getTime())
     quotaRows.sort(
       (a, b) =>
-        QUOTA_RANK[a.state] - QUOTA_RANK[b.state] ||
-        b.visits - a.visits ||
+        QUOTA_RANK[a.usage.state] - QUOTA_RANK[b.usage.state] ||
+        b.usage.overCap - a.usage.overCap ||
+        b.usage.used - a.usage.used ||
         a.client.company_name.localeCompare(b.client.company_name)
     )
     return { visited: vis, quota: quotaRows }
   }, [
     clients, meetingsByClient, teamFilter, statusFilter, agentFilter, typeFilter,
-    range, search, coord, period, policies,
+    range, search, coord, period, usageByClient, attributedMeetingIds,
   ])
 
   /** Over/at-limit tallies for the tab and the legend header. */
   const quotaCounts = useMemo(() => {
     const acc = Object.fromEntries(QUOTA_KEYS.map(k => [k, 0])) as Record<QuotaState, number>
-    for (const row of quota) acc[row.state] += 1
+    for (const row of quota) acc[row.usage.state] += 1
     return acc
   }, [quota])
 
@@ -356,13 +392,15 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
           id: r.client.id,
           lat: r.plotMeeting!.gps_lat!,
           lng: r.plotMeeting!.gps_lng!,
-          color: QUOTA_META[r.state].color,
+          color: QUOTA_META[r.usage.state].color,
           active: r.client.id === selectedId,
           label: r.client.company_name,
           sublabel:
-            r.cap == null
-              ? `${r.visits} ${r.visits === 1 ? 'visit' : 'visits'} · uncapped`
-              : `${r.visits} of ${r.cap} this cutoff`,
+            r.usage.state === 'exempt'
+              ? `${r.usage.uncapped} uncapped ${r.usage.uncapped === 1 ? 'meeting' : 'meetings'}`
+              : r.usage.overCap > 0
+                ? `${r.usage.used} of ${r.usage.cap} · ${r.usage.overCap} over cap`
+                : `${r.usage.used} of ${r.usage.cap} this period`,
           avatarUrl: r.client.agent?.avatar_url,
         }))
     }
@@ -423,6 +461,34 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
     () => (selectedId ? meetingsByClient.get(selectedId) ?? [] : []),
     [selectedId, meetingsByClient]
   )
+
+  /**
+   * The meeting the selected client's pin is actually sitting on. Mirrors the
+   * lens split in `selectClient` — each list pins a different meeting, so the
+   * panel must describe the one the visible list chose.
+   */
+  const selectedPlotMeeting = useMemo(() => {
+    if (!selectedId) return null
+    const row =
+      listMode === 'quota'
+        ? quota.find(r => r.client.id === selectedId)
+        : visited.find(v => v.client.id === selectedId)
+    return row?.plotMeeting ?? null
+  }, [selectedId, listMode, quota, visited])
+
+  /**
+   * Where the pin IS, in words. Resolved from the captured GPS rather than from
+   * the client record, because those are two different facts and the panel used
+   * to show only the second one under a map-pin icon: a meeting recorded in
+   * Pampanga captioned "122, Hagonoy Bulacan", the client's registered address.
+   * A tester read that as the map plotting the wrong place. Both now appear,
+   * each labelled, with the GPS first — it is the evidence.
+   *
+   * Note this is honest about `location_type: 'client_office'` too. Mobile lets
+   * an agent tag a meeting as being at the client's office wherever they are
+   * standing, so that tag is a claim; this line is the measurement.
+   */
+  const plotPlace = useReverseGeocode(selectedPlotMeeting?.gps_lat, selectedPlotMeeting?.gps_lng)
 
   function selectClient(id: string) {
     setSelectedId(id)
@@ -562,23 +628,35 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={() => setCutoffOffset(o => o - 1)}
-              className="h-9 w-8 grid place-items-center rounded-md border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-              aria-label="Previous cutoff"
+              onClick={() => setPeriodIndex(i => Math.min(periodList.length - 1, i + 1))}
+              // Bounded by what an admin actually defined — there is no period
+              // before the first one, and inventing dates would misreport.
+              disabled={periodIndex >= periodList.length - 1}
+              className="h-9 w-8 grid place-items-center rounded-md border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+              aria-label="Previous cutoff period"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <div className="h-9 flex items-center gap-1.5 px-3 rounded-md border border-border bg-card min-w-[9rem]">
+            <div className="h-9 flex items-center gap-1.5 px-3 rounded-md border border-border bg-card">
               <CalendarDays className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
               <span className="text-sm font-medium text-foreground">{period?.label}</span>
+              {period && (
+                <span className="text-[11px] text-muted-foreground">{periodDateLabel(period)}</span>
+              )}
+              {/* A closed or superseded period is still worth reviewing, but the
+                  reader needs to know it is not the live one. */}
+              {period && period.status !== 'active' && (
+                <Badge variant="outline" className="text-[9px] px-1 h-4 ml-0.5">
+                  {period.status}
+                </Badge>
+              )}
             </div>
             <button
               type="button"
-              onClick={() => setCutoffOffset(o => Math.min(0, o + 1))}
-              // Nothing to review in a cutoff that hasn't happened yet.
-              disabled={cutoffOffset >= 0}
+              onClick={() => setPeriodIndex(i => Math.max(0, i - 1))}
+              disabled={periodIndex <= 0}
               className="h-9 w-8 grid place-items-center rounded-md border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-40 disabled:pointer-events-none"
-              aria-label="Next cutoff"
+              aria-label="Next cutoff period"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -658,8 +736,11 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                             {format(new Date(lastVisit), 'MMM d')}
                           </span>
                         </div>
+                        {/* Prefixed because this is the account's address, not
+                            the pin's. See registeredAddress. */}
                         <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">
-                          {client.office_address || [client.city, client.province].filter(Boolean).join(', ') || 'No address on file'}
+                          <span className="text-muted-foreground/60">Registered: </span>
+                          {registeredAddress(client)}
                         </p>
                         <div className="flex items-center gap-1.5 mt-1 pl-4">
                           {client.agent && (
@@ -708,7 +789,12 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                       a stated denominator. Sticky because the list is sorted
                       worst-first and the counts are the summary of what follows. */}
                   <div className="sticky top-0 z-10 px-4 py-2.5 bg-card border-b border-border">
-                    <p className="text-[11px] font-medium text-foreground">Cutoff {period?.label}</p>
+                    <p className="text-[11px] font-medium text-foreground">
+                      {period?.label}
+                      {period && (
+                        <span className="text-muted-foreground font-normal"> · cap {period.client_meeting_cap}</span>
+                      )}
+                    </p>
                     <div className="flex items-center gap-2.5 mt-1 text-[10px] text-muted-foreground">
                       {(['over', 'at', 'under'] as const).map(key => (
                         <span key={key} className="flex items-center gap-1">
@@ -720,10 +806,18 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                         </span>
                       ))}
                     </div>
+                    {/* Meetings that predate migration 059's trigger have no
+                        ledger row and are counted nowhere. Saying so beats a
+                        quiet zero that reads as "nobody visited anyone". */}
+                    {unattributedMeetingCount > 0 && (
+                      <p className="text-[10px] text-muted-foreground mt-1">
+                        {unattributedMeetingCount} older {unattributedMeetingCount === 1 ? 'meeting' : 'meetings'} not attributed
+                      </p>
+                    )}
                   </div>
 
-                  {quota.map(({ client, visits, cap, state }) => {
-                    const meta = QUOTA_META[state]
+                  {quota.map(({ client, usage }) => {
+                    const meta = QUOTA_META[usage.state]
                     const active = client.id === selectedId
                     return (
                       <button
@@ -741,13 +835,16 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                               would imply a ceiling that deliberately isn't there. */}
                           <span
                             className="text-[11px] font-semibold shrink-0 tabular-nums"
-                            style={{ color: state === 'under' || state === 'exempt' ? undefined : meta.color }}
+                            style={{ color: usage.state === 'under' || usage.state === 'exempt' ? undefined : meta.color }}
                           >
-                            {cap == null ? visits : `${visits}/${cap}`}
+                            {usage.state === 'exempt' ? usage.uncapped : `${usage.used}/${usage.cap}`}
                           </span>
                         </div>
+                        {/* Prefixed because this is the account's address, not
+                            the pin's. See registeredAddress. */}
                         <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">
-                          {client.office_address || [client.city, client.province].filter(Boolean).join(', ') || 'No address on file'}
+                          <span className="text-muted-foreground/60">Registered: </span>
+                          {registeredAddress(client)}
                         </p>
                         <div className="flex items-center gap-1.5 mt-1 pl-4">
                           {client.agent && (
@@ -761,12 +858,22 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                           <p className="text-[11px] text-muted-foreground truncate">
                             {client.agent?.full_name ?? 'Unassigned'}
                           </p>
+                          {/* A pending tag-along reserves no slot, so the number
+                              to its left can still move. Flagged so it isn't
+                              read as settled. */}
+                          {usage.pending > 0 && (
+                            <Badge variant="outline" className="text-[9px] px-1 h-3.5 shrink-0 text-muted-foreground">
+                              {usage.pending} pending
+                            </Badge>
+                          )}
                           <Badge
                             variant="outline"
                             className="ml-auto text-[9px] px-1 h-3.5 shrink-0"
                             style={{ borderColor: `${meta.color}55`, color: meta.color }}
                           >
-                            {meta.label}
+                            {usage.overCap > 0
+                              ? `${usage.overCap} over cap`
+                              : meta.label}
                           </Badge>
                         </div>
                       </button>
@@ -985,11 +1092,30 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                     {mapStatusMeta(selected).label}
                   </Badge>
                   <h2 className="text-base font-semibold text-foreground leading-tight truncate">{selected.company_name}</h2>
-                  <div className="flex items-start gap-1.5 mt-1">
-                    <MapPinIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                    <p className="text-xs text-muted-foreground">
-                      {selected.office_address || [selected.city, selected.province].filter(Boolean).join(', ') || 'No address on file'}
-                    </p>
+
+                  {/* Where the pin is — captured GPS, resolved to a place name. */}
+                  {selectedPlotMeeting && (
+                    <div className="flex items-start gap-1.5 mt-1.5">
+                      <MapPinIcon className="w-3.5 h-3.5 text-primary shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <p className="text-xs text-foreground">
+                          {plotPlace.loading ? 'Locating…' : plotPlace.label}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground">
+                          Meeting GPS · {format(new Date(selectedPlotMeeting.meeting_date), 'MMM d, yyyy')}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* The address on the client record. A different fact from the
+                      line above, and deliberately second — see `plotPlace`. */}
+                  <div className="flex items-start gap-1.5 mt-1.5">
+                    <Building2 className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-xs text-muted-foreground">{registeredAddress(selected)}</p>
+                      <p className="text-[10px] text-muted-foreground/70">Registered address</p>
+                    </div>
                   </div>
                 </div>
                 <button

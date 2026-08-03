@@ -1,246 +1,349 @@
-import type { CustomerType, CutoffCalendar, QuotaPolicy } from '@/types'
+import type { CutoffAttribution, CutoffPeriod, MeetingCutoffAttribution } from '@/types'
 
 /**
- * Cutoff-period arithmetic.
+ * Cutoff/quota helpers.
  *
- * A "cutoff" is the ~15-day payroll period the sales team's visit rules are
- * measured against. The boundaries are NOT hardcoded here — they are derived
- * from an admin-configured `CutoffCalendar`, which is the whole point (see the
- * note on that type). Every function returns null when there is nothing
- * configured, so an unset calendar disables quota features instead of silently
- * falling back to a guess.
+ * Everything here is pure and reads from what the server already decided
+ * (migrations 057-060). Web deliberately does NOT recompute attribution from
+ * `meetings`: the ledger is server-authoritative, written inside the meeting
+ * insert transaction, and any second opinion computed here would eventually
+ * disagree with the number mobile shows the agent.
  *
- * All of this is pure, so it stays testable and can move behind a real query
- * without changing a caller.
+ * That is a real constraint, not a preference. An earlier version of this file
+ * derived periods from admin-set anchor days and counted meetings by date; both
+ * are gone because the database now owns both questions.
  */
 
-export interface CutoffPeriod {
-  /** Inclusive start instant. */
-  start: Date
-  /**
-   * EXCLUSIVE end instant — equal to the next period's start. Comparisons must
-   * use `< end`, never `<= end`, or a visit logged at the boundary midnight
-   * lands in both periods.
-   */
-  end: Date
-  /** Display label, e.g. "Aug 1 – Aug 15". */
-  label: string
-}
-
-/** How a client's visit count stands against its cap. */
+/** How a client stands against its per-period meeting cap. */
 export type QuotaState = 'exempt' | 'under' | 'at' | 'over'
 
-// --- Timezone-aware date math ----------------------------------------------
-//
-// The calendar carries its own timezone (default Asia/Manila) because a cutoff
-// boundary is a local-midnight event, not a UTC one — an admin in Manila
-// setting "the 16th" means 00:00 PHT, which is 16:00 UTC on the 15th. Getting
-// this wrong shifts every period by 8 hours and misfiles visits logged in the
-// evening. Done with Intl rather than a date library because the project has no
-// timezone dependency installed and this needs only two operations.
-
-interface ZonedParts {
-  year: number
-  month: number
-  day: number
-  hour: number
-  minute: number
-  second: number
-}
-
-function zonedParts(instant: Date, timeZone: string): ZonedParts {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    // h23 rather than hour12:false — the latter can render midnight as "24" on
-    // some engines, which would push the day forward by one.
-    hourCycle: 'h23',
-  }).formatToParts(instant)
-
-  const get = (type: string) => Number(parts.find(p => p.type === type)?.value ?? 0)
-  return {
-    year: get('year'),
-    month: get('month'),
-    day: get('day'),
-    hour: get('hour'),
-    minute: get('minute'),
-    second: get('second'),
-  }
-}
-
-/** How far `timeZone` is ahead of UTC at this instant, in milliseconds. */
-function offsetMs(instant: Date, timeZone: string): number {
-  const p = zonedParts(instant, timeZone)
-  const asIfUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second)
-  return asIfUtc - Math.floor(instant.getTime() / 1000) * 1000
-}
-
-/** The UTC instant of local midnight on a calendar date in `timeZone`. */
-function zonedMidnightUtc(year: number, month: number, day: number, timeZone: string): Date {
-  const target = Date.UTC(year, month - 1, day)
-  // Two passes: the first offset is sampled at the wrong instant whenever the
-  // guess lands on the far side of a DST transition. Manila has no DST so one
-  // pass would do today, but the timezone is admin-configurable.
-  let ms = target - offsetMs(new Date(target), timeZone)
-  ms = target - offsetMs(new Date(ms), timeZone)
-  return new Date(ms)
-}
-
-function addMonths(year: number, month: number, delta: number): { year: number; month: number } {
-  const zeroBased = year * 12 + (month - 1) + delta
-  return { year: Math.floor(zeroBased / 12), month: (zeroBased % 12) + 1 }
-}
-
-// --- Calendar selection ------------------------------------------------------
-
-function inEffect(
-  row: { effective_from: string; effective_until: string | null; is_active: boolean },
-  on: Date
-): boolean {
-  if (!row.is_active) return false
-  // effective_from/_until are DATE columns — plain 'YYYY-MM-DD' with no zone.
-  // Compared as UTC midnights, which is precise enough for a window that spans
-  // months; the boundary that actually matters is the anchor day, not this.
-  const t = on.getTime()
-  if (Date.parse(`${row.effective_from}T00:00:00Z`) > t) return false
-  if (row.effective_until && Date.parse(`${row.effective_until}T00:00:00Z`) <= t) return false
-  return true
-}
+/** Attribution values that consumed one of a client's slots. */
+export const SLOT_CONSUMING: CutoffAttribution[] = ['counted']
 
 /**
- * The calendar governing `on`, or null when nothing is configured for that date.
- * Latest `effective_from` wins, so a future calendar can be staged ahead of
- * time and takes over on its own start date.
- */
-export function activeCalendar(
-  calendars: CutoffCalendar[],
-  on: Date = new Date()
-): CutoffCalendar | null {
-  return (
-    calendars
-      .filter(c => inEffect(c, on))
-      .sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0] ?? null
-  )
-}
-
-// --- Period derivation -------------------------------------------------------
-
-/**
- * The cutoff period containing `instant`, or null if the calendar has no usable
- * anchors.
+ * Attribution values that count toward an AGENT's period target.
  *
- * Periods are derived by pairing consecutive anchor days: anchors [1, 16] in
- * August yield Aug 1–15 and Aug 16–31, because the second period runs until the
- * next anchor, which is Sep 1. That is what makes month length irrelevant and
- * why no calendar rows need maintaining.
+ * Wider than the per-client pool on purpose (contract O-3): a prospect meeting
+ * consumes no client slot but is still work the agent did, so it counts here.
+ * Only `over_cap` is excluded from the target.
  */
-export function cutoffPeriodFor(instant: Date, calendar: CutoffCalendar): CutoffPeriod | null {
-  const anchors = [...new Set(calendar.anchor_days)]
-    .filter(d => Number.isInteger(d) && d >= 1 && d <= 28)
-    .sort((a, b) => a - b)
-  if (anchors.length === 0) return null
+export const TARGET_CONTRIBUTING: CutoffAttribution[] = ['counted', 'excluded_uncapped']
 
-  const tz = calendar.timezone
-  const { year, month, day } = zonedParts(instant, tz)
-
-  // Start at the latest anchor on or before today; if today precedes every
-  // anchor, we are still inside the period that opened last month.
-  let startYear = year
-  let startMonth = month
-  let startDay = anchors.filter(a => a <= day).pop()
-  if (startDay === undefined) {
-    ;({ year: startYear, month: startMonth } = addMonths(year, month, -1))
-    startDay = anchors[anchors.length - 1]
-  }
-
-  // End at the next anchor, rolling into next month past the last one.
-  const index = anchors.indexOf(startDay)
-  let endYear = startYear
-  let endMonth = startMonth
-  let endDay: number
-  if (index < anchors.length - 1) {
-    endDay = anchors[index + 1]
-  } else {
-    ;({ year: endYear, month: endMonth } = addMonths(startYear, startMonth, 1))
-    endDay = anchors[0]
-  }
-
-  const start = zonedMidnightUtc(startYear, startMonth, startDay, tz)
-  const end = zonedMidnightUtc(endYear, endMonth, endDay, tz)
-  return { start, end, label: periodLabel(start, end, tz) }
+/**
+ * Today as 'YYYY-MM-DD' in the VIEWER's timezone, comparable against the
+ * starts_on/ends_on DATE columns as plain strings.
+ *
+ * Local rather than UTC because a cutoff boundary is a local-midnight event: at
+ * 08:00 Manila on the 16th, UTC still says the 15th, which would show yesterday's
+ * period as the live one for the first eight hours of every cutoff.
+ */
+function localIso(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate()
+  ).padStart(2, '0')}`
 }
 
 /**
- * The period immediately before or after `period`.
+ * The period actually running today.
  *
- * Deliberately does not repeat the anchor arithmetic: one millisecond outside a
- * half-open period is by definition inside the adjacent one, so probing that
- * instant through cutoffPeriodFor gives the neighbour for free and stays correct
- * for any anchor configuration.
+ * Both conditions matter and neither alone is enough. Status alone matches every
+ * period generated ahead of time (see `generatePeriods`), and dates alone would
+ * match a closed or superseded row. This mirrors migration 059's own lookup, so
+ * what an admin reads as live is what the server will attribute a meeting to.
  */
-export function shiftPeriod(
-  period: CutoffPeriod,
-  calendar: CutoffCalendar,
-  direction: -1 | 1
+export function activePeriod(
+  periods: CutoffPeriod[],
+  today: Date = new Date()
 ): CutoffPeriod | null {
-  // `end` is exclusive, so it is already the first instant of the next period.
-  const probe = direction < 0 ? new Date(period.start.getTime() - 1) : period.end
-  return cutoffPeriodFor(probe, calendar)
+  const day = localIso(today)
+  return (
+    periods
+      .filter(p => p.status === 'active' && p.starts_on <= day && day <= p.ends_on)
+      // 059 breaks its own tie with `order by starts_on desc`. Matched exactly
+      // rather than trusting the non-overlap constraint to make ties impossible.
+      .sort((a, b) => b.starts_on.localeCompare(a.starts_on))[0] ?? null
+  )
 }
-
-function periodLabel(start: Date, end: Date, timeZone: string): string {
-  // `end` is exclusive, so the last day shown is one millisecond earlier.
-  const lastDay = new Date(end.getTime() - 1)
-  const fmt = new Intl.DateTimeFormat('en-US', { timeZone, month: 'short', day: 'numeric' })
-  return `${fmt.format(start)} – ${fmt.format(lastDay)}`
-}
-
-/** True when an ISO timestamp falls inside the period. Half-open: [start, end). */
-export function isWithinPeriod(isoDate: string, period: CutoffPeriod): boolean {
-  const t = Date.parse(isoDate)
-  return t >= period.start.getTime() && t < period.end.getTime()
-}
-
-// --- Visit cap ---------------------------------------------------------------
 
 /**
- * How many visits a client of this type may receive per cutoff, or null when
- * uncapped.
+ * Periods an admin can review, newest first.
  *
- * Null is the answer for prospects by design, not by oversight: an agent needs
- * to work a prospect as many times as it takes to qualify it. Only new and
- * existing accounts carry a ceiling.
+ * Includes closed and superseded ones: the whole point of stepping back through
+ * periods is to review a cutoff that has already ended. Excluded are drafts and
+ * periods that have not started, for the same reason — neither can have an
+ * attributed meeting, so they would read as an empty cutoff rather than as one
+ * that has not happened. Without the date test a year of generated periods would
+ * sit in front of the current one and the stepper would open on an empty future.
  */
-export function visitCapFor(
-  customerType: CustomerType,
-  policies: QuotaPolicy[],
-  on: Date = new Date()
-): number | null {
-  const row = policies.find(
-    p =>
-      p.policy_kind === 'client_visit_cap' &&
-      inEffect(p, on) &&
-      (p.applies_to?.includes(customerType) ?? false)
+export function reviewablePeriods(
+  periods: CutoffPeriod[],
+  today: Date = new Date()
+): CutoffPeriod[] {
+  const day = localIso(today)
+  return periods
+    .filter(p => p.status !== 'draft' && p.starts_on <= day)
+    .sort((a, b) => b.starts_on.localeCompare(a.starts_on))
+}
+
+/** Where a period sits relative to today. */
+export type PeriodPhase = 'ended' | 'current' | 'upcoming'
+
+/**
+ * A period's phase, from its DATES rather than its status.
+ *
+ * Necessary because periods are generated ahead as `active`: migration 059 needs
+ * `status = 'active'` AND the date inside the range, so a period that has not
+ * started attributes nothing whatever its status says. Printing the raw status
+ * would show a year of "active" rows with no clue which one is running.
+ */
+export function periodPhase(period: CutoffPeriod, today: Date = new Date()): PeriodPhase {
+  const day = localIso(today)
+  if (day < period.starts_on) return 'upcoming'
+  if (day > period.ends_on) return 'ended'
+  return 'current'
+}
+
+// --- Generating periods from a repeating pattern -----------------------------
+//
+// Periods remain individual rows — the attribution trigger, the mobile SQLite
+// mirror, and the audit trail all key off the row, so none of this replaces
+// them. It only spares an admin from typing twenty-four of them a year, which
+// was a chore certain to be skipped, and a skipped period means every meeting
+// recorded in the gap is attributed to nothing at all.
+
+/**
+ * A repeating cutoff shape: which days of the month a period ENDS on.
+ *
+ * `[8, 23]` is this company's actual cycle (confirmed with the supervisor
+ * 2026-08-03): the 24th of one month through the 8th of the next, then the 9th
+ * through the 23rd.
+ *
+ * End days rather than start days for two reasons. It is how the rule was
+ * stated, and how payroll cutoffs are stated generally. And it makes periods
+ * contiguous by construction — each one begins the day after the previous ends,
+ * so no arithmetic can leave a day uncovered. A start-day model cannot express
+ * a period that crosses a month boundary at all, which this one does.
+ *
+ * Configurable rather than hardcoded because the 2026-07-31 direction is
+ * explicit that no calendar-month, semi-monthly, or payroll boundary may be
+ * assumed. [8, 23] is the default an admin sees, not a constant in the code.
+ */
+export interface PeriodPattern {
+  /** Days of the month a period ends on. Ascending, distinct, 1-31. */
+  endDays: number[]
+  /** First month whose periods to generate, as 'YYYY-MM'. */
+  fromMonth: string
+  /** How many months to cover. */
+  months: number
+}
+
+/** A period about to be created — no id, status, or audit columns yet. */
+export interface GeneratedPeriod {
+  label: string
+  starts_on: string
+  ends_on: string
+}
+
+/** Last day of a month. Day 0 of the next month is the last day of this one. */
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate()
+}
+
+/**
+ * The end day, clamped to a month that is too short for it.
+ *
+ * Unambiguous in a way a start day never was: "ends on the 31st" in February
+ * plainly means the last day of February. That is why end days accept 1-31
+ * while the earlier start-day model had to refuse anything past 28.
+ */
+function endOfDay(year: number, month: number, day: number): Date {
+  return new Date(Date.UTC(year, month - 1, Math.min(day, daysInMonth(year, month))))
+}
+
+function iso(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
+const DAY_MS = 86_400_000
+
+/**
+ * Expand a pattern into concrete period rows, ready to insert.
+ *
+ * Each period ends on one of the pattern's days and starts the day after the
+ * previous end — which is what makes a cycle like [8, 23] work: the period
+ * ending on the 8th reaches back to the 24th of the month before. Month length,
+ * February, and the year boundary all fall out of real date arithmetic rather
+ * than being special-cased, and no day can ever be left uncovered.
+ *
+ * `fromMonth` selects the months periods END in, so a September pattern of
+ * [8, 23] yields Aug 24 – Sep 8 first. Rows come back in date order, which is
+ * also the order they must be inserted: the non-overlap constraint rejects the
+ * whole batch otherwise, and a partial batch is worse than none.
+ */
+export function generatePeriods(pattern: PeriodPattern): GeneratedPeriod[] {
+  const ends = [...new Set(pattern.endDays)]
+    .filter(d => Number.isInteger(d) && d >= 1 && d <= 31)
+    .sort((a, b) => a - b)
+
+  const [fromYear, fromMonth] = pattern.fromMonth.split('-').map(Number)
+  if (ends.length === 0 || !fromYear || !fromMonth || pattern.months < 1) return []
+
+  const rows: GeneratedPeriod[] = []
+  for (let offset = 0; offset < pattern.months; offset++) {
+    const zeroBased = fromYear * 12 + (fromMonth - 1) + offset
+    const year = Math.floor(zeroBased / 12)
+    const month = (zeroBased % 12) + 1
+
+    ends.forEach((day, i) => {
+      const end = endOfDay(year, month, day)
+      // The previous boundary is the one before it in the same month, or the
+      // last of the month before — that wrap is the whole point of the model.
+      const prevEnd =
+        i > 0
+          ? endOfDay(year, month, ends[i - 1])
+          : endOfDay(
+              month === 1 ? year - 1 : year,
+              month === 1 ? 12 : month - 1,
+              ends[ends.length - 1]
+            )
+      const start = new Date(prevEnd.getTime() + DAY_MS)
+      rows.push({ label: dateRangeLabel(start, end), starts_on: iso(start), ends_on: iso(end) })
+    })
+  }
+  return rows
+}
+
+/** Periods in `generated` whose dates collide with one already stored. */
+export function overlappingWithExisting(
+  generated: GeneratedPeriod[],
+  existing: CutoffPeriod[]
+): GeneratedPeriod[] {
+  // Only scheduled/active rows are covered by the exclusion constraint, so only
+  // those can reject an insert. Closed and superseded periods overlap freely.
+  const blocking = existing.filter(p => p.status === 'scheduled' || p.status === 'active')
+  return generated.filter(g =>
+    blocking.some(p => g.starts_on <= p.ends_on && p.starts_on <= g.ends_on)
   )
-  return row?.target_value ?? null
+}
+
+const MONTH_DAY_FMT = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  timeZone: 'UTC',
+})
+const DAY_FMT = new Intl.DateTimeFormat('en-US', { day: 'numeric', timeZone: 'UTC' })
+
+/**
+ * "Jul 24 – Aug 8" across months, "Aug 9–23" within one.
+ *
+ * The single date-formatter for periods, used both to name a generated period
+ * and to caption any period on screen. That is deliberate: a generated period is
+ * named after its own range, and callers suppress the caption when it repeats
+ * the name. Two formatters producing "Aug 9–23" and "Aug 9 – Aug 23" for the
+ * same fortnight made that comparison silently fail.
+ */
+export function dateRangeLabel(start: Date, end: Date): string {
+  return start.getUTCMonth() === end.getUTCMonth()
+    ? `${MONTH_DAY_FMT.format(start)}–${DAY_FMT.format(end)}`
+    : `${MONTH_DAY_FMT.format(start)} – ${MONTH_DAY_FMT.format(end)}`
+}
+
+/** A stored period's dates, for surfaces with no room for the label. */
+export function periodDateLabel(period: CutoffPeriod): string {
+  // starts_on/ends_on are DATE columns — 'YYYY-MM-DD' with no zone. Parsed and
+  // formatted as UTC so the displayed day matches the stored day exactly; doing
+  // it in local time would shift the label a day west of Manila.
+  return dateRangeLabel(
+    new Date(`${period.starts_on}T00:00:00Z`),
+    new Date(`${period.ends_on}T00:00:00Z`)
+  )
+}
+
+/** What one client did against its allowance in one period. */
+export interface ClientQuotaUsage {
+  clientId: string
+  /** Meetings that consumed a slot. Never exceeds `cap` — the server caps it. */
+  used: number
+  /**
+   * Meetings refused a slot because the pool was full. THIS is the
+   * over-visiting signal, not `used > cap`, which the server makes impossible.
+   */
+  overCap: number
+  /** Meetings on an uncapped stage (prospect / in progress). */
+  uncapped: number
+  /** Meetings whose tag-along confirmation is still open, reserving nothing. */
+  pending: number
+  cap: number
+  state: QuotaState
+}
+
+/**
+ * Fold the attribution ledger into per-client usage for one period.
+ *
+ * Rows for other periods are ignored rather than filtered upstream, so a caller
+ * can hand over the whole ledger and switch periods without refetching.
+ */
+export function clientQuotaUsage(
+  attributions: MeetingCutoffAttribution[],
+  period: CutoffPeriod
+): Map<string, ClientQuotaUsage> {
+  const byClient = new Map<string, ClientQuotaUsage>()
+
+  const blank = (clientId: string): ClientQuotaUsage => ({
+    clientId,
+    used: 0,
+    overCap: 0,
+    uncapped: 0,
+    pending: 0,
+    cap: period.client_meeting_cap,
+    state: 'under',
+  })
+
+  for (const row of attributions) {
+    if (row.period_id !== period.id) continue
+    const entry = byClient.get(row.client_id) ?? blank(row.client_id)
+    if (row.attribution === 'counted') entry.used += 1
+    else if (row.attribution === 'over_cap') entry.overCap += 1
+    else if (row.attribution === 'excluded_uncapped') entry.uncapped += 1
+    else if (row.attribution === 'pending_validity') entry.pending += 1
+    // excluded_invalid and unattributed contribute to nothing by design.
+    byClient.set(row.client_id, entry)
+  }
+
+  for (const entry of byClient.values()) {
+    entry.state = quotaState(entry)
+  }
+  return byClient
 }
 
 /**
  * Where a client sits against its cap.
  *
- * 'under' covers zero visits too. The rule agreed on 2026-08-02 is a CEILING,
- * not a target — nobody is in trouble for not having visited an account yet, so
- * this deliberately does not distinguish "not started" from "one to go". If the
- * rule ever becomes "exactly 2 expected", that is the line to change.
+ * 'exempt' means every attributed meeting was on an uncapped stage — the client
+ * was a prospect throughout, so no ceiling applies. Checked before the cap
+ * comparison because such a client has `used = 0`, which would otherwise read
+ * as "plenty of room left" rather than "no limit here".
+ *
+ * 'over' keys off `overCap`, never off `used > cap`. The server allocates slots
+ * up to the cap and classifies the rest as over_cap, so `used` can never exceed
+ * `cap` and a comparison would silently never fire.
  */
-export function quotaState(visits: number, cap: number | null): QuotaState {
-  if (cap == null) return 'exempt'
-  if (visits > cap) return 'over'
-  if (visits === cap) return 'at'
+export function quotaState(usage: Pick<ClientQuotaUsage, 'used' | 'overCap' | 'uncapped' | 'cap'>): QuotaState {
+  if (usage.overCap > 0) return 'over'
+  if (usage.used === 0 && usage.uncapped > 0) return 'exempt'
+  if (usage.used >= usage.cap) return 'at'
   return 'under'
+}
+
+/** Empty usage for a client with nothing attributed in the period. */
+export function emptyUsage(clientId: string, period: CutoffPeriod): ClientQuotaUsage {
+  return {
+    clientId,
+    used: 0,
+    overCap: 0,
+    uncapped: 0,
+    pending: 0,
+    cap: period.client_meeting_cap,
+    state: 'under',
+  }
 }
