@@ -210,26 +210,25 @@ export function ListBoard({
                 })}
               </div>
 
-              {/* A day that has already passed cannot be added to. Publishing
-                  into it would put a store on a list no collector will ever see
-                  again — the phone works today's list — so it would land as
-                  "not worked" the moment it was created. Today and future days
-                  stay open: publishing tomorrow's list ahead of time is normal,
-                  which is why the card even has a "Tomorrow" label. */}
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full"
-                disabled={isPastDay(day.day)}
-                title={
-                  isPastDay(day.day)
-                    ? 'This day has passed — add the store to today or a later day instead'
-                    : undefined
-                }
-                onClick={() => onAddStore(day)}
-              >
-                <Plus /> Add store
-              </Button>
+              {/* Gone entirely on a past day, not disabled. Publishing into a
+                  day that has already gone would put a store on a list no
+                  collector will ever see again — the phone works today's list —
+                  so it would land as "not worked" the moment it was created.
+                  A greyed-out button still reads as "possible, just not yet",
+                  which is the wrong idea: that day is closed and will not
+                  reopen. Today and future days keep the button, since
+                  publishing tomorrow's list ahead of time is normal — the card
+                  even has a "Tomorrow" label. */}
+              {!isPastDay(day.day) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => onAddStore(day)}
+                >
+                  <Plus /> Add store
+                </Button>
+              )}
             </CardContent>
           </Card>
         )
