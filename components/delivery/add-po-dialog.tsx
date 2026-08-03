@@ -162,6 +162,11 @@ export function AddPoDialog({
     }
     if (!clientId) return setError('Pick the customer this PO delivers to.')
     if (!scheduledFor) return setError('Set the delivery day.')
+    // The real guard — `min` on the input is a browser hint and is bypassed by
+    // typing straight into the field.
+    if (scheduledFor < today()) {
+      return setError('That delivery day has already passed. Pick today or a later day.')
+    }
     if (!area.trim()) return setError('Set the delivery area.')
 
     let due: number | null = null
@@ -218,8 +223,18 @@ export function AddPoDialog({
                 id="add-po-day"
                 type="date"
                 value={scheduledFor}
+                // Today is the floor — a PO published into a past day is
+                // invisible to the drivers' phones, which work today's list, so
+                // it would be born as "not worked". See the twin note on
+                // AddStoreDialog.
+                min={today()}
                 onChange={e => setScheduledFor(e.target.value)}
               />
+              {scheduledFor && scheduledFor < today() && (
+                <p className="text-[11px] text-destructive">
+                  That day has already passed. Pick today or a later day.
+                </p>
+              )}
             </div>
           </div>
 
