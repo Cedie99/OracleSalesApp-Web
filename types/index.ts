@@ -580,61 +580,102 @@ export interface ClockRecord {
   agent?: Profile
 }
 
-// --- Quota configuration ----------------------------------------------------
+// --- Cutoff periods and quota attribution (migrations 057-060) ---------------
 //
-// ⚠️ NEITHER TABLE BELOW EXISTS YET, and web must not create them. `quota_policy`
-// was created by mobile (migration 028, hand-applied 2026-07-26) and mobile owns
-// changes to it; `cutoff_calendar` is still unbuilt. These interfaces are the
-// agreed SHAPE, so the web UI can be built against it now and wired up when the
-// migration lands from the mobile side. Until then the values come from
-// lib/quota-config.ts, not from Supabase.
+// Built by mobile (Batch 7A/7B) against the contract in the vault's
+// Meeting-2026-07-31-Cutoff-Quota.md / Decisions.md ADR-053. Web reads both
+// tables directly — admins have full SELECT on each — rather than through
+// migration 060's RPCs, which are per-caller (get_my_cutoff_usage_summary) or
+// per-client (get_client_cutoff_allowance) and so can't answer "show me every
+// account at once", which is the only question the Maps quota lens asks.
+//
+// Migration 028's `quota_policy` is deliberately untouched by all of this and
+// is NOT the source for any of it: it stays RSR-only, daily-target, legacy.
+
+export type CutoffPeriodStatus = 'draft' | 'scheduled' | 'active' | 'closed' | 'superseded'
 
 /**
- * Admin-editable cutoff boundaries, replacing the semi-monthly constant that
- * was never actually written down. Corresponds to the vault's Batch 0 open
- * item 1, deferred since 2026-07-25 and settled by the team 2026-08-02.
+ * An admin-defined cutoff period. Explicit start/end dates — periods are rows,
+ * not derived from a rule, so an irregular or holiday-shifted cutoff is just a
+ * different row.
  *
- * Periods are DERIVED from `anchor_days` rather than stored — see lib/cutoff.ts.
- * There may be no calendar at all, and that is a valid state meaning "the cutoff
- * is not configured yet": consumers must hide quota UI rather than assume
- * 1-15/16-EOM, per the register's rule that nothing may enforce a cutoff date
- * until an admin sets one.
+ * Immutable once live (contract O-8): an active or closed period is never
+ * edited in place, it is superseded by a new row pointing back via
+ * `supersedes_period_id`. Concurrently-live periods cannot overlap — a GiST
+ * exclusion constraint rejects that at write time, so the UI should surface the
+ * error rather than try to prevent every case itself.
+ *
+ * Targets are PER ROLE and independent (contract O-6): a null target means "not
+ * configured for this role" and must render as such, never as zero and never as
+ * a hardcoded fallback. `client_meeting_cap` is a different axis entirely — one
+ * shared pool across new+existing, per client, per period.
  */
-export interface CutoffCalendar {
+export interface CutoffPeriod {
   id: string
-  name: string
-  /** Days of the month a period starts on, e.g. [1, 16]. Ascending, distinct, 1-28. */
-  anchor_days: number[]
-  timezone: string
-  effective_from: string
-  effective_until: string | null
-  is_active: boolean
+  label: string
+  starts_on: string
+  ends_on: string
+  /** Period target for sales_specialist. Null = not configured for that role. */
+  sales_target: number | null
+  /** Period target for rsr. Null = not configured for that role. */
+  rsr_target: number | null
+  /** Per-client meeting ceiling: one pool shared across new and existing. */
+  client_meeting_cap: number
+  status: CutoffPeriodStatus
+  supersedes_period_id: string | null
+  version: number
+  created_by: string | null
   created_at: string
   updated_at: string
 }
 
 /**
- * A quota rule from `quota_policy` (mobile's migration 028), plus the
- * `client_visit_cap` extension agreed 2026-08-02 and not yet migrated.
+ * How one meeting was classified against the cutoff rules.
  *
- * Two unrelated questions share this table, discriminated by `policy_kind`:
- *  - `daily_visit_target` / `cutoff_target` — per-AGENT throughput, scoped by
- *    `role` (the RSR daily target, the Sales per-cutoff target). Unchanged.
- *  - `client_visit_cap` — a per-CLIENT ceiling, scoped by `applies_to`
- *    customer types instead. `role` is null on these rows because the cap is a
- *    property of the account, not of who is visiting it.
+ * - `counted` — consumed a per-client slot and contributes to the role target.
+ * - `over_cap` — valid and preserved, but the client's pool was already full.
+ *   Excluded from BOTH the per-client allowance and the period target (O-3).
+ *   This is the signal for "someone over-visited this account" — a client can
+ *   never show more counted meetings than the cap, because the server refuses
+ *   to allocate a slot rather than letting the number run over.
+ * - `excluded_uncapped` — client was prospect/in_progress at the time: no slot
+ *   consumed, but it still counts toward the agent's period target.
+ * - `excluded_invalid` — outcome or evidence didn't qualify. Only Successful
+ *   and Follow-up with a photo ever count.
+ * - `pending_validity` — a manager tag-along confirmation is still open, so no
+ *   slot is reserved yet. The only non-terminal value; re-decided when the
+ *   request resolves.
+ * - `unattributed` — no active period covered the meeting's start time. Counts
+ *   toward nothing and is never automatically reassigned to a later period.
  */
-export type QuotaPolicyKind = 'daily_visit_target' | 'cutoff_target' | 'client_visit_cap'
+export type CutoffAttribution =
+  | 'counted'
+  | 'over_cap'
+  | 'excluded_uncapped'
+  | 'excluded_invalid'
+  | 'pending_validity'
+  | 'unattributed'
 
-export interface QuotaPolicy {
-  id: string
-  role: UserRole | null
-  policy_kind: QuotaPolicyKind
-  target_value: number
-  /** Customer types this rule binds. Null for the per-agent rows. */
-  applies_to: CustomerType[] | null
-  timezone: string
-  effective_from: string
-  effective_until: string | null
-  is_active: boolean
+/**
+ * One row per meeting, written exclusively by `attribute_meeting_cutoff()`
+ * inside an AFTER INSERT trigger. No client role has INSERT or UPDATE, which is
+ * the entire integrity guarantee — web reads this and never derives its own
+ * count from `meetings`, or the two would disagree.
+ *
+ * ⚠️ Meetings inserted BEFORE migration 059 went live have no row here at all.
+ * The trigger only fires on insert and nothing backfills, so historical
+ * meetings are absent rather than `unattributed`. Anything reporting on this
+ * table has to say so instead of implying those visits never happened.
+ */
+export interface MeetingCutoffAttribution {
+  meeting_id: string
+  period_id: string | null
+  client_id: string
+  agent_id: string
+  /** The client's lifecycle stage at attribution time, not necessarily now. */
+  captured_client_stage: CustomerType | null
+  attribution: CutoffAttribution
+  /** 1-based slot consumed. Non-null exactly when attribution is 'counted'. */
+  slot_index: number | null
+  attributed_at: string
 }

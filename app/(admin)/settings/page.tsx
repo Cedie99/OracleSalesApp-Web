@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -8,343 +8,762 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { Separator } from '@/components/ui/separator'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { canManageUsers } from '@/lib/permissions'
-import { useQuotaConfig, type QuotaConfig } from '@/lib/hooks/use-quota-config'
-import { cutoffPeriodFor } from '@/lib/cutoff'
-import { CUSTOMER_TYPE_LABEL } from '@/lib/status-styles'
-import type { CustomerType } from '@/types'
-import { CalendarRange, Info, Gauge, RotateCcw, Check, TriangleAlert } from 'lucide-react'
+import { useCutoffPeriods } from '@/lib/hooks/use-cutoff'
+import {
+  activePeriod,
+  generatePeriods,
+  overlappingWithExisting,
+  periodDateLabel,
+  periodPhase,
+  type PeriodPhase,
+} from '@/lib/cutoff'
+import { createClient } from '@/lib/supabase/client'
+import { TONE_CLASS } from '@/lib/status-styles'
+import type { CutoffPeriod, CutoffPeriodStatus } from '@/types'
+import { CalendarRange, Info, TriangleAlert, Plus, Loader2, Repeat } from 'lucide-react'
 
-/** Anchors are constrained to 1–28 — see the note in the picker below. */
-const SELECTABLE_DAYS = Array.from({ length: 28 }, (_, i) => i + 1)
-
-/** The stages a visit cap can bind. Ordered as the lifecycle runs. */
-const CAPPABLE_TYPES: CustomerType[] = ['prospect', 'in_progress', 'new', 'existing']
+/** Tone per period status — shown only when the status is not the plain case. */
+const STATUS_TONE: Record<CutoffPeriodStatus, keyof typeof TONE_CLASS> = {
+  draft: 'neutral',
+  scheduled: 'navy',
+  active: 'brand',
+  closed: 'neutral',
+  superseded: 'amber',
+}
 
 /**
- * Settings — quota configuration.
+ * Periods are generated ahead as `active`, so the status column no longer says
+ * which one is running — the dates do. This is the badge an admin reads first.
+ */
+const PHASE_META: Record<PeriodPhase, { label: string; tone: keyof typeof TONE_CLASS }> = {
+  current: { label: 'Current', tone: 'brand' },
+  upcoming: { label: 'Upcoming', tone: 'navy' },
+  ended: { label: 'Ended', tone: 'neutral' },
+}
+
+/** Reading order: what is running, then what is next, then history. */
+const PHASE_ORDER: Record<PeriodPhase, number> = { current: 0, upcoming: 1, ended: 2 }
+
+interface RepeatDraft {
+  endDays: string
+  fromMonth: string
+  months: string
+  client_meeting_cap: string
+  sales_target: string
+  rsr_target: string
+}
+
+/**
+ * 'YYYY-MM' for THIS month.
  *
- * Exists because of the rule the team settled on 2026-08-02: cutoff dates are
- * set by an admin, never hardcoded. That closes an item the mobile side had
- * left open since 2026-07-25 ("exact cut-off dates should be set by an
- * Admin-configurable calendar"), and it is what makes the Maps quota lens
- * meaningful — the lens counts visits per cutoff, so someone has to be able to
- * say when a cutoff starts.
+ * This month rather than next, because the field selects the months periods
+ * *end* in and the first period reaches back before that. Defaulting to next
+ * month left today in the gap ahead of the earliest period: two dozen rows, all
+ * correct, none of them covering the day the admin was standing on.
+ */
+function currentMonth(): string {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+}
+
+const EMPTY_REPEAT: RepeatDraft = {
+  // The company's actual cycle, per the supervisor 2026-08-03. A default, not a
+  // constant — the field below edits it.
+  endDays: '8, 23',
+  fromMonth: '',
+  months: '12',
+  client_meeting_cap: '2',
+  sales_target: '',
+  rsr_target: '',
+}
+
+/**
+ * Shortcuts for shapes that come up often — not the set of allowed answers. The
+ * field below takes any days at all, and a cutoff that does not repeat monthly
+ * is a single period, created by hand.
+ */
+const QUICK_PATTERNS: { label: string; value: string }[] = [
+  { label: '8th & 23rd', value: '8, 23' },
+  { label: '15th & end of month', value: '15, 31' },
+  { label: '10th & 25th', value: '10, 25' },
+  { label: 'End of month only', value: '31' },
+]
+
+interface DraftPeriod {
+  label: string
+  starts_on: string
+  ends_on: string
+  client_meeting_cap: string
+  sales_target: string
+  rsr_target: string
+}
+
+const EMPTY_DRAFT: DraftPeriod = {
+  label: '',
+  starts_on: '',
+  ends_on: '',
+  client_meeting_cap: '2',
+  sales_target: '',
+  rsr_target: '',
+}
+
+/**
+ * Settings — cutoff periods.
  *
- * Route access comes free from lib/permissions.ts: '/settings' is absent from
- * every SCOPE_ROUTES entry, so canAccessRoute only passes an unrestricted admin
- * or a superadmin, exactly like '/users'. Editing is narrowed once more to
- * superadmin (canManageUsers) — changing an anchor day silently moves every
- * agent's quota window, which is not a change a scoped admin should make in
- * passing.
+ * Backs migration 057's `cutoff_periods`, which is the switch the whole quota
+ * feature hangs off: with no period defined, the attribution trigger (059)
+ * classifies every new meeting as `unattributed` and the Maps quota lens hides
+ * itself. Nothing seeds a period, deliberately — the contract's rule is that no
+ * cutoff is enforced until an admin sets one.
+ *
+ * Two constraints from the contract shape this page rather than the other way
+ * round:
+ *  - O-8, immutability: an active or closed period is never edited in place.
+ *    It is superseded by a new row. Only draft and scheduled rows take edits.
+ *  - Non-overlap: a GiST exclusion constraint rejects two scheduled/active
+ *    periods whose dates intersect. The UI surfaces that error rather than
+ *    trying to pre-empt every case, because the database is the only place that
+ *    can decide it without a race.
+ *
+ * Route access is inherited: '/settings' is absent from every SCOPE_ROUTES
+ * entry, so canAccessRoute admits only unrestricted admins and superadmins.
+ * Writes are narrowed once more to superadmin — a period change moves every
+ * agent's quota window.
  */
 export default function SettingsPage() {
   const { profile } = useCurrentProfile()
   const canEdit = canManageUsers(profile?.role)
-  const { calendars, policies, period, isConfigured, save, reset } = useQuotaConfig()
+  const { periods, loading, error, refresh } = useCutoffPeriods()
 
-  // Draft state, so a half-typed anchor list never reaches the map mid-edit.
-  const [draft, setDraft] = useState<QuotaConfig | null>(null)
-  const working: QuotaConfig = draft ?? { calendars, policies }
-  const dirty = draft !== null
+  const [draft, setDraft] = useState<DraftPeriod>(EMPTY_DRAFT)
+  const [creating, setCreating] = useState(false)
+  const [formError, setFormError] = useState('')
+  const [busyId, setBusyId] = useState<string | null>(null)
 
-  const workingCalendar = working.calendars[0] ?? null
-  const capPolicy = working.policies.find(p => p.policy_kind === 'client_visit_cap') ?? null
+  const [repeat, setRepeat] = useState<RepeatDraft>({ ...EMPTY_REPEAT, fromMonth: currentMonth() })
+  const [generating, setGenerating] = useState(false)
+  const [showAll, setShowAll] = useState(false)
 
-  // Preview the period the working draft would produce, so an admin sees the
-  // consequence of an anchor change before saving it.
-  const previewPeriod = workingCalendar ? cutoffPeriodFor(new Date(), workingCalendar) : null
+  const active = activePeriod(periods)
 
-  function edit(mutate: (config: QuotaConfig) => QuotaConfig) {
-    setDraft(mutate(structuredClone(working)))
+  function set<K extends keyof DraftPeriod>(key: K, value: DraftPeriod[K]) {
+    setDraft(d => ({ ...d, [key]: value }))
   }
 
-  function toggleAnchor(day: number) {
-    edit(config => {
-      const cal = config.calendars[0]
-      if (!cal) return config
-      const has = cal.anchor_days.includes(day)
-      const next = has ? cal.anchor_days.filter(d => d !== day) : [...cal.anchor_days, day]
-      // At least one boundary, at most four — beyond that a "cutoff" stops
-      // being a payroll period and the label stops fitting anywhere.
-      if (next.length === 0 || next.length > 4) return config
-      cal.anchor_days = next.sort((a, b) => a - b)
-      return config
-    })
+  function setRepeatField<K extends keyof RepeatDraft>(key: K, value: RepeatDraft[K]) {
+    setRepeat(r => ({ ...r, [key]: value }))
   }
 
-  function toggleAppliesTo(type: CustomerType) {
-    edit(config => {
-      const policy = config.policies.find(p => p.policy_kind === 'client_visit_cap')
-      if (!policy) return config
-      const current = policy.applies_to ?? []
-      policy.applies_to = current.includes(type)
-        ? current.filter(t => t !== type)
-        : [...current, type]
-      return config
+  /** Current first, then soonest upcoming, then most recent history. */
+  const ordered = useMemo(
+    () =>
+      [...periods].sort((a, b) => {
+        const phaseA = periodPhase(a)
+        const phaseB = periodPhase(b)
+        if (phaseA !== phaseB) return PHASE_ORDER[phaseA] - PHASE_ORDER[phaseB]
+        return phaseA === 'upcoming'
+          ? a.starts_on.localeCompare(b.starts_on)
+          : b.starts_on.localeCompare(a.starts_on)
+      }),
+    [periods]
+  )
+
+  // A year of periods is a long list to scroll past to reach the form below it.
+  const visible = showAll ? ordered : ordered.slice(0, 6)
+
+  /**
+   * When nothing covers today, the date the soonest period opens — the one fact
+   * that turns "no period is active" from a puzzle into an instruction.
+   * Null when every period is already behind us.
+   */
+  const nextStart = useMemo(() => {
+    if (active) return null
+    const upcoming = periods
+      .filter(p => periodPhase(p) === 'upcoming')
+      .sort((a, b) => a.starts_on.localeCompare(b.starts_on))[0]
+    return upcoming ? periodDateLabel(upcoming).split(' – ')[0] : null
+  }, [active, periods])
+
+  const endDays = useMemo(
+    () =>
+      repeat.endDays
+        .split(',')
+        .map(part => Number(part.trim()))
+        .filter(n => Number.isInteger(n) && n >= 1 && n <= 31),
+    [repeat.endDays]
+  )
+
+  const preview = useMemo(
+    () =>
+      generatePeriods({
+        endDays,
+        fromMonth: repeat.fromMonth,
+        months: Number(repeat.months),
+      }),
+    [endDays, repeat.fromMonth, repeat.months]
+  )
+
+  // Re-running the generator next year should add only what is missing rather
+  // than failing on the first collision, so overlaps are skipped, not rejected.
+  const skipped = useMemo(() => overlappingWithExisting(preview, periods), [preview, periods])
+  const toCreate = useMemo(
+    () => preview.filter(p => !skipped.includes(p)),
+    [preview, skipped]
+  )
+  const repeatValid =
+    endDays.length > 0 &&
+    repeat.fromMonth !== '' &&
+    Number(repeat.months) >= 1 &&
+    Number(repeat.client_meeting_cap) > 0 &&
+    toCreate.length > 0
+
+  /**
+   * Insert the whole batch as `active`.
+   *
+   * `active` rather than `scheduled` because migration 059 attributes a meeting
+   * only when the period is active AND the date falls inside it — a scheduled
+   * period covering today attributes nothing, so generating ahead as scheduled
+   * would just move the twice-a-month chore from creating rows to activating
+   * them. A period starting in November is inert until November regardless.
+   *
+   * One statement, so the non-overlap constraint either takes the batch or
+   * rejects it whole. A half-generated year is worse than none.
+   */
+  async function generate() {
+    setGenerating(true)
+    setFormError('')
+    const supabase = createClient()
+    const { error: insertError } = await supabase.from('cutoff_periods').insert(
+      toCreate.map(row => ({
+        label: row.label,
+        starts_on: row.starts_on,
+        ends_on: row.ends_on,
+        client_meeting_cap: Number(repeat.client_meeting_cap),
+        sales_target: repeat.sales_target === '' ? null : Number(repeat.sales_target),
+        rsr_target: repeat.rsr_target === '' ? null : Number(repeat.rsr_target),
+        status: 'active' as const,
+        created_by: profile?.id ?? null,
+      }))
+    )
+
+    if (insertError) {
+      setFormError(
+        insertError.message.includes('cutoff_periods_no_overlap')
+          ? 'Some of these dates overlap a period that already exists. Nothing was created.'
+          : insertError.message
+      )
+    } else {
+      await refresh()
+    }
+    setGenerating(false)
+  }
+
+  const draftValid =
+    draft.label.trim() !== '' &&
+    draft.starts_on !== '' &&
+    draft.ends_on !== '' &&
+    draft.ends_on >= draft.starts_on &&
+    Number(draft.client_meeting_cap) > 0
+
+  async function createPeriod(status: CutoffPeriodStatus) {
+    setCreating(true)
+    setFormError('')
+    const supabase = createClient()
+    const { error: insertError } = await supabase.from('cutoff_periods').insert({
+      label: draft.label.trim(),
+      starts_on: draft.starts_on,
+      ends_on: draft.ends_on,
+      client_meeting_cap: Number(draft.client_meeting_cap),
+      // Empty means "not configured for this role" and must stay null — a zero
+      // would render as a real target of nothing (contract O-6).
+      sales_target: draft.sales_target === '' ? null : Number(draft.sales_target),
+      rsr_target: draft.rsr_target === '' ? null : Number(draft.rsr_target),
+      status,
+      created_by: profile?.id ?? null,
     })
+
+    if (insertError) {
+      // The exclusion constraint is the expected failure here, and its raw
+      // message says nothing an admin can act on.
+      setFormError(
+        insertError.message.includes('cutoff_periods_no_overlap')
+          ? 'Those dates overlap a period that is already scheduled or active. Close or reschedule the other one first.'
+          : insertError.message
+      )
+    } else {
+      setDraft(EMPTY_DRAFT)
+      await refresh()
+    }
+    setCreating(false)
+  }
+
+  /** Status-only transition. Never touches dates or targets on a live row. */
+  async function setStatus(period: CutoffPeriod, status: CutoffPeriodStatus) {
+    setBusyId(period.id)
+    setFormError('')
+    const supabase = createClient()
+    const { error: updateError } = await supabase
+      .from('cutoff_periods')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', period.id)
+
+    if (updateError) {
+      setFormError(
+        updateError.message.includes('cutoff_periods_no_overlap')
+          ? 'Activating this period would overlap another scheduled or active one.'
+          : updateError.message
+      )
+    } else {
+      await refresh()
+    }
+    setBusyId(null)
   }
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <Header
         title="Settings"
+        // A generated period is named after its own dates, so printing both
+        // repeats the same words twice. A hand-made period usually is not.
         subtitle={
-          isConfigured && period
-            ? `Current cutoff · ${period.label}`
-            : 'No cutoff configured'
+          active
+            ? `Active cutoff · ${active.label}${
+                active.label === periodDateLabel(active) ? '' : ` · ${periodDateLabel(active)}`
+              }`
+            : 'No active cutoff period'
         }
       />
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {/* The honest caveat. This page writes to the browser, not to Supabase —
-            `cutoff_calendar` doesn't exist yet and `quota_policy` belongs to the
-            mobile repo, so the migration is theirs to apply. */}
-        <Alert>
-          <Info className="w-4 h-4" />
-          <AlertTitle>Not saved to the database yet</AlertTitle>
-          <AlertDescription>
-            These settings are stored in this browser only, so the cutoff rules can be
-            reviewed and demoed ahead of the schema. The <code>cutoff_calendar</code> table
-            does not exist yet and <code>quota_policy</code> is owned by the mobile repo —
-            once that migration lands, this page reads and writes the real rows with no
-            change to how it works.
-          </AlertDescription>
-        </Alert>
-
-        {!canEdit && (
+        {/* Two different problems wearing the same words. With no periods at all
+            the answer is "make some"; with periods that all start later, the
+            answer is "you have a gap", and saying "nothing seeds a period" there
+            reads as though the twenty-four rows on screen do not exist. */}
+        {!active && !loading && periods.length === 0 && (
           <Alert>
             <TriangleAlert className="w-4 h-4" />
-            <AlertTitle>View only</AlertTitle>
+            <AlertTitle>No period is active</AlertTitle>
             <AlertDescription>
-              Changing a cutoff moves every agent&apos;s quota window, so edits are limited to
-              a super admin.
+              Until a period is active, every new meeting is recorded as{' '}
+              <code>unattributed</code> — it counts toward no quota and consumes no client
+              allowance — and the Maps quota lens stays hidden. Nothing seeds a period
+              automatically; that is deliberate, so no cutoff rule applies before someone
+              sets one.
             </AlertDescription>
           </Alert>
         )}
 
-        {/* ---- Cutoff calendar --------------------------------------------- */}
+        {!active && !loading && periods.length > 0 && (
+          <Alert variant="destructive">
+            <TriangleAlert className="w-4 h-4" />
+            <AlertTitle>No period covers today</AlertTitle>
+            <AlertDescription>
+              {nextStart ? (
+                <>
+                  These {periods.length} periods are all set up correctly, but the earliest
+                  one does not start until <strong>{nextStart}</strong> — so today falls in
+                  a gap. Meetings recorded now are <code>unattributed</code> and are never
+                  moved into a period later. Generate again with an earlier{' '}
+                  <em>first month to cover</em> to fill it; the periods you already have are
+                  skipped automatically.
+                </>
+              ) : (
+                <>
+                  These {periods.length} periods have all ended, and no later one is
+                  defined. Meetings recorded now are <code>unattributed</code> and are never
+                  moved into a period later. Generate the next stretch below.
+                </>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!canEdit && (
+          <Alert>
+            <Info className="w-4 h-4" />
+            <AlertTitle>View only</AlertTitle>
+            <AlertDescription>
+              A period change moves every agent&apos;s quota window, so creating and
+              activating periods is limited to a super admin.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {(error || formError) && (
+          <Alert variant="destructive">
+            <TriangleAlert className="w-4 h-4" />
+            <AlertTitle>Could not save</AlertTitle>
+            <AlertDescription>{formError || error}</AlertDescription>
+          </Alert>
+        )}
+
+        {/* ---- Existing periods -------------------------------------------- */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
               <CalendarRange className="w-4 h-4 text-primary" />
-              <CardTitle>Cutoff calendar</CardTitle>
+              <CardTitle>Cutoff periods</CardTitle>
             </div>
             <CardDescription>
-              The days each pay period starts on. Periods run from one anchor to the next, so
-              two anchors give the usual semi-monthly cutoff and month length takes care of
-              itself.
+              Each period sets its own per-client meeting cap and per-role targets. A role
+              with no target is shown as unconfigured, never as zero. Once a period is
+              active it can no longer be edited — it is superseded by a new one.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {workingCalendar ? (
-              <>
-                <div className="grid gap-1.5 max-w-xs">
-                  <Label htmlFor="cutoff-name">Name</Label>
-                  <Input
-                    id="cutoff-name"
-                    value={workingCalendar.name}
-                    disabled={!canEdit}
-                    onChange={e =>
-                      edit(config => {
-                        config.calendars[0].name = e.target.value
-                        return config
-                      })
-                    }
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Period start days</Label>
-                  {/* 1–28 only. A 29th/30th/31st anchor has no meaning in
-                      February and every fallback is wrong for a payroll
-                      boundary, so the choice is removed rather than guessed. */}
-                  <div className="flex flex-wrap gap-1.5">
-                    {SELECTABLE_DAYS.map(day => {
-                      const on = workingCalendar.anchor_days.includes(day)
-                      return (
-                        <button
-                          key={day}
-                          type="button"
-                          disabled={!canEdit}
-                          onClick={() => toggleAnchor(day)}
-                          className={`w-9 h-9 rounded-full text-xs font-medium tabular-nums transition-colors disabled:opacity-50 disabled:pointer-events-none ${
-                            on
-                              ? 'bg-primary text-primary-foreground'
-                              : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-                          }`}
-                        >
-                          {day}
-                        </button>
-                      )
-                    })}
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Days 29–31 are not selectable — they don&apos;t exist in every month.
-                  </p>
-                </div>
-
-                <div className="grid gap-1.5 max-w-xs">
-                  <Label htmlFor="cutoff-tz">Timezone</Label>
-                  <Input
-                    id="cutoff-tz"
-                    value={workingCalendar.timezone}
-                    disabled={!canEdit}
-                    onChange={e =>
-                      edit(config => {
-                        config.calendars[0].timezone = e.target.value
-                        return config
-                      })
-                    }
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    A cutoff starts at local midnight, so this decides where the boundary
-                    actually falls.
-                  </p>
-                </div>
-
-                <Separator />
-
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-muted-foreground">Current period would be</span>
-                  <Badge variant="outline" className="font-medium">
-                    {previewPeriod?.label ?? 'undefined'}
-                  </Badge>
-                </div>
-              </>
-            ) : (
-              <div className="text-sm text-muted-foreground space-y-3">
-                <p>
-                  No cutoff is configured, so visit-quota tracking is switched off across the
-                  app — the Maps quota lens is hidden rather than assuming a default.
-                </p>
-                {canEdit && (
-                  <Button
-                    variant="outline"
-                    onClick={() =>
-                      edit(config => {
-                        config.calendars = [
-                          {
-                            id: 'semi-monthly',
-                            name: 'Semi-monthly',
-                            anchor_days: [1, 16],
-                            timezone: 'Asia/Manila',
-                            effective_from: new Date().toISOString().slice(0, 10),
-                            effective_until: null,
-                            is_active: true,
-                            created_at: new Date().toISOString(),
-                            updated_at: new Date().toISOString(),
-                          },
-                        ]
-                        return config
-                      })
-                    }
-                  >
-                    Add a semi-monthly calendar
-                  </Button>
-                )}
+          <CardContent className="space-y-2">
+            {loading && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                <Loader2 className="w-4 h-4 animate-spin" /> Loading periods…
               </div>
             )}
+
+            {!loading && periods.length === 0 && (
+              <p className="text-sm text-muted-foreground py-2">
+                No periods defined yet. Generate a repeating set below, or create a single
+                one by hand.
+              </p>
+            )}
+
+            {visible.map(period => {
+              const phase = periodPhase(period)
+              return (
+              <div
+                key={period.id}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border p-3"
+              >
+                <Badge variant="tone" className={TONE_CLASS[PHASE_META[phase].tone]}>
+                  {PHASE_META[phase].label}
+                </Badge>
+                {/* The status only earns its own badge when it says something the
+                    dates do not — a closed or superseded row, or one not yet live. */}
+                {period.status !== 'active' && (
+                  <Badge variant="tone" className={TONE_CLASS[STATUS_TONE[period.status]]}>
+                    {period.status}
+                  </Badge>
+                )}
+                <span className="text-sm font-medium text-foreground">{period.label}</span>
+                {period.label !== periodDateLabel(period) && (
+                  <span className="text-xs text-muted-foreground">{periodDateLabel(period)}</span>
+                )}
+
+                <div className="flex items-center gap-3 text-xs text-muted-foreground ml-auto">
+                  <span>
+                    Cap <span className="text-foreground font-medium">{period.client_meeting_cap}</span>
+                  </span>
+                  <span>
+                    Sales{' '}
+                    <span className="text-foreground font-medium">
+                      {period.sales_target ?? '—'}
+                    </span>
+                  </span>
+                  <span>
+                    RSR{' '}
+                    <span className="text-foreground font-medium">{period.rsr_target ?? '—'}</span>
+                  </span>
+                </div>
+
+                {canEdit && (
+                  <div className="flex items-center gap-1.5 w-full sm:w-auto">
+                    {(period.status === 'draft' || period.status === 'scheduled') && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busyId === period.id}
+                        onClick={() => setStatus(period, 'active')}
+                      >
+                        Activate
+                      </Button>
+                    )}
+                    {period.status === 'active' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busyId === period.id}
+                        onClick={() => setStatus(period, 'closed')}
+                      >
+                        Close
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+              )
+            })}
+
+            {ordered.length > visible.length && (
+              <Button variant="ghost" size="sm" onClick={() => setShowAll(true)}>
+                Show all {ordered.length} periods
+              </Button>
+            )}
           </CardContent>
         </Card>
 
-        {/* ---- Visit cap ---------------------------------------------------- */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Gauge className="w-4 h-4 text-primary" />
-              <CardTitle>Visits per client, per cutoff</CardTitle>
-            </div>
-            <CardDescription>
-              A ceiling, not a target — an account below the limit is not flagged. Stages left
-              unticked are uncapped, which is how prospects are meant to stay.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {capPolicy && (
-              <>
-                <div className="grid gap-1.5 max-w-[8rem]">
-                  <Label htmlFor="visit-cap">Maximum visits</Label>
+        {/* ---- Generate a repeating set ------------------------------------- */}
+        {canEdit && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Repeat className="w-4 h-4 text-primary" />
+                <CardTitle>Generate repeating periods</CardTitle>
+              </div>
+              <CardDescription>
+                Set the shape once and create a year of periods at a time. They are still
+                stored one row per period — this only saves you entering each one. Dates
+                that already have a period are skipped, so you can run this again later to
+                top up.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-1.5">
+                <Label htmlFor="r-ends">Cutoff ends on day</Label>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {QUICK_PATTERNS.map(p => (
+                    <Button
+                      key={p.value}
+                      type="button"
+                      size="sm"
+                      variant={endDays.join(', ') === p.value ? 'default' : 'outline'}
+                      onClick={() => setRepeatField('endDays', p.value)}
+                    >
+                      {p.label}
+                    </Button>
+                  ))}
+                </div>
+                <Input
+                  id="r-ends"
+                  placeholder="8, 23"
+                  value={repeat.endDays}
+                  onChange={e => setRepeatField('endDays', e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Any days of the month, separated by commas — the buttons above are just
+                  shortcuts. Each period starts the day after the previous one ended, so a
+                  cutoff can run across a month boundary and no day is ever left uncovered.
+                  Use 31 to mean the last day, whatever the month is.
+                </p>
+              </div>
+
+              {/* items-start, or the cells stretch to match the taller one and the
+                  inner grid spreads its rows to fill — which drops this row's label
+                  and input below the ones beside it, purely because only one column
+                  carries a hint underneath. */}
+              <div className="grid gap-3 sm:grid-cols-2 items-start">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="r-from">First month to cover</Label>
                   <Input
-                    id="visit-cap"
+                    id="r-from"
+                    type="month"
+                    value={repeat.fromMonth}
+                    onChange={e => setRepeatField('fromMonth', e.target.value)}
+                  />
+                  {/* A period ending on the 8th began in the month before, so the
+                      first row reaches back past this month. Said plainly here
+                      because the preview showing an earlier date looks like a bug. */}
+                  <p className="text-xs text-muted-foreground">
+                    Periods that <em>end</em> in this month. The first one may start in the
+                    month before.
+                  </p>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="r-months">Months to cover</Label>
+                  <Input
+                    id="r-months"
                     type="number"
                     min={1}
-                    value={capPolicy.target_value}
-                    disabled={!canEdit}
-                    onChange={e =>
-                      edit(config => {
-                        const policy = config.policies.find(p => p.policy_kind === 'client_visit_cap')
-                        // An empty or zero cap would read as "no visits allowed",
-                        // which is never what an admin means — floor it at 1.
-                        if (policy) policy.target_value = Math.max(1, Number(e.target.value) || 1)
-                        return config
-                      })
-                    }
+                    max={36}
+                    value={repeat.months}
+                    onChange={e => setRepeatField('months', e.target.value)}
                   />
                 </div>
+              </div>
 
-                <div className="space-y-2">
-                  <Label>Applies to</Label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {CAPPABLE_TYPES.map(type => {
-                      const on = capPolicy.applies_to?.includes(type) ?? false
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="r-cap">Meetings per client</Label>
+                  <Input
+                    id="r-cap"
+                    type="number"
+                    min={1}
+                    value={repeat.client_meeting_cap}
+                    onChange={e => setRepeatField('client_meeting_cap', e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="r-sales">Sales target</Label>
+                  <Input
+                    id="r-sales"
+                    type="number"
+                    min={1}
+                    placeholder="Not configured"
+                    value={repeat.sales_target}
+                    onChange={e => setRepeatField('sales_target', e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="r-rsr">RSR target</Label>
+                  <Input
+                    id="r-rsr"
+                    type="number"
+                    min={1}
+                    placeholder="Not configured"
+                    value={repeat.rsr_target}
+                    onChange={e => setRepeatField('rsr_target', e.target.value)}
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Every generated period gets these same values. A period that needs
+                different ones is a single period — create it by hand below.
+              </p>
+
+              {preview.length > 0 && (
+                <div className="rounded-lg border border-border">
+                  <div className="px-3 py-2 border-b border-border flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-foreground">
+                      {toCreate.length} to create
+                    </span>
+                    {skipped.length > 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        · {skipped.length} skipped, already covered
+                      </span>
+                    )}
+                  </div>
+                  <div className="max-h-48 overflow-y-auto divide-y divide-border">
+                    {preview.map(row => {
+                      const isSkipped = skipped.includes(row)
                       return (
-                        <button
-                          key={type}
-                          type="button"
-                          disabled={!canEdit}
-                          onClick={() => toggleAppliesTo(type)}
-                          className={`flex items-center gap-1.5 h-8 px-3 rounded-full text-xs font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none ${
-                            on
-                              ? 'bg-primary text-primary-foreground'
-                              : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                        <div
+                          key={row.starts_on}
+                          className={`flex items-center gap-2 px-3 py-1.5 text-xs ${
+                            isSkipped ? 'text-muted-foreground/60' : 'text-foreground'
                           }`}
                         >
-                          {on && <Check className="w-3 h-3" />}
-                          {CUSTOMER_TYPE_LABEL[type]}
-                        </button>
+                          <span className="font-medium w-24 shrink-0">{row.label}</span>
+                          <span className="text-muted-foreground tabular-nums">
+                            {row.starts_on} → {row.ends_on}
+                          </span>
+                          {isSkipped && <span className="ml-auto shrink-0">skipped</span>}
+                        </div>
                       )
                     })}
                   </div>
                 </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+              )}
 
-      {/* ---- Save bar ------------------------------------------------------- */}
-      {canEdit && (
-        <div className="shrink-0 border-t border-border bg-card/50 px-4 py-3 flex items-center gap-2">
-          <Button
-            variant="ghost"
-            onClick={() => {
-              reset()
-              setDraft(null)
-            }}
-          >
-            <RotateCcw className="w-4 h-4" />
-            Reset to defaults
-          </Button>
-          <div className="ml-auto flex items-center gap-2">
-            {dirty && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
-            <Button variant="outline" disabled={!dirty} onClick={() => setDraft(null)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={!dirty}
-              onClick={() => {
-                save(working)
-                setDraft(null)
-              }}
-            >
-              Save changes
-            </Button>
-          </div>
-        </div>
-      )}
+              <Button disabled={!repeatValid || generating} onClick={generate}>
+                {generating && <Loader2 className="w-4 h-4 animate-spin" />}
+                Create {toCreate.length} {toCreate.length === 1 ? 'period' : 'periods'}
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ---- New period --------------------------------------------------- */}
+        {canEdit && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Plus className="w-4 h-4 text-primary" />
+                <CardTitle>Single period</CardTitle>
+              </div>
+              <CardDescription>
+                For a cutoff that does not fit the repeating shape — a holiday-shifted
+                window, or one with its own cap. Dates are inclusive on both ends and must
+                not overlap any period that is already scheduled or active.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="p-label">Label</Label>
+                  <Input
+                    id="p-label"
+                    placeholder="Aug 1–15"
+                    value={draft.label}
+                    onChange={e => set('label', e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="p-start">Starts on</Label>
+                  <Input
+                    id="p-start"
+                    type="date"
+                    value={draft.starts_on}
+                    onChange={e => set('starts_on', e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="p-end">Ends on</Label>
+                  <Input
+                    id="p-end"
+                    type="date"
+                    value={draft.ends_on}
+                    onChange={e => set('ends_on', e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="p-cap">Meetings per client</Label>
+                  <Input
+                    id="p-cap"
+                    type="number"
+                    min={1}
+                    value={draft.client_meeting_cap}
+                    onChange={e => set('client_meeting_cap', e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    One shared pool across new and existing. Prospects are uncapped.
+                  </p>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="p-sales">Sales target</Label>
+                  <Input
+                    id="p-sales"
+                    type="number"
+                    min={1}
+                    placeholder="Not configured"
+                    value={draft.sales_target}
+                    onChange={e => set('sales_target', e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="p-rsr">RSR target</Label>
+                  <Input
+                    id="p-rsr"
+                    type="number"
+                    min={1}
+                    placeholder="Not configured"
+                    value={draft.rsr_target}
+                    onChange={e => set('rsr_target', e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {draft.starts_on !== '' && draft.ends_on !== '' && draft.ends_on < draft.starts_on && (
+                <p className="text-xs text-destructive">The end date is before the start date.</p>
+              )}
+
+              <div className="flex items-center gap-2">
+                <Button disabled={!draftValid || creating} onClick={() => createPeriod('active')}>
+                  {creating && <Loader2 className="w-4 h-4 animate-spin" />}
+                  Create and activate
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={!draftValid || creating}
+                  onClick={() => createPeriod('scheduled')}
+                >
+                  Save as scheduled
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
     </div>
   )
 }
