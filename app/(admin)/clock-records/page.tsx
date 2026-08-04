@@ -6,12 +6,14 @@ import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { PersonSelect } from '@/components/ui/person-select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Pagination } from '@/components/ui/pagination'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useClockRecords } from '@/lib/hooks/use-clock-records'
+import { useTeams } from '@/lib/hooks/use-teams'
 import { roleLabel } from '@/lib/permissions'
 import type { ClockRecord, ClockType, Profile } from '@/types'
 import { Search, Clock, MapPin, Calendar, Loader2 } from 'lucide-react'
@@ -79,14 +81,17 @@ export default function ClockRecordsPage() {
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
 
   const { records, loading, error } = useClockRecords()
+  const { teams } = useTeams()
 
+  // Built from the records rather than from every profile: this page can only
+  // filter to someone who has actually clocked in, and offering the rest would
+  // be offering guaranteed-empty results.
   const agentOptions = useMemo(() => {
-    const byId = new Map<string, string>()
+    const byId = new Map<string, { id: string; name: string; teamId: string | null }>()
     records.forEach(r => {
-      if (r.agent) byId.set(r.agent.id, r.agent.full_name)
+      if (r.agent) byId.set(r.agent.id, { id: r.agent.id, name: r.agent.full_name, teamId: r.agent.team_id })
     })
-    return Array.from(byId, ([id, full_name]) => ({ id, full_name }))
-      .sort((a, b) => a.full_name.localeCompare(b.full_name))
+    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
   }, [records])
 
   const rows = useMemo(() => pairIntoAttendanceRows(records), [records])
@@ -145,17 +150,14 @@ export default function ClockRecordsPage() {
               <SelectItem value="event">Event</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={agentFilter} onValueChange={v => setAgentFilter(v ?? 'all')}>
-            <SelectTrigger className="w-44 h-9 bg-card border-border">
-              <SelectValue placeholder="All Agents" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Agents</SelectItem>
-              {agentOptions.map(agent => (
-                <SelectItem key={agent.id} value={agent.id}>{agent.full_name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <PersonSelect
+            options={agentOptions}
+            value={agentFilter}
+            onChange={setAgentFilter}
+            allLabel="All Agents"
+            teams={teams}
+            aria-label="Agent"
+          />
           <DateRangeFilter filter={dateFilter} />
         </div>
 

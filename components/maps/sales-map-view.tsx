@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { PersonSelect } from '@/components/ui/person-select'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useMeetings, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
@@ -500,20 +501,26 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   // to that team's agents. A team has no "unassigned" bucket (those clients have
   // no agent and therefore no team).
   const agentOptions = useMemo(() => {
-    const byId = new Map<string, string>()
+    const byId = new Map<string, { id: string; name: string; teamId: string | null }>()
     let hasUnassigned = false
     clients.forEach(c => {
       if (teamFilter !== 'all' && c.agent?.team_id !== teamFilter) return
-      if (c.agent) byId.set(c.agent.id, c.agent.full_name)
+      if (c.agent) byId.set(c.agent.id, { id: c.agent.id, name: c.agent.full_name, teamId: c.agent.team_id ?? null })
       else hasUnassigned = true
     })
     return {
       hasUnassigned,
-      agents: Array.from(byId, ([id, full_name]) => ({ id, full_name })).sort((a, b) =>
-        a.full_name.localeCompare(b.full_name)
-      ),
+      agents: Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name)),
     }
   }, [clients, teamFilter])
+
+  // Its own memo so the picker's `items` identity survives renders that only
+  // moved the map — a fresh array each time makes the combobox re-derive its
+  // whole collection.
+  const agentExtras = useMemo(
+    () => (agentOptions.hasUnassigned ? [{ value: 'unassigned', label: 'Unassigned' }] : []),
+    [agentOptions.hasUnassigned]
+  )
 
   // The single agent the list is scoped to, if any — shown once as a header
   // instead of repeated on every row below (see the per-row agent block).
@@ -936,18 +943,21 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
           </SelectContent>
         </Select>
 
-        <Select value={agentFilter} onValueChange={v => setAgentFilter(v ?? 'all')}>
-          <SelectTrigger className="w-[8.5rem] h-9 bg-card border-border">
-            <SelectValue placeholder="All agents" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All agents</SelectItem>
-            {agentOptions.agents.map(agent => (
-              <SelectItem key={agent.id} value={agent.id}>{agent.full_name}</SelectItem>
-            ))}
-            {agentOptions.hasUnassigned && <SelectItem value="unassigned">Unassigned</SelectItem>}
-          </SelectContent>
-        </Select>
+        <PersonSelect
+          options={agentOptions.agents}
+          value={agentFilter}
+          onChange={setAgentFilter}
+          allLabel="All agents"
+          // The list is already narrowed by the team filter beside it, so team
+          // headings only earn their space while that filter is off.
+          teams={teamFilter === 'all' ? teams : undefined}
+          extras={agentExtras}
+          aria-label="Agent"
+          // Wider than the plain selects beside it: this one shows the chosen
+          // name, and a full name plus the search, clear and chevron affordances
+          // does not fit their 8.5rem.
+          className="w-56"
+        />
 
         {/* The window control belongs to whichever lens is showing.
 

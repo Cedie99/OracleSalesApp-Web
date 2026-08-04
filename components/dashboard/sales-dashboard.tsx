@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { PersonSelect } from '@/components/ui/person-select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Pagination } from '@/components/ui/pagination'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
@@ -80,6 +80,15 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
       ),
     [profiles, currentView]
   )
+
+  // Memoised because these arrays reach Combobox.Root as `items` via
+  // PersonSelect. Rebuilt inline they would carry a new identity on every
+  // render and make the picker re-derive its whole collection each time.
+  const agentOptions = useMemo(
+    () => scopedAgents.map(a => ({ id: a.id, name: a.full_name, teamId: a.team_id })),
+    [scopedAgents]
+  )
+  const teamOptions = useMemo(() => teams.map(t => ({ id: t.id, name: t.name })), [teams])
 
   // All meetings within the current team scope (not affected by the Agent
   // Performance table's own agent/date filters below) — drives the metric
@@ -352,17 +361,17 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
                 <CardTitle className="text-sm font-semibold text-foreground">Agent Performance</CardTitle>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Select value={perfAgentFilter} onValueChange={v => setPerfAgentFilter(v ?? 'all')}>
-                  <SelectTrigger className="w-44 h-8 bg-card border-border text-xs">
-                    <SelectValue placeholder="All Agents" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Agents</SelectItem>
-                    {scopedAgents.map(a => (
-                      <SelectItem key={a.id} value={a.id}>{a.full_name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <PersonSelect
+                  options={agentOptions}
+                  value={perfAgentFilter}
+                  onChange={setPerfAgentFilter}
+                  allLabel="All Agents"
+                  // Only when the view spans every team is grouping worth its
+                  // headings — inside one team they would all read the same.
+                  teams={currentView.teamId === null ? teamOptions : undefined}
+                  aria-label="Agent"
+                  className="w-52"
+                />
                 <DateRangeFilter filter={dateFilter} />
               </div>
             </div>

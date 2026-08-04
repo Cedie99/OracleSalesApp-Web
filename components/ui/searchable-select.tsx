@@ -43,6 +43,14 @@ interface SearchableSelectProps {
   placeholder?: string
   /** Shown when the query matches nothing. */
   emptyLabel?: string
+  /**
+   * Whether to offer the clear button. Defaults to "whenever something is
+   * selected", which is right for a picker whose empty state is genuinely
+   * empty. A caller whose neutral state is itself an item — an "All Agents"
+   * row — passes false while that row is chosen, because clearing back to what
+   * you already have is a control that does nothing.
+   */
+  showClear?: boolean
   className?: string
   'aria-label'?: string
 }
@@ -53,6 +61,7 @@ export function SearchableSelect({
   onChange,
   placeholder = 'Search…',
   emptyLabel = 'No matches',
+  showClear = true,
   className,
   'aria-label': ariaLabel,
 }: SearchableSelectProps) {
@@ -84,7 +93,7 @@ export function SearchableSelect({
           className="h-full w-full min-w-0 bg-transparent px-2 text-sm text-foreground outline-none placeholder:text-muted-foreground"
         />
         <div className="flex items-center pr-1 shrink-0">
-          {selected && (
+          {selected && showClear && (
             <Combobox.Clear
               className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-foreground"
               aria-label="Clear selection"
