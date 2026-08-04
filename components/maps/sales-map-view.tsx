@@ -19,8 +19,8 @@ import {
   isPlottableMeeting,
   mapStatusMeta,
   parseLatLng,
+  ATTENTION_META,
   OUTCOME_META,
-  QUOTA_META,
   STATUS_META,
   TILE_LAYERS,
   type MapStatus,
@@ -32,8 +32,14 @@ import {
   periodDateLabel,
   reviewablePeriods,
   type ClientQuotaUsage,
-  type QuotaState,
 } from '@/lib/cutoff'
+import {
+  clientAttention,
+  compareAttention,
+  MAX_LIFESPAN_MONTHS,
+  type AttentionFlag,
+  type AttentionKind,
+} from '@/lib/attention'
 import { useCutoffAttributions, useCutoffPeriods } from '@/lib/hooks/use-cutoff'
 import { formatCoords, useReverseGeocode } from '@/lib/hooks/use-reverse-geocode'
 import { formatDurationMinutes } from '@/lib/utils'
@@ -69,24 +75,22 @@ const OUTCOME_LABEL: Record<string, string> = {
 
 const STATUS_KEYS = Object.keys(STATUS_META) as MapStatus[]
 const OUTCOME_KEYS = Object.keys(OUTCOME_META) as MeetingOutcome[]
-const QUOTA_KEYS = Object.keys(QUOTA_META) as QuotaState[]
+const ATTENTION_KEYS = Object.keys(ATTENTION_META) as AttentionKind[]
 const TILE_KEYS = Object.keys(TILE_LAYERS) as MapTileType[]
 
 type TypeFilter = 'all' | 'f2f' | 'online'
 
-/**
- * Worst first — the quota list exists to surface violations, not to be
- * alphabetical. Only 'over' is a violation: the cap is a ceiling, so a client
- * that used its whole allowance ranks with the ones that used none.
- */
-const QUOTA_RANK: Record<QuotaState, number> = { over: 0, within: 1, exempt: 2 }
-
-/** A client measured against its per-period meeting allowance. */
-interface QuotaRow {
+/** A client with at least one thing wrong with it. */
+interface AttentionRow {
   client: Client
-  /** Server-decided usage from the attribution ledger, never counted here. */
-  usage: ClientQuotaUsage
-  /** A locatable meeting the server attributed to this period, for the pin. */
+  /** Worst first, per compareAttention. Never empty — a clean client has no row. */
+  flags: AttentionFlag[]
+  /**
+   * Server-decided usage from the attribution ledger, never counted here.
+   * Null when no cutoff is configured — the lifecycle signals still stand.
+   */
+  usage: ClientQuotaUsage | null
+  /** A locatable meeting for the pin. */
   plotMeeting: Meeting | null
 }
 
@@ -334,15 +338,19 @@ interface SalesMapViewProps {
  * question here is "when was this account last seen, and by whom" — which is why
  * the list partitions by coverage rather than into routes.
  *
- * The second lens used to be "Not visited", which partitioned against the
- * toolbar date range. That range defaults to a single day, so it really meant
- * "had no meeting today" — i.e. almost every client in the database, listed
- * alphabetically, every day, with nothing actionable in it and a blank map
- * beside it. It is now a VISIT QUOTA lens instead: the rule agreed with the
- * supervisor on 2026-08-02 caps new and existing accounts at 2 visits per
- * cutoff (prospects uncapped), so the useful question is which accounts are
- * being over-worked, which is a short list. A client at zero still appears, so
- * genuine neglect is not hidden — it just no longer drowns the page.
+ * The second lens has been through two rewrites, each fixing the last one's
+ * problem. It began as "Not visited", partitioned against the toolbar date
+ * range — which defaults to a single day, so it really meant "had no meeting
+ * today", i.e. almost every client in the database, listed alphabetically,
+ * every day, with nothing actionable in it and a blank map beside it. It then
+ * became a VISIT QUOTA lens against the 2026-08-02 cap. That was honest but
+ * thin: one fact, reported as a whole tab, on pins the Visited list was already
+ * drawing, and duplicated in full by the Cutoff & Quota report.
+ *
+ * It is now NEEDS ATTENTION: the cap kept as one signal among three, alongside
+ * the two client-lifecycle clocks from ADR-006 that nothing in web renders
+ * today. See lib/attention.ts for what qualifies and why nothing here invents a
+ * duration.
  */
 export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps) {
   const [search, setSearch] = useState('')
@@ -364,7 +372,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   const dateFilter = useDateRangeFilter({ defaultPreset: initialAgentId ? 'all' : 'day' })
   const [teamFilter, setTeamFilter] = useState<'all' | string>('all')
   const [colorBy, setColorBy] = useState<'status' | 'outcome'>('status')
-  const [listMode, setListMode] = useState<'visited' | 'quota'>('visited')
+  const [listMode, setListMode] = useState<'visited' | 'attention'>('visited')
   /**
    * Index into `reviewablePeriods` — 0 is the newest, higher is further back.
    *
@@ -403,11 +411,21 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   const isConfigured = periodList.length > 0
   const period = periodList[Math.min(periodIndex, periodList.length - 1)] ?? null
 
-  // An admin can close or supersede the last period while the lens is open.
-  // Snap back during render rather than in an effect, matching the filterKey
-  // reset below, so the panel never paints a frame of a lens with no data.
-  const effectiveListMode = isConfigured ? listMode : 'visited'
-  if (effectiveListMode !== listMode) setListMode(effectiveListMode)
+  // Unlike the quota lens this replaced, Needs Attention does NOT require a
+  // configured cutoff: two of its three signals are lifecycle clocks anchored
+  // on the client row itself (lib/attention.ts) and run whether or not anyone
+  // has ever defined a period. Only the cap signal goes quiet, which the list
+  // header says out loud rather than hiding the tab over.
+
+  /**
+   * One clock for the whole render pass.
+   *
+   * The lifecycle signals compare against "now" per client, and reading the
+   * system clock inside the loop would let a list straddle midnight — two rows
+   * anchored on the same date reporting deadlines a day apart. Pinned per mount
+   * instead, which is also what makes the row order stable between renders.
+   */
+  const now = useMemo(() => new Date(), [])
 
   /** Per-client usage for the visible period, folded from the ledger. */
   const usageByClient = useMemo(
@@ -525,14 +543,14 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     }
   }
 
-  // --- Filtered clients, as visits-in-range and as quota-against-cutoff -------
+  // --- Filtered clients, as visits-in-range and as accounts needing attention -
   //
   // Two different windows on purpose. `visited` answers "what happened during
-  // the dates I'm looking at" and follows the toolbar. `quota` answers "how far
-  // through its allowance is this account" and follows the CUTOFF PERIOD, which
-  // the toolbar must not influence — stepping the date filter to yesterday
-  // would otherwise report every client at 0 of 2.
-  const { visited, quota } = useMemo(() => {
+  // the dates I'm looking at" and follows the toolbar. `attention` answers
+  // "what is wrong with this account", which the toolbar must not influence —
+  // stepping the date filter to yesterday cannot make a 6-month lifecycle
+  // deadline go away, and the cap is measured per CUTOFF PERIOD.
+  const { visited, attention } = useMemo(() => {
     const q = coord ? '' : search.toLowerCase().trim()
     const vis: {
       client: Client
@@ -540,7 +558,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
       plotMeeting: Meeting | null
       lastVisit: string | null
     }[] = []
-    const quotaRows: QuotaRow[] = []
+    const attentionRows: AttentionRow[] = []
 
     // Scoped to one agent (the Clients page's "View on map" deep link) means
     // the whole roster, not just the ones with a meeting in range — a client
@@ -566,17 +584,29 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
 
       const all = meetingsByClient.get(client.id) ?? []
 
-      // Quota: every filtered client gets a row, including those the ledger
-      // never touched — an account at 0 of its allowance is real information,
-      // it just isn't urgent, so it sorts to the bottom rather than getting its
-      // own tab. The meeting-type tabs deliberately do NOT apply: the cap
-      // counts meetings, and an online meeting is a meeting.
-      if (period) {
+      // Attention: only clients with something actually wrong get a row. This is
+      // the break from the quota lens, which listed every client and sorted the
+      // unremarkable ones to the bottom — a work queue that includes everyone is
+      // not a work queue. A clean account simply isn't here.
+      //
+      // The meeting-type tabs deliberately do NOT apply, same as the quota lens:
+      // the cap counts meetings and an online meeting is a meeting, and a
+      // lifecycle clock has no opinion about how the visit was held.
+      const usage = period ? usageByClient.get(client.id) ?? emptyUsage(client.id, period) : null
+      const flags = clientAttention(client, all, usage, now)
+      if (flags.length > 0) {
+        // Pinned at the attributed visit where there is one, because that is the
+        // evidence for an over-limit row. Otherwise the latest located visit at
+        // all: a lifecycle clock is about the account rather than the period, so
+        // restricting its pin to this cutoff would leave the very accounts the
+        // lens exists to surface — the quiet ones — unplotted.
         const ids = attributedMeetingIds.get(client.id)
-        quotaRows.push({
+        const attributed = ids ? all.find(m => ids.has(m.id) && isPlottableMeeting(m)) : null
+        attentionRows.push({
           client,
-          usage: usageByClient.get(client.id) ?? emptyUsage(client.id, period),
-          plotMeeting: ids ? all.find(m => ids.has(m.id) && isPlottableMeeting(m)) ?? null : null,
+          flags,
+          usage,
+          plotMeeting: attributed ?? all.find(isPlottableMeeting) ?? null,
         })
       }
 
@@ -603,25 +633,26 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
       if (b.lastVisit) return 1
       return a.client.company_name.localeCompare(b.client.company_name)
     })
-    quotaRows.sort(
-      (a, b) =>
-        QUOTA_RANK[a.usage.state] - QUOTA_RANK[b.usage.state] ||
-        b.usage.overCap - a.usage.overCap ||
-        b.usage.used - a.usage.used ||
-        a.client.company_name.localeCompare(b.client.company_name)
-    )
-    return { visited: vis, quota: quotaRows }
+    attentionRows.sort(compareAttention)
+    return { visited: vis, attention: attentionRows }
   }, [
     clients, meetingsByClient, teamFilter, statusFilter, agentFilter, typeFilter,
-    range, search, coord, period, usageByClient, attributedMeetingIds,
+    range, search, coord, period, usageByClient, attributedMeetingIds, now,
   ])
 
-  /** Over/at-limit tallies for the tab and the legend header. */
-  const quotaCounts = useMemo(() => {
-    const acc = Object.fromEntries(QUOTA_KEYS.map(k => [k, 0])) as Record<QuotaState, number>
-    for (const row of quota) acc[row.usage.state] += 1
+  /**
+   * Per-signal tallies for the tab badge and the legend.
+   *
+   * Counted over every flag a row carries, not just its worst one, so the
+   * legend numbers describe the pins' own vocabulary — an account that is both
+   * expiring and over its cap is genuinely two problems, and a legend that only
+   * counted the top one would total less than the work outstanding.
+   */
+  const attentionCounts = useMemo(() => {
+    const acc = Object.fromEntries(ATTENTION_KEYS.map(k => [k, 0])) as Record<AttentionKind, number>
+    for (const row of attention) for (const flag of row.flags) acc[flag.kind] += 1
     return acc
-  }, [quota])
+  }, [attention])
 
   /**
    * The meeting the selected client's pin is actually sitting on. Mirrors the
@@ -631,11 +662,11 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   const selectedPlotMeeting = useMemo(() => {
     if (!selectedId) return null
     const row =
-      listMode === 'quota'
-        ? quota.find(r => r.client.id === selectedId)
+      listMode === 'attention'
+        ? attention.find(r => r.client.id === selectedId)
         : visited.find(v => v.client.id === selectedId)
     return row?.plotMeeting ?? null
-  }, [selectedId, listMode, quota, visited])
+  }, [selectedId, listMode, attention, visited])
 
   /**
    * Where the pin IS, in words. Resolved from the captured GPS rather than from
@@ -657,10 +688,10 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   const plotPlace = useReverseGeocode(selectedPlotMeeting?.gps_lat, selectedPlotMeeting?.gps_lng)
 
   const pins = useMemo<MapPin[]>(() => {
-    // The quota lens keeps its pins, unlike the not-visited lens it replaced —
-    // an over-worked account has visits this cutoff, so it has a location, and
-    // seeing WHERE over-visiting clusters is most of the value. Clients with no
-    // visit this cutoff simply have nothing to plot and stay list-only.
+    // Every attention signal rests on an account that has been visited at some
+    // point, so all three plot — seeing WHERE trouble clusters is most of the
+    // value. Only a client with no located visit in its whole history stays
+    // list-only, and it is listed rather than dropped.
     /**
      * The popup lines describing the pinned visit.
      *
@@ -681,30 +712,31 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
       }
     }
 
-    if (listMode === 'quota') {
-      return quota
+    if (listMode === 'attention') {
+      return attention
         .filter(r => r.plotMeeting)
         .map(r => {
           const active = r.client.id === selectedId
-          const usageLine =
-            r.usage.state === 'exempt'
-              ? `${r.usage.uncapped} uncapped ${r.usage.uncapped === 1 ? 'meeting' : 'meetings'}`
-              : r.usage.overCap > 0
-                ? `${r.usage.used + r.usage.overCap} visits · ${r.usage.overCap} past the limit`
-                : `${r.usage.used} ${r.usage.used === 1 ? 'visit' : 'visits'} this period`
           const visit = visitMeta(r.plotMeeting!, active)
           return {
             id: r.client.id,
             lat: r.plotMeeting!.gps_lat!,
             lng: r.plotMeeting!.gps_lng!,
-            color: QUOTA_META[r.usage.state].color,
+            // The worst flag owns the pin. A client can carry several and the
+            // popup lists them all, but a pin has one colour and it should be
+            // the one that decides where this account sits in the queue.
+            color: ATTENTION_META[r.flags[0].kind].color,
             active,
             label: r.client.company_name,
-            // Usage leads here — it is what the lens is about — with the pinned
-            // visit's own when/where underneath, since that is the visit the pin
-            // is standing on and used to go unstated entirely.
-            sublabel: usageLine,
-            meta: [`Pinned at ${visit.sublabel}`, ...visit.meta],
+            // What is wrong leads — it is what the lens is about — with every
+            // other flag under it, then the pinned visit's own when/where, since
+            // that is the visit the pin is standing on.
+            sublabel: r.flags[0].detail,
+            meta: [
+              ...r.flags.slice(1).map(f => f.detail),
+              `Pinned at ${visit.sublabel}`,
+              ...visit.meta,
+            ],
             avatarUrl: r.client.agent?.avatar_url,
           }
         })
@@ -728,7 +760,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
           avatarUrl: v.client.agent?.avatar_url,
         }
       })
-  }, [visited, quota, selectedId, colorBy, listMode, plotPlace.loading, plotPlace.label])
+  }, [visited, attention, selectedId, colorBy, listMode, plotPlace.loading, plotPlace.label])
 
   // Built from STATUS_KEYS, not a literal, so adding a lifecycle stage to
   // STATUS_META can't leave a legend row counting `undefined + 1` (NaN). A
@@ -767,6 +799,18 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   /** Record fields the agent still owes, for the note in the panel. */
   const infoGaps = selected ? clientInfoGaps(selected) : []
 
+  /**
+   * What is wrong with the selected account, for the panel.
+   *
+   * Read off the attention list rather than recomputed, so the panel can never
+   * disagree with the row that opened it. Empty on both lenses when the account
+   * is clean — this is a fact about the client, not about which tab you are on,
+   * so it is worth showing while browsing the Visited list too.
+   */
+  const selectedFlags = selectedId
+    ? attention.find(r => r.client.id === selectedId)?.flags ?? []
+    : []
+
   const selectedAddress = selected ? clientAddress(selected) : null
   // Keyed on selectedId (a string), not the client object — depending on the
   // object trips the React Compiler's mutation analysis (see git history).
@@ -780,8 +824,8 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     // Each lens pins a different meeting — the latest in the date range vs the
     // latest this cutoff — so fly to whichever one the visible list is showing.
     const plotMeeting =
-      listMode === 'quota'
-        ? quota.find(r => r.client.id === id)?.plotMeeting
+      listMode === 'attention'
+        ? attention.find(r => r.client.id === id)?.plotMeeting
         : visited.find(v => v.client.id === id)?.plotMeeting
     if (plotMeeting) {
       focusNonce.current += 1
@@ -826,11 +870,11 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
       <Header
         title="Meetings Map"
         // Each lens describes its own window — the visited counts say nothing
-        // about a cutoff, and quoting them under the quota list read as if the
-        // date filter were still driving it.
+        // about a cutoff, and quoting them under the attention list read as if
+        // the date filter were still driving it.
         subtitle={
-          listMode === 'quota'
-            ? `Cutoff ${period?.label ?? '—'} · ${quota.length} ${quota.length === 1 ? 'client' : 'clients'} · ${quotaCounts.over} over limit`
+          listMode === 'attention'
+            ? `${attention.length} ${attention.length === 1 ? 'account needs' : 'accounts need'} attention · ${attentionCounts.expiring} expiring · ${attentionCounts.over_limit} over limit`
             : `${rangeLabel} · ${visited.length} ${visited.length === 1 ? 'client' : 'clients'} visited · ${mappedCount} mapped · ${unlocatedCount} no location`
         }
         action={headerAction}
@@ -908,17 +952,20 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
         {/* The window control belongs to whichever lens is showing.
 
             Visited measures DAYS, so it gets the day stepper and its presets.
-            Quota measures CUTOFFS, so the same slot becomes a cutoff stepper —
-            step back one and you are looking at last period's over-limit
-            accounts, which is the review a supervisor actually does at payroll
-            time. Leaving the day filter visible there would be a control that
-            changes nothing in the list in front of you.
+            Attention's cap signal measures CUTOFFS, so the same slot becomes a
+            cutoff stepper — step back one and you are looking at last period's
+            over-limit accounts, which is the review a supervisor actually does
+            at payroll time. Leaving the day filter visible there would be a
+            control that changes nothing in the list in front of you. (The two
+            lifecycle signals ignore the stepper entirely; a 6-month deadline is
+            not a property of the cutoff you happen to be looking at.)
 
             The meeting-type tabs go with it, for a different reason: the cap
             counts VISITS, and an online meeting is a visit. Filtering to F2F
             would report 1/2 for a client that has genuinely used both slots, so
             the tabs are withheld rather than allowed to lie. */}
-        {listMode === 'quota' ? (
+        {listMode === 'attention' ? (
+          isConfigured ? (
           <div className="flex items-center gap-1">
             <button
               type="button"
@@ -955,6 +1002,16 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
+          ) : (
+            /* No cutoff defined, so there is no window to step and no cap to
+               measure — but the lifecycle signals are unaffected, so the lens
+               stays. Says which signal is missing rather than showing a dead
+               stepper; the fix lives in Settings. */
+            <div className="h-9 flex items-center gap-1.5 px-3 rounded-md border border-dashed border-border text-[11px] text-muted-foreground">
+              <Info className="w-3.5 h-3.5 shrink-0" />
+              No cutoff set — visit limits not checked
+            </div>
+          )
         ) : (
           <>
             {/* Date window: per-day stepper by default, with wider presets. */}
@@ -981,25 +1038,20 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
         {listOpen ? (
           <div className="w-80 shrink-0 border-r border-border flex flex-col min-h-0">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
-              <Tabs value={listMode} onValueChange={v => setListMode(v as 'visited' | 'quota')} className="flex-1">
+              <Tabs value={listMode} onValueChange={v => setListMode(v as 'visited' | 'attention')} className="flex-1">
                 <TabsList className="h-8 w-full">
                   <TabsTrigger value="visited" className="px-2 text-xs">
                     Visited <span className="ml-1 opacity-60">{visited.length}</span>
                   </TabsTrigger>
-                  {/* No cutoff configured means no quota to show. Hiding the tab
-                      beats showing an empty one — there is nothing an admin can
-                      do about it from here, and the fix lives in Settings. */}
-                  {isConfigured && (
-                    <TabsTrigger value="quota" className="px-2 text-xs">
-                      Quota
-                      {/* Only violations are worth a badge. A count of clients
-                          that merely used their allowance would be a number
-                          nobody can act on. */}
-                      {quotaCounts.over > 0 && (
-                        <span className="ml-1 opacity-60">{quotaCounts.over}</span>
-                      )}
-                    </TabsTrigger>
-                  )}
+                  {/* Badged with the whole queue, not just the worst band: every
+                      row here is by definition something somebody has to do, so
+                      the count is already the actionable number. */}
+                  <TabsTrigger value="attention" className="px-2 text-xs">
+                    Attention
+                    {attention.length > 0 && (
+                      <span className="ml-1 opacity-60">{attention.length}</span>
+                    )}
+                  </TabsTrigger>
                 </TabsList>
               </Tabs>
               <button
@@ -1108,27 +1160,26 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                 </>
               ) : (
                 <>
-                  {/* Names the window and states the ceiling once, here, rather
-                      than stamping it on every row as a denominator. Sticky
-                      because the list is sorted worst-first and the counts are
-                      the summary of what follows. */}
+                  {/* States what is being measured once, here, rather than
+                      stamping it on every row. Sticky because the list is
+                      sorted worst-first and the counts summarise what follows. */}
                   <div className="sticky top-0 z-10 px-4 py-2.5 bg-card border-b border-border">
                     <p className="text-[11px] font-medium text-foreground">
-                      {period?.label}
+                      Needs attention
                       {period && (
                         <span className="text-muted-foreground font-normal">
-                          {' '}· at most {period.client_meeting_cap} per client
+                          {' '}· {period.label}, at most {period.client_meeting_cap} per client
                         </span>
                       )}
                     </p>
-                    <div className="flex items-center gap-2.5 mt-1 text-[10px] text-muted-foreground">
-                      {(['over', 'within'] as const).map(key => (
+                    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 mt-1 text-[10px] text-muted-foreground">
+                      {ATTENTION_KEYS.filter(key => attentionCounts[key] > 0).map(key => (
                         <span key={key} className="flex items-center gap-1">
                           <span
                             className="w-1.5 h-1.5 rounded-full shrink-0"
-                            style={{ background: QUOTA_META[key].color }}
+                            style={{ background: ATTENTION_META[key].color }}
                           />
-                          {quotaCounts[key]} {QUOTA_META[key].label.toLowerCase()}
+                          {attentionCounts[key]} {ATTENTION_META[key].label.toLowerCase()}
                         </span>
                       ))}
                     </div>
@@ -1142,8 +1193,9 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                     )}
                   </div>
 
-                  {quota.map(({ client, usage }) => {
-                    const meta = QUOTA_META[usage.state]
+                  {attention.map(({ client, flags, usage, plotMeeting }) => {
+                    const top = flags[0]
+                    const meta = ATTENTION_META[top.kind]
                     const active = client.id === selectedId
                     return (
                       <button
@@ -1157,26 +1209,37 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                             style={{ background: meta.color }}
                           />
                           <p className="text-sm font-medium text-foreground truncate flex-1">{client.company_name}</p>
-                          {/* A bare count, never `used/cap`. The fraction read as
-                              progress toward a quota the client is expected to
-                              fill, and the cap is a ceiling — 2 of 2 is no more
-                              notable than 0 of 2. The ceiling is stated once in
-                              the header; only going PAST it earns a colour. */}
-                          <span
-                            className="text-[11px] font-semibold shrink-0 tabular-nums"
-                            style={{ color: usage.state === 'over' ? meta.color : undefined }}
-                          >
-                            {usage.state === 'exempt' ? usage.uncapped : usage.used}
-                            {usage.overCap > 0 && ` +${usage.overCap}`}
-                          </span>
+                          {/* The countdown, which is the whole point of the row.
+                              Days rather than a date: "12d" is a decision, a date
+                              needs arithmetic. Past-due goes negative-free and
+                              says so instead. */}
+                          {top.daysLeft !== null && (
+                            <span
+                              className="text-[11px] font-semibold shrink-0 tabular-nums"
+                              style={{ color: meta.color }}
+                            >
+                              {top.daysLeft < 0 ? 'overdue' : `${top.daysLeft}d`}
+                            </span>
+                          )}
                         </div>
-                        {/* Prefixed because this is the account's address, not
-                            the pin's. See officeAddressLine. */}
-                        <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">
-                          <span className="text-muted-foreground/60">Office: </span>
-                          {officeAddressLine(client)}
-                        </p>
-                        <div className="flex items-center gap-1.5 mt-1 pl-4">
+
+                        {/* Every flag, spelled out. A row exists BECAUSE of these
+                            lines, so they lead — the office address that used to
+                            sit here is in the panel and on the pin, and saying
+                            what is wrong matters more in a queue. */}
+                        <div className="mt-1 pl-4 space-y-0.5">
+                          {flags.map(flag => (
+                            <p key={flag.kind} className="text-[11px] leading-snug flex items-start gap-1.5">
+                              <span
+                                className="w-1 h-1 rounded-full shrink-0 mt-1.5"
+                                style={{ background: ATTENTION_META[flag.kind].color }}
+                              />
+                              <span className="text-muted-foreground">{flag.detail}</span>
+                            </p>
+                          ))}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 mt-1.5 pl-4">
                           {/* Redundant once the agent is the list's own header. */}
                           {!selectedAgent && client.agent && (
                             <Avatar className="size-4 after:border-0">
@@ -1191,12 +1254,17 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                               {client.agent?.full_name ?? 'Unassigned'}
                             </p>
                           )}
-                          {/* A pending tag-along reserves no slot, so the number
-                              to its left can still move. Flagged so it isn't
-                              read as settled. */}
-                          {usage.pending > 0 && (
+                          {/* A pending tag-along reserves no slot, so an
+                              over-limit count can still move. Flagged so it
+                              isn't read as settled. */}
+                          {usage && usage.pending > 0 && (
                             <Badge variant="outline" className="text-[9px] px-1 h-3.5 shrink-0 text-muted-foreground">
                               {usage.pending} pending
+                            </Badge>
+                          )}
+                          {!plotMeeting && (
+                            <Badge variant="outline" className="text-[9px] px-1 h-3.5 shrink-0 text-muted-foreground">
+                              No pin
                             </Badge>
                           )}
                           <Badge
@@ -1204,17 +1272,18 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                             className="ml-auto text-[9px] px-1 h-3.5 shrink-0"
                             style={{ borderColor: `${meta.color}55`, color: meta.color }}
                           >
-                            {usage.overCap > 0
-                              ? `${usage.overCap} over cap`
-                              : meta.label}
+                            {meta.label}
                           </Badge>
                         </div>
                       </button>
                     )
                   })}
-                  {quota.length === 0 && (
-                    <div className="text-center py-12 text-muted-foreground text-sm px-6">
-                      No clients match these filters.
+                  {attention.length === 0 && (
+                    <div className="text-center py-12 text-muted-foreground text-sm px-6 space-y-1">
+                      <p className="text-foreground font-medium">Nothing needs attention</p>
+                      <p className="text-xs">
+                        No account is over its visit limit or near a lifecycle deadline.
+                      </p>
                     </div>
                   )}
                 </>
@@ -1232,7 +1301,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
             <span className="text-[10px] font-semibold [writing-mode:vertical-rl]">
               {listMode === 'visited'
                 ? `${visited.length} visited`
-                : `${quotaCounts.over} over limit`}
+                : `${attention.length} need attention`}
             </span>
           </button>
         )}
@@ -1256,11 +1325,18 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
               <CardContent className="p-3 flex items-start gap-2.5">
                 <Info className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
                 <div className="text-xs text-muted-foreground leading-relaxed">
-                  {listMode === 'quota' ? (
-                    <>
-                      <p className="font-medium text-foreground mb-0.5">Nothing located this cutoff</p>
-                      No visit in {period?.label} carries coordinates, so there are no pins to place. Every account is still counted in the list on the left.
-                    </>
+                  {listMode === 'attention' ? (
+                    attention.length === 0 ? (
+                      <>
+                        <p className="font-medium text-foreground mb-0.5">Nothing needs attention</p>
+                        No account is over its visit limit or near a lifecycle deadline, so there is nothing to plot.
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-medium text-foreground mb-0.5">Nothing located</p>
+                        No visit to these accounts carries coordinates, so there are no pins to place. Every one is still listed on the left.
+                      </>
+                    )
                   ) : visited.length === 0 ? (
                     <>
                       <p className="font-medium text-foreground mb-0.5">Nothing to plot for {rangeLabel.toLowerCase()}</p>
@@ -1278,27 +1354,33 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
           )}
 
           {/* Legend — top-left, clear of the detail overlay on the right. */}
-          {listMode === 'quota' ? (
-            /* The quota lens colours pins by how far through the cap an account
-               is, so it carries its own legend and no colour-by toggle — status
-               and outcome would be a second colour vocabulary on the same pins. */
-            <Card className="absolute top-4 left-4 w-48 bg-card/95 border-border backdrop-blur-sm z-10 pt-0 gap-0">
+          {listMode === 'attention' ? (
+            /* The attention lens colours pins by what is wrong with an account,
+               so it carries its own legend and no colour-by toggle — status and
+               outcome would be a second colour vocabulary on the same pins. */
+            <Card className="absolute top-4 left-4 w-52 bg-card/95 border-border backdrop-blur-sm z-10 pt-0 gap-0">
               <CardContent className="p-3 space-y-1.5">
                 <p className="text-[10px] font-semibold text-foreground mb-2">
-                  Visits · {period?.label}
+                  Needs attention
                 </p>
-                {QUOTA_KEYS.map(key => (
+                {ATTENTION_KEYS.map(key => (
                   <div key={key} className="flex items-center gap-2">
                     <span
                       className="w-2.5 h-2.5 rounded-full shrink-0"
-                      style={{ background: QUOTA_META[key].color }}
+                      style={{ background: ATTENTION_META[key].color }}
                     />
-                    <span className="text-xs text-muted-foreground">{QUOTA_META[key].label}</span>
+                    <span className="text-xs text-muted-foreground">{ATTENTION_META[key].label}</span>
                     <span className="text-xs text-foreground ml-auto font-medium pl-4">
-                      {quotaCounts[key]}
+                      {attentionCounts[key]}
                     </span>
                   </div>
                 ))}
+                {/* A pin takes its worst flag's colour, so the legend's totals
+                    can exceed the pin count. Said once here rather than left to
+                    be discovered by adding the numbers up. */}
+                <p className="text-[10px] text-muted-foreground/80 leading-snug pt-1">
+                  An account can carry more than one; its pin shows the worst.
+                </p>
               </CardContent>
             </Card>
           ) : (
@@ -1506,6 +1588,55 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                     actually judges a record on — see lib/client-info.ts — with
                     the stage left to the badge in the header rather than
                     repeated here. */}
+                {/* Why this account is in the queue, stated before the record
+                    details — an admin who clicked an orange pin is asking "what
+                    is wrong with this one", and the answer should not be below
+                    the contact number. The lifecycle rules cited here are
+                    ADR-006; see lib/attention.ts. */}
+                {selectedFlags.length > 0 && (
+                  <div className="space-y-2 pb-3 border-b border-border">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80">
+                      Needs Attention
+                    </p>
+                    {selectedFlags.map(flag => (
+                      <div
+                        key={flag.kind}
+                        className="flex items-start gap-2 p-2 rounded-lg border"
+                        style={{
+                          borderColor: `${ATTENTION_META[flag.kind].color}44`,
+                          background: `${ATTENTION_META[flag.kind].color}0f`,
+                        }}
+                      >
+                        <span
+                          className="w-1.5 h-1.5 rounded-full shrink-0 mt-1.5"
+                          style={{ background: ATTENTION_META[flag.kind].color }}
+                        />
+                        <div className="min-w-0">
+                          <p
+                            className="text-[11px] font-medium"
+                            style={{ color: ATTENTION_META[flag.kind].color }}
+                          >
+                            {ATTENTION_META[flag.kind].label}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground leading-relaxed">
+                            {flag.detail}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                    {/* The anchor, so the countdown can be checked rather than
+                        taken on trust. Both lifecycle clocks run from info
+                        completion, never from creation. */}
+                    {selected.details_completed_at && (
+                      <p className="text-[10px] text-muted-foreground/80 leading-snug">
+                        Lifecycle clocks run from info completion on{' '}
+                        {format(new Date(selected.details_completed_at), 'MMM d, yyyy')}
+                        {' '}· {MAX_LIFESPAN_MONTHS}-month limit
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="space-y-2.5">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80">
                     Client Information
