@@ -49,13 +49,21 @@ const PHASE_META: Record<PeriodPhase, { label: string; tone: keyof typeof TONE_C
 /** Reading order: what is running, then what is next, then history. */
 const PHASE_ORDER: Record<PeriodPhase, number> = { current: 0, upcoming: 1, ended: 2 }
 
+/**
+ * The repeating generator's own state — SHAPE ONLY.
+ *
+ * It deliberately carries no targets. Generated periods inherit the standing
+ * numbers from `quota_settings`, which is not a tidiness preference: the fields
+ * that used to live here could not keep what they were given. Saving the Quota
+ * targets card calls `apply_standing_targets()`, which rewrites the targets on
+ * every period that has not ended — so a number typed here survived only until
+ * the next save, and the form was promising a per-batch override the database
+ * had no way to honour.
+ */
 interface RepeatDraft {
   endDays: string
   fromMonth: string
   months: string
-  client_meeting_cap: string
-  sales_target: string
-  rsr_target: string
 }
 
 /**
@@ -77,9 +85,6 @@ const EMPTY_REPEAT: RepeatDraft = {
   endDays: '8, 23',
   fromMonth: '',
   months: '12',
-  client_meeting_cap: '2',
-  sales_target: '',
-  rsr_target: '',
 }
 
 /**
@@ -154,21 +159,26 @@ export default function SettingsPage() {
   const [repeat, setRepeat] = useState<RepeatDraft>({ ...EMPTY_REPEAT, fromMonth: currentMonth() })
 
   /**
-   * New periods start from the standing numbers rather than a literal in the
-   * code — the whole point of quota_settings is that 35, 16 and 2 live in one
-   * place. Applied once, when settings first arrive; typing over them afterwards
-   * is a per-period override and must not be clobbered by a re-render.
+   * The hand-built period starts from the standing numbers rather than a literal
+   * in the code — the whole point of quota_settings is that 35, 16 and 2 live in
+   * one place. Applied once, when settings first arrive; typing over them
+   * afterwards is a deliberate per-period override and must not be clobbered by
+   * a re-render.
+   *
+   * Only this form. The generator inherits the same numbers silently at insert
+   * time (see `generate`), because it offers no override to seed.
    */
   const [inherited, setInherited] = useState(false)
   useEffect(() => {
     if (inherited || !settings) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setInherited(true)
-    const cap = String(settings.client_meeting_cap)
-    const sales = settings.sales_target != null ? String(settings.sales_target) : ''
-    const rsr = settings.rsr_daily_target != null ? String(settings.rsr_daily_target) : ''
-    setDraft(d => ({ ...d, client_meeting_cap: cap, sales_target: sales, rsr_target: rsr }))
-    setRepeat(r => ({ ...r, client_meeting_cap: cap, sales_target: sales, rsr_target: rsr }))
+    setDraft(d => ({
+      ...d,
+      client_meeting_cap: String(settings.client_meeting_cap),
+      sales_target: settings.sales_target != null ? String(settings.sales_target) : '',
+      rsr_target: settings.rsr_daily_target != null ? String(settings.rsr_daily_target) : '',
+    }))
   }, [settings, inherited])
   const [generating, setGenerating] = useState(false)
   const [showAll, setShowAll] = useState(false)
@@ -239,11 +249,14 @@ export default function SettingsPage() {
     () => preview.filter(p => !skipped.includes(p)),
     [preview, skipped]
   )
+  // `settings` gates the button because the generated rows take their numbers
+  // from it. client_meeting_cap is NOT NULL on the table, so inserting before
+  // the standing row has loaded would either fail or invent a cap.
   const repeatValid =
     endDays.length > 0 &&
     repeat.fromMonth !== '' &&
     Number(repeat.months) >= 1 &&
-    Number(repeat.client_meeting_cap) > 0 &&
+    settings != null &&
     toCreate.length > 0
 
   /**
@@ -257,8 +270,12 @@ export default function SettingsPage() {
    *
    * One statement, so the non-overlap constraint either takes the batch or
    * rejects it whole. A half-generated year is worse than none.
+   *
+   * Targets come from `quota_settings`, never from this form — see RepeatDraft.
+   * Guarded by `repeatValid`, so `settings` is loaded by the time this runs.
    */
   async function generate() {
+    if (!settings) return
     setGenerating(true)
     setFormError('')
     const supabase = createClient()
@@ -267,11 +284,11 @@ export default function SettingsPage() {
         label: row.label,
         starts_on: row.starts_on,
         ends_on: row.ends_on,
-        client_meeting_cap: Number(repeat.client_meeting_cap),
-        sales_target: repeat.sales_target === '' ? null : Number(repeat.sales_target),
+        client_meeting_cap: settings.client_meeting_cap,
+        sales_target: settings.sales_target,
         // rsr_daily_target, not the deprecated rsr_target: an RSR is measured
-        // per working day, and 063 moved the number to a column that says so.
-        rsr_daily_target: repeat.rsr_target === '' ? null : Number(repeat.rsr_target),
+        // per working day, and 064 moved the number to a column that says so.
+        rsr_daily_target: settings.rsr_daily_target,
         status: 'active' as const,
         created_by: profile?.id ?? null,
       }))
@@ -638,43 +655,37 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="r-cap">Visit limit per client</Label>
-                  <Input
-                    id="r-cap"
-                    type="number"
-                    min={1}
-                    value={repeat.client_meeting_cap}
-                    onChange={e => setRepeatField('client_meeting_cap', e.target.value)}
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="r-sales">Sales target (per cutoff)</Label>
-                  <Input
-                    id="r-sales"
-                    type="number"
-                    min={1}
-                    placeholder="Not configured"
-                    value={repeat.sales_target}
-                    onChange={e => setRepeatField('sales_target', e.target.value)}
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="r-rsr">RSR target (per working day)</Label>
-                  <Input
-                    id="r-rsr"
-                    type="number"
-                    min={1}
-                    placeholder="Not configured"
-                    value={repeat.rsr_target}
-                    onChange={e => setRepeatField('rsr_target', e.target.value)}
-                  />
-                </div>
+              {/*
+                Read-only, not three more inputs. These numbers have exactly one
+                home — the Quota targets card above — and duplicating them here
+                would re-create the trap this section used to set: values typed
+                into a generator look per-batch, but the next "Save targets"
+                rewrites the targets on every period that has not ended.
+              */}
+              <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5">
+                <p className="text-xs text-muted-foreground">
+                  New periods will use{' '}
+                  <span className="font-medium text-foreground">
+                    {settings?.sales_target != null
+                      ? `Sales ${settings.sales_target} per cutoff`
+                      : 'no Sales target'}
+                  </span>
+                  ,{' '}
+                  <span className="font-medium text-foreground">
+                    {settings?.rsr_daily_target != null
+                      ? `RSR ${settings.rsr_daily_target} per working day`
+                      : 'no RSR target'}
+                  </span>
+                  , and a{' '}
+                  <span className="font-medium text-foreground">
+                    visit limit of {settings?.client_meeting_cap ?? '—'}
+                  </span>
+                  . Change them in Quota targets above.
+                </p>
               </div>
               <p className="text-xs text-muted-foreground">
-                Every generated period gets these same values. A period that needs
-                different ones is a single period — create it by hand below.
+                A period that needs different numbers is a single period — create it
+                by hand below, where they can be overridden.
               </p>
 
               {preview.length > 0 && (
@@ -763,6 +774,13 @@ export default function SettingsPage() {
                   />
                 </div>
               </div>
+
+              <p className="text-xs text-muted-foreground">
+                Prefilled from the standing numbers — change them only if this one
+                period genuinely differs. Note that saving Quota targets afterwards
+                rewrites the two targets on every period that has not ended, this one
+                included; the visit limit survives once the period has started.
+              </p>
 
               <div className="grid gap-3 sm:grid-cols-3">
                 <div className="grid gap-1.5">
