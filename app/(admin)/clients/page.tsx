@@ -22,14 +22,19 @@ import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { createClient as createSupabaseClient } from '@/lib/supabase/client'
 import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
-import { Search, Building2, Phone, MapPin, Map as MapIcon, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users } from 'lucide-react'
+import {
+  Search, Building2, Phone, MapPin, Map as MapIcon, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users,
+  TrendingUp, Handshake, Target, CheckCircle2, XCircle,
+} from 'lucide-react'
 import { format, addDays } from 'date-fns'
 import { toast } from 'sonner'
 import {
   CHANNEL_TONE,
   CLIENT_STATUS_TONE,
+  CUSTOMER_TYPE_TONE,
   customerTypeBadge,
   TONE_CLASS,
+  TONE_TEXT,
   VALUE_LABEL as LABEL,
 } from '@/lib/status-styles'
 import { managerForTeam } from '@/lib/teams'
@@ -104,6 +109,18 @@ export default function ClientsPage() {
   // "All Status" must not silently include them. They're only surfaced via
   // the header's notification bell.
   const visibleClients = clients.filter(c => c.status !== 'deleted')
+
+  // Global counts, not narrowed by this page's own search/type/channel/status
+  // filters — same convention as the Meetings page's stat row.
+  const counts = {
+    total: visibleClients.length,
+    existing: visibleClients.filter(c => c.customer_type === 'existing').length,
+    new: visibleClients.filter(c => c.customer_type === 'new').length,
+    inProgress: visibleClients.filter(c => c.customer_type === 'in_progress').length,
+    prospect: visibleClients.filter(c => c.customer_type === 'prospect').length,
+    active: visibleClients.filter(c => c.status === 'active').length,
+    lost: visibleClients.filter(c => c.status === 'lost').length,
+  }
 
   const filtered = visibleClients.filter(c => {
     const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
@@ -316,6 +333,31 @@ export default function ClientsPage() {
       <Header title="Clients" subtitle={`${filtered.length} of ${visibleClients.length} clients`} />
 
       <div className="flex-1 p-6 space-y-4">
+        {/* Stats */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+          {([
+            { label: 'Total Clients', value: counts.total, icon: Building2, color: 'text-foreground' },
+            { label: 'Existing', value: counts.existing, icon: Users, color: TONE_TEXT[CUSTOMER_TYPE_TONE.existing] },
+            { label: 'New', value: counts.new, icon: TrendingUp, color: TONE_TEXT[CUSTOMER_TYPE_TONE.new] },
+            { label: 'In Progress', value: counts.inProgress, icon: Handshake, color: TONE_TEXT[CUSTOMER_TYPE_TONE.in_progress] },
+            { label: 'Prospect', value: counts.prospect, icon: Target, color: TONE_TEXT[CUSTOMER_TYPE_TONE.prospect] },
+            { label: 'Active', value: counts.active, icon: CheckCircle2, color: TONE_TEXT[CLIENT_STATUS_TONE.active] },
+            { label: 'Lost', value: counts.lost, icon: XCircle, color: TONE_TEXT[CLIENT_STATUS_TONE.lost] },
+          ] as const).map(({ label, value, icon: Icon, color }) => (
+            <Card key={label} className="bg-card border-border last:col-span-2 sm:last:col-span-1">
+              <CardContent className="p-4 flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                  <Icon className={`w-4 h-4 ${color}`} />
+                </div>
+                <div>
+                  <p className={`text-xl font-bold ${color}`}>{value}</p>
+                  <p className="text-xs text-muted-foreground">{label}</p>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
         {/* Filters */}
         <div className="flex flex-wrap gap-3">
           <div className="relative flex-1 min-w-[200px]">
