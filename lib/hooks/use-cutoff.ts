@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { reviewablePeriods } from '@/lib/cutoff'
 import type {
   CutoffPeriod,
   CutoffPeriodChange,
@@ -65,6 +66,10 @@ export function useCutoffPeriods(): UseCutoffPeriodsResult {
 
   const refresh = useCallback(async () => {
     setLoading(true)
+    // Settings is the only surface that writes periods, and it calls refresh
+    // after every write — so this is the one place that can know the shared
+    // cache below has gone stale.
+    invalidateCutoffPeriodOptions()
     await load()
   }, [load])
 
@@ -75,6 +80,87 @@ export function useCutoffPeriods(): UseCutoffPeriodsResult {
   }, [load])
 
   return { periods, loading, error, refresh }
+}
+
+/**
+ * Periods for the shared date-range filter, fetched once per page load.
+ *
+ * Cached at module scope because `useDateRangeFilter` is mounted on a dozen
+ * surfaces — Dashboard, Maps, Reports, Meetings, Delivery, Collection, Clock
+ * Records — and some pages mount two of them. A fetch per instance would be a
+ * dozen identical round-trips for a table holding two dozen rows that change
+ * twice a month, on every surface, whether or not anyone opens the dropdown.
+ *
+ * `useCutoffPeriods` deliberately stays uncached: Settings edits these rows and
+ * has to see its own writes. It clears this cache instead, which is what stops a
+ * newly created period from being absent from every filter until a hard reload —
+ * app-router navigation never re-evaluates this module.
+ */
+let sharedPeriods: Promise<CutoffPeriod[]> | null = null
+
+function invalidateCutoffPeriodOptions() {
+  sharedPeriods = null
+}
+
+function loadSharedPeriods(): Promise<CutoffPeriod[]> {
+  if (sharedPeriods) return sharedPeriods
+
+  const pending = (async () => {
+    const { data, error } = await createClient()
+      .from('cutoff_periods')
+      .select(PERIOD_COLUMNS)
+      .order('starts_on', { ascending: false })
+
+    // A failure must not stay cached, or one flaky request leaves every date
+    // filter without its cutoff option for the rest of the session. Safe to
+    // clear here: the assignment below runs first, since an async function
+    // body only suspends at its first await.
+    if (error) {
+      sharedPeriods = null
+      throw error
+    }
+    return (data ?? []) as unknown as CutoffPeriod[]
+  })()
+
+  sharedPeriods = pending
+  return pending
+}
+
+interface UseCutoffPeriodOptionsResult {
+  /** Started, non-draft periods, newest first. Empty until loaded. */
+  options: CutoffPeriod[]
+  loading: boolean
+}
+
+/**
+ * The periods a date filter may offer.
+ *
+ * Draft and not-yet-started periods are dropped here rather than at the call
+ * site: filtering a list by a cutoff that has not begun can only ever show
+ * nothing, which reads as broken rather than as empty.
+ */
+export function useCutoffPeriodOptions(): UseCutoffPeriodOptionsResult {
+  const [options, setOptions] = useState<CutoffPeriod[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    try {
+      setOptions(reviewablePeriods(await loadSharedPeriods()))
+    } catch {
+      // Swallowed on purpose. This is a secondary control on somebody else's
+      // screen: with no periods the filter simply offers the presets it always
+      // had, while the surface keeps reporting errors for the data it renders.
+      setOptions([])
+    }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load()
+  }, [load])
+
+  return { options, loading }
 }
 
 interface UseCutoffAttributionsResult {

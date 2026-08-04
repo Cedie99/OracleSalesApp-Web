@@ -1,7 +1,10 @@
 import { useMemo, useState } from 'react'
 import { startOfDay, endOfDay, subDays, isSameDay, format } from 'date-fns'
+import { activePeriod } from '@/lib/cutoff'
+import { useCutoffPeriodOptions } from '@/lib/hooks/use-cutoff'
+import type { CutoffPeriod } from '@/types'
 
-export type DatePreset = 'day' | '7d' | '30d' | 'custom' | 'all'
+export type DatePreset = 'day' | '7d' | '30d' | 'cutoff' | 'custom' | 'all'
 
 export interface DateRange {
   start: Date
@@ -12,6 +15,7 @@ const DATE_PRESET_LABEL: Record<DatePreset, string> = {
   day: 'Single day',
   '7d': 'Last 7 days',
   '30d': 'Last 30 days',
+  cutoff: 'Cutoff period',
   custom: 'Custom range',
   all: 'All time',
 }
@@ -37,6 +41,15 @@ export interface DateRangeFilterState {
   stepDay: (dir: -1 | 1) => void
   /** True when the single-day anchor is today (used to cap forward stepping). */
   isToday: boolean
+  /** Selectable cutoff periods, newest first. Empty while loading, or if none exist. */
+  cutoffPeriods: CutoffPeriod[]
+  /** The period the `cutoff` preset resolves to — the live one until changed. */
+  cutoffPeriod: CutoffPeriod | null
+  setCutoffPeriodId: (id: string) => void
+  /** Step to the previous (-1) or next (+1) cutoff period in time. */
+  stepCutoff: (dir: -1 | 1) => void
+  hasOlderCutoff: boolean
+  hasNewerCutoff: boolean
   /** Resolved window; `null` means "all time" — no bound. */
   range: DateRange | null
   /** Human label for the current selection (e.g. "Today", "Last 7 days"). */
@@ -74,12 +87,46 @@ export function useDateRangeFilter(opts?: {
   const [anchorDay, setAnchorDay] = useState<Date>(() => initialAnchor ?? new Date())
   const [customStart, setCustomStart] = useState<Date>(() => new Date())
   const [customEnd, setCustomEnd] = useState<Date>(() => new Date())
+  const [cutoffPeriodId, setCutoffPeriodId] = useState<string>('')
+
+  const { options: cutoffPeriods } = useCutoffPeriodOptions()
+
+  /**
+   * The period the `cutoff` preset means right now.
+   *
+   * Falls through to the live period rather than to the newest row, and only
+   * then to the newest, so the filter opens on the cutoff people are working in.
+   * Resolved from the id rather than storing the row, so a selection survives
+   * the list arriving after first paint.
+   */
+  const cutoffPeriod = useMemo(
+    () =>
+      cutoffPeriods.find(p => p.id === cutoffPeriodId) ??
+      activePeriod(cutoffPeriods) ??
+      cutoffPeriods[0] ??
+      null,
+    [cutoffPeriods, cutoffPeriodId]
+  )
 
   const range = useMemo<DateRange | null>(() => {
     if (preset === 'all') return null
     const now = new Date()
     if (preset === '7d') return { start: startOfDay(subDays(now, 6)), end: endOfDay(now) }
     if (preset === '30d') return { start: startOfDay(subDays(now, 29)), end: endOfDay(now) }
+    if (preset === 'cutoff') {
+      // No period to bound by means no bound — the same as "all time". Only
+      // reachable in the instant before the list loads, since the control hides
+      // the option when there are none.
+      if (!cutoffPeriod) return null
+      // starts_on/ends_on are DATE columns. Parsed in LOCAL time, not UTC, for
+      // the reason fromDateInput exists: the timestamps being filtered are read
+      // in the viewer's zone, so a UTC parse would drop Manila's first eight
+      // hours of the cutoff's opening day into the period before.
+      return {
+        start: startOfDay(fromDateInput(cutoffPeriod.starts_on)),
+        end: endOfDay(fromDateInput(cutoffPeriod.ends_on)),
+      }
+    }
     if (preset === 'custom') {
       // Tolerate the two inputs being set out of order rather than showing nothing.
       const [lo, hi] =
@@ -87,9 +134,13 @@ export function useDateRangeFilter(opts?: {
       return { start: startOfDay(lo), end: endOfDay(hi) }
     }
     return { start: startOfDay(anchorDay), end: endOfDay(anchorDay) }
-  }, [preset, anchorDay, customStart, customEnd])
+  }, [preset, anchorDay, customStart, customEnd, cutoffPeriod])
 
   const label = useMemo(() => {
+    // The period's own name, which for a generated period IS its date range.
+    // Not the word "cutoff" — this label is pasted into page subtitles and
+    // empty states, where a concrete fortnight says more than the unit does.
+    if (preset === 'cutoff') return cutoffPeriod?.label ?? DATE_PRESET_LABEL.cutoff
     if (preset === 'custom') {
       const [lo, hi] =
         customStart.getTime() <= customEnd.getTime() ? [customStart, customEnd] : [customEnd, customStart]
@@ -99,7 +150,7 @@ export function useDateRangeFilter(opts?: {
     }
     if (preset !== 'day') return DATE_PRESET_LABEL[preset]
     return isSameDay(anchorDay, new Date()) ? 'Today' : format(anchorDay, 'MMM d, yyyy')
-  }, [preset, anchorDay, customStart, customEnd])
+  }, [preset, anchorDay, customStart, customEnd, cutoffPeriod])
 
   const inRange = useMemo(() => {
     const start = range?.start.getTime()
@@ -113,6 +164,18 @@ export function useDateRangeFilter(opts?: {
 
   const stepDay = (dir: -1 | 1) => setAnchorDay(d => subDays(d, -dir))
   const isToday = isSameDay(anchorDay, new Date())
+
+  // Options are newest-first, so stepping BACK in time moves FORWARD through
+  // the array — hence the `- dir`, which keeps stepCutoff's sign meaning the
+  // same as stepDay's rather than making the caller think about ordering.
+  const cutoffIndex = cutoffPeriod ? cutoffPeriods.indexOf(cutoffPeriod) : -1
+  const hasOlderCutoff = cutoffIndex >= 0 && cutoffIndex < cutoffPeriods.length - 1
+  const hasNewerCutoff = cutoffIndex > 0
+  const stepCutoff = (dir: -1 | 1) => {
+    const next = cutoffPeriods[cutoffIndex - dir]
+    if (next) setCutoffPeriodId(next.id)
+  }
+
   const isActive = preset !== defaultPreset
   const key = range ? `${range.start.getTime()}-${range.end.getTime()}` : 'all'
   const reset = () => setPreset(defaultPreset)
@@ -120,6 +183,8 @@ export function useDateRangeFilter(opts?: {
   return {
     preset, setPreset, anchorDay, customStart, customEnd,
     setCustomStart, setCustomEnd, stepDay, isToday,
+    cutoffPeriods, cutoffPeriod, setCutoffPeriodId, stepCutoff,
+    hasOlderCutoff, hasNewerCutoff,
     range, label, inRange, isActive, key, reset,
   }
 }
