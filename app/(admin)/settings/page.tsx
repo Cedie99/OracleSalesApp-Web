@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Header } from '@/components/header'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,9 +18,11 @@ import { Badge } from '@/components/ui/badge'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { canManageUsers } from '@/lib/permissions'
 import { useCutoffPeriods, useQuotaSettings } from '@/lib/hooks/use-cutoff'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { StandingTargetsCard } from '@/components/settings/standing-targets-card'
 import { HolidaysCard } from '@/components/settings/holidays-card'
 import { PeriodHistoryCard } from '@/components/settings/period-history-card'
+import { CurrentCutoffSummary } from '@/components/settings/current-cutoff-summary'
 import {
   activePeriod,
   generatePeriods,
@@ -182,6 +191,18 @@ export default function SettingsPage() {
   }, [settings, inherited])
   const [generating, setGenerating] = useState(false)
   const [showAll, setShowAll] = useState(false)
+
+  /**
+   * Which creation form is open, if any.
+   *
+   * Closed by default, and only one at a time. Both forms used to sit open
+   * below the period list permanently — three stacked cards where two were
+   * tools an admin reaches for a few times a year, pushing the list they
+   * actually came to read off the top of the screen.
+   */
+  const [creator, setCreator] = useState<'none' | 'repeat' | 'single'>('none')
+  const toggleCreator = (which: 'repeat' | 'single') =>
+    setCreator(c => (c === which ? 'none' : which))
 
   const active = activePeriod(periods)
 
@@ -411,15 +432,16 @@ export default function SettingsPage() {
                   These {periods.length} periods are all set up correctly, but the earliest
                   one does not start until <strong>{nextStart}</strong> — so today falls in
                   a gap. Meetings recorded now are <code>unattributed</code> and are never
-                  moved into a period later. Generate again with an earlier{' '}
-                  <em>first month to cover</em> to fill it; the periods you already have are
-                  skipped automatically.
+                  moved into a period later. Run <strong>Generate periods</strong> again with
+                  an earlier <em>first month to cover</em> to fill it; the periods you already
+                  have are skipped automatically.
                 </>
               ) : (
                 <>
                   These {periods.length} periods have all ended, and no later one is
                   defined. Meetings recorded now are <code>unattributed</code> and are never
-                  moved into a period later. Generate the next stretch below.
+                  moved into a period later. Run <strong>Generate periods</strong> for the
+                  next stretch.
                 </>
               )}
             </AlertDescription>
@@ -445,405 +467,474 @@ export default function SettingsPage() {
           </Alert>
         )}
 
-        {/* The real quota, first: this is what agents are measured on. The
-            per-period cards below are about WHEN a cutoff runs, not how much
-            work it expects. */}
-        <StandingTargetsCard
-          settings={settings}
-          holidays={holidays}
-          periods={periods}
-          canEdit={canEdit}
-          onSaved={refreshAll}
-        />
+        {/* Answers "what is running and what does it want" before any control
+            is offered, so the tabs below are a place to change something rather
+            than the only way to find out what is currently true. */}
+        {active && <CurrentCutoffSummary period={active} holidays={holidays} />}
 
-        <HolidaysCard
-          holidays={holidays}
-          periods={periods}
-          profileId={profile?.id}
-          canEdit={canEdit}
-          onChanged={refreshAll}
-        />
+        {/*
+          One tab per job, matching the Collection and Delivery boards.
 
-        {/* ---- Existing periods -------------------------------------------- */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <CalendarRange className="w-4 h-4 text-primary" />
-              <CardTitle>Cutoff periods</CardTitle>
-            </div>
-            <CardDescription>
-              Each period sets its own per-client meeting cap and per-role targets. A role
-              with no target is shown as unconfigured, never as zero. Once a period is
-              active it can no longer be edited — it is superseded by a new one.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {loading && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
-                <Loader2 className="w-4 h-4 animate-spin" /> Loading periods…
-              </div>
-            )}
+          The split is between HOW MUCH work is expected and WHEN the cutoffs
+          run — two questions an admin never asks at the same moment, previously
+          answered by six cards in one scroll with no seam between them. Targets
+          and the working calendar share a tab because they are one calculation:
+          the RSR daily figure only becomes a period expectation once the
+          holidays are known.
+        */}
+        <Tabs defaultValue="periods">
+          <TabsList>
+            <TabsTrigger value="periods">Cutoff periods ({periods.length})</TabsTrigger>
+            <TabsTrigger value="quota">Quota targets</TabsTrigger>
+            <TabsTrigger value="history">History</TabsTrigger>
+          </TabsList>
 
-            {!loading && periods.length === 0 && (
-              <p className="text-sm text-muted-foreground py-2">
-                No periods defined yet. Generate a repeating set below, or create a single
-                one by hand.
-              </p>
-            )}
-
-            {visible.map(period => {
-              const phase = periodPhase(period)
-              return (
-              <div
-                key={period.id}
-                className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border p-3"
-              >
-                <Badge variant="tone" className={TONE_CLASS[PHASE_META[phase].tone]}>
-                  {PHASE_META[phase].label}
-                </Badge>
-                {/* The status only earns its own badge when it says something the
-                    dates do not — a closed or superseded row, or one not yet live. */}
-                {period.status !== 'active' && (
-                  <Badge variant="tone" className={TONE_CLASS[STATUS_TONE[period.status]]}>
-                    {period.status}
-                  </Badge>
-                )}
-                <span className="text-sm font-medium text-foreground">{period.label}</span>
-                {period.label !== periodDateLabel(period) && (
-                  <span className="text-xs text-muted-foreground">{periodDateLabel(period)}</span>
-                )}
-
-                {/* Units spelled out. "RSR 16" beside "Sales 35" reads as two
-                    comparable numbers, and they are not — one is a fortnight's
-                    work and the other a single day's. */}
-                <div className="flex items-center gap-3 text-xs text-muted-foreground ml-auto">
-                  <span>
-                    Limit{' '}
-                    <span className="text-foreground font-medium">
-                      {period.client_meeting_cap}
-                    </span>
-                    /client
-                  </span>
-                  <span>
-                    Sales{' '}
-                    <span className="text-foreground font-medium">
-                      {period.sales_target ?? '—'}
-                    </span>
-                    /cutoff
-                  </span>
-                  <span>
-                    RSR{' '}
-                    <span className="text-foreground font-medium">
-                      {period.rsr_daily_target ?? '—'}
-                    </span>
-                    /day
-                  </span>
+          {/* --- When the cutoffs run --- */}
+          <TabsContent value="periods" className="mt-4 space-y-4">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <CalendarRange className="w-4 h-4 text-primary" />
+                  <CardTitle>Cutoff periods</CardTitle>
                 </div>
+                <CardDescription>
+                  When each cutoff runs. The numbers shown on a period are the ones it was
+                  created with — set them under <strong>Quota targets</strong>. A role with no
+                  target reads as unconfigured, never as zero.
+                </CardDescription>
 
+                {/* In the header, not floating under the card. Outline buttons on
+                    the page's grey background read as disabled — they need the
+                    card's own surface behind them to look pressable, and this is
+                    where an action on a list belongs anyway. Generating is the
+                    one an admin comes here to do, so it carries the solid fill
+                    and the hand-built single period stays secondary beside it. */}
                 {canEdit && (
-                  <div className="flex items-center gap-1.5 w-full sm:w-auto">
-                    {(period.status === 'draft' || period.status === 'scheduled') && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busyId === period.id}
-                        onClick={() => setStatus(period, 'active')}
-                      >
-                        Activate
-                      </Button>
-                    )}
-                    {period.status === 'active' && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busyId === period.id}
-                        onClick={() => setStatus(period, 'closed')}
-                      >
-                        Close
-                      </Button>
-                    )}
+                  <CardAction className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant={creator === 'repeat' ? 'secondary' : 'default'}
+                      size="sm"
+                      onClick={() => toggleCreator('repeat')}
+                    >
+                      <Repeat className="w-4 h-4" />
+                      {creator === 'repeat' ? 'Close generator' : 'Generate periods'}
+                    </Button>
+                    <Button
+                      variant={creator === 'single' ? 'secondary' : 'outline'}
+                      size="sm"
+                      onClick={() => toggleCreator('single')}
+                    >
+                      <Plus className="w-4 h-4" />
+                      {creator === 'single' ? 'Close form' : 'Add single period'}
+                    </Button>
+                  </CardAction>
+                )}
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {loading && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Loading periods…
                   </div>
                 )}
-              </div>
-              )
-            })}
 
-            {ordered.length > visible.length && (
-              <Button variant="ghost" size="sm" onClick={() => setShowAll(true)}>
-                Show all {ordered.length} periods
-              </Button>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* ---- Generate a repeating set ------------------------------------- */}
-        {canEdit && (
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <Repeat className="w-4 h-4 text-primary" />
-                <CardTitle>Generate repeating periods</CardTitle>
-              </div>
-              <CardDescription>
-                Set the shape once and create a year of periods at a time. They are still
-                stored one row per period — this only saves you entering each one. Dates
-                that already have a period are skipped, so you can run this again later to
-                top up.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-1.5">
-                <Label htmlFor="r-ends">Cutoff ends on day</Label>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {QUICK_PATTERNS.map(p => (
-                    <Button
-                      key={p.value}
-                      type="button"
-                      size="sm"
-                      variant={endDays.join(', ') === p.value ? 'default' : 'outline'}
-                      onClick={() => setRepeatField('endDays', p.value)}
-                    >
-                      {p.label}
-                    </Button>
-                  ))}
-                </div>
-                <Input
-                  id="r-ends"
-                  placeholder="8, 23"
-                  value={repeat.endDays}
-                  onChange={e => setRepeatField('endDays', e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Any days of the month, separated by commas — the buttons above are just
-                  shortcuts. Each period starts the day after the previous one ended, so a
-                  cutoff can run across a month boundary and no day is ever left uncovered.
-                  Use 31 to mean the last day, whatever the month is.
-                </p>
-              </div>
-
-              {/* items-start, or the cells stretch to match the taller one and the
-                  inner grid spreads its rows to fill — which drops this row's label
-                  and input below the ones beside it, purely because only one column
-                  carries a hint underneath. */}
-              <div className="grid gap-3 sm:grid-cols-2 items-start">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="r-from">First month to cover</Label>
-                  <Input
-                    id="r-from"
-                    type="month"
-                    value={repeat.fromMonth}
-                    onChange={e => setRepeatField('fromMonth', e.target.value)}
-                  />
-                  {/* A period ending on the 8th began in the month before, so the
-                      first row reaches back past this month. Said plainly here
-                      because the preview showing an earlier date looks like a bug. */}
-                  <p className="text-xs text-muted-foreground">
-                    Periods that <em>end</em> in this month. The first one may start in the
-                    month before.
+                {!loading && periods.length === 0 && (
+                  <p className="text-sm text-muted-foreground py-2">
+                    No periods defined yet. Use <strong>Generate periods</strong> for a
+                    repeating set, or <strong>Add single period</strong> for one by hand.
                   </p>
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="r-months">Months to cover</Label>
-                  <Input
-                    id="r-months"
-                    type="number"
-                    min={1}
-                    max={36}
-                    value={repeat.months}
-                    onChange={e => setRepeatField('months', e.target.value)}
-                  />
-                </div>
-              </div>
+                )}
 
-              {/*
-                Read-only, not three more inputs. These numbers have exactly one
-                home — the Quota targets card above — and duplicating them here
-                would re-create the trap this section used to set: values typed
-                into a generator look per-batch, but the next "Save targets"
-                rewrites the targets on every period that has not ended.
-              */}
-              <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5">
-                <p className="text-xs text-muted-foreground">
-                  New periods will use{' '}
-                  <span className="font-medium text-foreground">
-                    {settings?.sales_target != null
-                      ? `Sales ${settings.sales_target} per cutoff`
-                      : 'no Sales target'}
-                  </span>
-                  ,{' '}
-                  <span className="font-medium text-foreground">
-                    {settings?.rsr_daily_target != null
-                      ? `RSR ${settings.rsr_daily_target} per working day`
-                      : 'no RSR target'}
-                  </span>
-                  , and a{' '}
-                  <span className="font-medium text-foreground">
-                    visit limit of {settings?.client_meeting_cap ?? '—'}
-                  </span>
-                  . Change them in Quota targets above.
-                </p>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                A period that needs different numbers is a single period — create it
-                by hand below, where they can be overridden.
-              </p>
+                {visible.map(period => {
+                  const phase = periodPhase(period)
+                  return (
+                  <div
+                    key={period.id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border p-3"
+                  >
+                    <Badge variant="tone" className={TONE_CLASS[PHASE_META[phase].tone]}>
+                      {PHASE_META[phase].label}
+                    </Badge>
+                    {/* The status only earns its own badge when it says something the
+                        dates do not — a closed or superseded row, or one not yet live. */}
+                    {period.status !== 'active' && (
+                      <Badge variant="tone" className={TONE_CLASS[STATUS_TONE[period.status]]}>
+                        {period.status}
+                      </Badge>
+                    )}
+                    <span className="text-sm font-medium text-foreground">{period.label}</span>
+                    {period.label !== periodDateLabel(period) && (
+                      <span className="text-xs text-muted-foreground">{periodDateLabel(period)}</span>
+                    )}
 
-              {preview.length > 0 && (
-                <div className="rounded-lg border border-border">
-                  <div className="px-3 py-2 border-b border-border flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-medium text-foreground">
-                      {toCreate.length} to create
-                    </span>
-                    {skipped.length > 0 && (
-                      <span className="text-xs text-muted-foreground">
-                        · {skipped.length} skipped, already covered
+                    {/* Units spelled out. "RSR 16" beside "Sales 35" reads as two
+                        comparable numbers, and they are not — one is a fortnight's
+                        work and the other a single day's. */}
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground ml-auto">
+                      <span>
+                        Limit{' '}
+                        <span className="text-foreground font-medium">
+                          {period.client_meeting_cap}
+                        </span>
+                        /client
                       </span>
+                      <span>
+                        Sales{' '}
+                        <span className="text-foreground font-medium">
+                          {period.sales_target ?? '—'}
+                        </span>
+                        /cutoff
+                      </span>
+                      <span>
+                        RSR{' '}
+                        <span className="text-foreground font-medium">
+                          {period.rsr_daily_target ?? '—'}
+                        </span>
+                        /day
+                      </span>
+                    </div>
+
+                    {canEdit && (
+                      <div className="flex items-center gap-1.5 w-full sm:w-auto">
+                        {(period.status === 'draft' || period.status === 'scheduled') && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busyId === period.id}
+                            onClick={() => setStatus(period, 'active')}
+                          >
+                            Activate
+                          </Button>
+                        )}
+                        {/* Named for what it does to THIS period, not for the
+                            status it writes. Generating a year ahead means two
+                            dozen rows are `active` at once, so a single "Close"
+                            label sat on every one of them — including periods
+                            that had not started, where closing is not ending
+                            something but calling it off. Only the row actually
+                            running gets the emphasis; the rest stay quiet, since
+                            closing a future period silently opens a gap that
+                            nothing later moves meetings out of. */}
+                        {period.status === 'active' && (
+                          <Button
+                            size="sm"
+                            variant={phase === 'current' ? 'outline' : 'ghost'}
+                            disabled={busyId === period.id}
+                            onClick={() => setStatus(period, 'closed')}
+                          >
+                            {phase === 'upcoming' ? 'Cancel' : 'Close'}
+                          </Button>
+                        )}
+                      </div>
                     )}
                   </div>
-                  <div className="max-h-48 overflow-y-auto divide-y divide-border">
-                    {preview.map(row => {
-                      const isSkipped = skipped.includes(row)
-                      return (
-                        <div
-                          key={row.starts_on}
-                          className={`flex items-center gap-2 px-3 py-1.5 text-xs ${
-                            isSkipped ? 'text-muted-foreground/60' : 'text-foreground'
-                          }`}
-                        >
-                          <span className="font-medium w-24 shrink-0">{row.label}</span>
-                          <span className="text-muted-foreground tabular-nums">
-                            {row.starts_on} → {row.ends_on}
-                          </span>
-                          {isSkipped && <span className="ml-auto shrink-0">skipped</span>}
-                        </div>
-                      )
-                    })}
+                  )
+                })}
+
+                {ordered.length > visible.length && (
+                  <Button variant="ghost" size="sm" onClick={() => setShowAll(true)}>
+                    Show all {ordered.length} periods
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* ---- Generate a repeating set ------------------------------------- */}
+            {canEdit && creator === 'repeat' && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <Repeat className="w-4 h-4 text-primary" />
+                    <CardTitle>Generate repeating periods</CardTitle>
                   </div>
-                </div>
-              )}
+                  <CardDescription>
+                    Set the shape once and create a year of periods at a time. They are still
+                    stored one row per period — this only saves you entering each one. Dates
+                    that already have a period are skipped, so you can run this again later to
+                    top up.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="r-ends">Cutoff ends on day</Label>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {QUICK_PATTERNS.map(p => (
+                        <Button
+                          key={p.value}
+                          type="button"
+                          size="sm"
+                          variant={endDays.join(', ') === p.value ? 'default' : 'outline'}
+                          onClick={() => setRepeatField('endDays', p.value)}
+                        >
+                          {p.label}
+                        </Button>
+                      ))}
+                    </div>
+                    <Input
+                      id="r-ends"
+                      placeholder="8, 23"
+                      value={repeat.endDays}
+                      onChange={e => setRepeatField('endDays', e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Any days of the month, separated by commas — the buttons above are just
+                      shortcuts. Each period starts the day after the previous one ended, so a
+                      cutoff can run across a month boundary and no day is ever left uncovered.
+                      Use 31 to mean the last day, whatever the month is.
+                    </p>
+                  </div>
 
-              <Button disabled={!repeatValid || generating} onClick={generate}>
-                {generating && <Loader2 className="w-4 h-4 animate-spin" />}
-                Create {toCreate.length} {toCreate.length === 1 ? 'period' : 'periods'}
-              </Button>
-            </CardContent>
-          </Card>
-        )}
+                  {/* items-start, or the cells stretch to match the taller one and the
+                      inner grid spreads its rows to fill — which drops this row's label
+                      and input below the ones beside it, purely because only one column
+                      carries a hint underneath. */}
+                  <div className="grid gap-3 sm:grid-cols-2 items-start">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="r-from">First month to cover</Label>
+                      <Input
+                        id="r-from"
+                        type="month"
+                        value={repeat.fromMonth}
+                        onChange={e => setRepeatField('fromMonth', e.target.value)}
+                      />
+                      {/* A period ending on the 8th began in the month before, so the
+                          first row reaches back past this month. Said plainly here
+                          because the preview showing an earlier date looks like a bug. */}
+                      <p className="text-xs text-muted-foreground">
+                        Periods that <em>end</em> in this month. The first one may start in the
+                        month before.
+                      </p>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="r-months">Months to cover</Label>
+                      <Input
+                        id="r-months"
+                        type="number"
+                        min={1}
+                        max={36}
+                        value={repeat.months}
+                        onChange={e => setRepeatField('months', e.target.value)}
+                      />
+                    </div>
+                  </div>
 
-        {/* ---- New period --------------------------------------------------- */}
-        {canEdit && (
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <Plus className="w-4 h-4 text-primary" />
-                <CardTitle>Single period</CardTitle>
-              </div>
-              <CardDescription>
-                For a cutoff that does not fit the repeating shape — a holiday-shifted
-                window, or one with its own cap. Dates are inclusive on both ends and must
-                not overlap any period that is already scheduled or active.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="p-label">Label</Label>
-                  <Input
-                    id="p-label"
-                    placeholder="Aug 1–15"
-                    value={draft.label}
-                    onChange={e => set('label', e.target.value)}
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="p-start">Starts on</Label>
-                  <Input
-                    id="p-start"
-                    type="date"
-                    value={draft.starts_on}
-                    onChange={e => set('starts_on', e.target.value)}
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="p-end">Ends on</Label>
-                  <Input
-                    id="p-end"
-                    type="date"
-                    value={draft.ends_on}
-                    onChange={e => set('ends_on', e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <p className="text-xs text-muted-foreground">
-                Prefilled from the standing numbers — change them only if this one
-                period genuinely differs. Note that saving Quota targets afterwards
-                rewrites the two targets on every period that has not ended, this one
-                included; the visit limit survives once the period has started.
-              </p>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="p-cap">Visit limit per client</Label>
-                  <Input
-                    id="p-cap"
-                    type="number"
-                    min={1}
-                    value={draft.client_meeting_cap}
-                    onChange={e => set('client_meeting_cap', e.target.value)}
-                  />
+                  {/*
+                    Read-only, not three more inputs. These numbers have exactly one
+                    home — the Quota targets card above — and duplicating them here
+                    would re-create the trap this section used to set: values typed
+                    into a generator look per-batch, but the next "Save targets"
+                    rewrites the targets on every period that has not ended.
+                  */}
+                  <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5">
+                    <p className="text-xs text-muted-foreground">
+                      New periods will use{' '}
+                      <span className="font-medium text-foreground">
+                        {settings?.sales_target != null
+                          ? `Sales ${settings.sales_target} per cutoff`
+                          : 'no Sales target'}
+                      </span>
+                      ,{' '}
+                      <span className="font-medium text-foreground">
+                        {settings?.rsr_daily_target != null
+                          ? `RSR ${settings.rsr_daily_target} per working day`
+                          : 'no RSR target'}
+                      </span>
+                      , and a{' '}
+                      <span className="font-medium text-foreground">
+                        visit limit of {settings?.client_meeting_cap ?? '—'}
+                      </span>
+                      . Change them in Quota targets above.
+                    </p>
+                  </div>
                   <p className="text-xs text-muted-foreground">
-                    One shared pool across new and existing. Prospects are uncapped.
+                    A period that needs different numbers is a single period — create it
+                    by hand below, where they can be overridden.
                   </p>
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="p-sales">Sales target (per cutoff)</Label>
-                  <Input
-                    id="p-sales"
-                    type="number"
-                    min={1}
-                    placeholder="Not configured"
-                    value={draft.sales_target}
-                    onChange={e => set('sales_target', e.target.value)}
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="p-rsr">RSR target (per working day)</Label>
-                  <Input
-                    id="p-rsr"
-                    type="number"
-                    min={1}
-                    placeholder="Not configured"
-                    value={draft.rsr_target}
-                    onChange={e => set('rsr_target', e.target.value)}
-                  />
-                </div>
-              </div>
 
-              {draft.starts_on !== '' && draft.ends_on !== '' && draft.ends_on < draft.starts_on && (
-                <p className="text-xs text-destructive">The end date is before the start date.</p>
-              )}
+                  {preview.length > 0 && (
+                    <div className="rounded-lg border border-border">
+                      <div className="px-3 py-2 border-b border-border flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium text-foreground">
+                          {toCreate.length} to create
+                        </span>
+                        {skipped.length > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            · {skipped.length} skipped, already covered
+                          </span>
+                        )}
+                      </div>
+                      <div className="max-h-48 overflow-y-auto divide-y divide-border">
+                        {preview.map(row => {
+                          const isSkipped = skipped.includes(row)
+                          return (
+                            <div
+                              key={row.starts_on}
+                              className={`flex items-center gap-2 px-3 py-1.5 text-xs ${
+                                isSkipped ? 'text-muted-foreground/60' : 'text-foreground'
+                              }`}
+                            >
+                              <span className="font-medium w-24 shrink-0">{row.label}</span>
+                              <span className="text-muted-foreground tabular-nums">
+                                {row.starts_on} → {row.ends_on}
+                              </span>
+                              {isSkipped && <span className="ml-auto shrink-0">skipped</span>}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
 
-              <div className="flex items-center gap-2">
-                <Button disabled={!draftValid || creating} onClick={() => createPeriod('active')}>
-                  {creating && <Loader2 className="w-4 h-4 animate-spin" />}
-                  Create and activate
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={!draftValid || creating}
-                  onClick={() => createPeriod('scheduled')}
-                >
-                  Save as scheduled
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+                  <Button disabled={!repeatValid || generating} onClick={generate}>
+                    {generating && <Loader2 className="w-4 h-4 animate-spin" />}
+                    Create {toCreate.length} {toCreate.length === 1 ? 'period' : 'periods'}
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
 
-        {/* Last, and collapsed: a record to consult when a number is disputed,
-            not something to read on the way past. */}
-        <PeriodHistoryCard periods={periods} />
+            {/* ---- New period --------------------------------------------------- */}
+            {canEdit && creator === 'single' && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <Plus className="w-4 h-4 text-primary" />
+                    <CardTitle>Single period</CardTitle>
+                  </div>
+                  <CardDescription>
+                    For a cutoff that does not fit the repeating shape — a holiday-shifted
+                    window, or one with its own cap. Dates are inclusive on both ends and must
+                    not overlap any period that is already scheduled or active.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="p-label">Label</Label>
+                      <Input
+                        id="p-label"
+                        placeholder="Aug 1–15"
+                        value={draft.label}
+                        onChange={e => set('label', e.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="p-start">Starts on</Label>
+                      <Input
+                        id="p-start"
+                        type="date"
+                        value={draft.starts_on}
+                        onChange={e => set('starts_on', e.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="p-end">Ends on</Label>
+                      <Input
+                        id="p-end"
+                        type="date"
+                        value={draft.ends_on}
+                        onChange={e => set('ends_on', e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    Prefilled from the standing numbers — change them only if this one
+                    period genuinely differs. Note that saving Quota targets afterwards
+                    rewrites the two targets on every period that has not ended, this one
+                    included; the visit limit survives once the period has started.
+                  </p>
+
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="p-cap">Visit limit per client</Label>
+                      <Input
+                        id="p-cap"
+                        type="number"
+                        min={1}
+                        value={draft.client_meeting_cap}
+                        onChange={e => set('client_meeting_cap', e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        One shared pool across new and existing. Prospects are uncapped.
+                      </p>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="p-sales">Sales target (per cutoff)</Label>
+                      <Input
+                        id="p-sales"
+                        type="number"
+                        min={1}
+                        placeholder="Not configured"
+                        value={draft.sales_target}
+                        onChange={e => set('sales_target', e.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="p-rsr">RSR target (per working day)</Label>
+                      <Input
+                        id="p-rsr"
+                        type="number"
+                        min={1}
+                        placeholder="Not configured"
+                        value={draft.rsr_target}
+                        onChange={e => set('rsr_target', e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  {draft.starts_on !== '' && draft.ends_on !== '' && draft.ends_on < draft.starts_on && (
+                    <p className="text-xs text-destructive">The end date is before the start date.</p>
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <Button disabled={!draftValid || creating} onClick={() => createPeriod('active')}>
+                      {creating && <Loader2 className="w-4 h-4 animate-spin" />}
+                      Create and activate
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={!draftValid || creating}
+                      onClick={() => createPeriod('scheduled')}
+                    >
+                      Save as scheduled
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+          </TabsContent>
+
+          {/* --- How much work is expected --- */}
+          <TabsContent value="quota" className="mt-4">
+            {/* Side by side from lg up, because they are one calculation read
+                left to right: the RSR daily figure, then the calendar that
+                turns it into a period expectation. Stacked below that width —
+                two half-width forms on a laptop are worse than two full ones. */}
+            <div className="grid gap-4 lg:grid-cols-2 items-start">
+              <StandingTargetsCard
+                settings={settings}
+                holidays={holidays}
+                periods={periods}
+                canEdit={canEdit}
+                onSaved={refreshAll}
+              />
+
+              <HolidaysCard
+                holidays={holidays}
+                periods={periods}
+                profileId={profile?.id}
+                canEdit={canEdit}
+                onChanged={refreshAll}
+              />
+            </div>
+          </TabsContent>
+
+          {/* --- What changed, and who changed it --- */}
+          <TabsContent value="history" className="mt-4">
+            <PeriodHistoryCard periods={periods} />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   )
