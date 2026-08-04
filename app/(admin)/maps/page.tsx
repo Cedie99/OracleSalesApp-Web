@@ -109,6 +109,8 @@ function MapsPageContent() {
           lat: null,
           lng: null,
           at: null,
+          startedAt: null,
+          durationMinutes: null,
           tone: 'open',
           statusLabel: 'Pending',
           // The amount OWED is what an admin needs on an unworked store — it is
@@ -134,6 +136,8 @@ function MapsPageContent() {
           lat: null,
           lng: null,
           at: null,
+          startedAt: null,
+          durationMinutes: null,
           tone: 'open',
           statusLabel: 'Waiting',
           amountLabel: po.cod && po.cod_due != null ? `${peso(po.cod_due)} COD` : null,

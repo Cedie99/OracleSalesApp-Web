@@ -20,6 +20,7 @@ const CLIENT_COLUMNS = `
   lost_at, reassignable_at, created_at, updated_at,
   address_line1, address_line2, landmark, province, city,
   details_deadline_at, details_completed_at, inactive_reason,
+  office_lat, office_lng, office_pin_source, office_pin_updated_at,
   agent:profiles!assigned_agent_id (
     id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at
   )

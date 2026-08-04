@@ -319,6 +319,10 @@ function collectionStop(visit: CollectionVisit, sequence: number): TripStop {
     lat: visit.gps_lat,
     lng: visit.gps_lng,
     at: visit.visited_at,
+    // Collection captures one timestamp per store, not a window — see
+    // `TripStop.startedAt`. Nothing here to derive a dwell from.
+    startedAt: null,
+    durationMinutes: null,
     // A reschedule is a legitimate outcome, not a failure — but it is the one
     // the admin scans for, so it gets the attention tone.
     tone: visit.status === 'collected' ? 'done' : visit.status === 'rescheduled' ? 'problem' : 'open',

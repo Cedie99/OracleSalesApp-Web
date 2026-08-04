@@ -4,7 +4,9 @@ import { useEffect } from 'react'
 import { MapContainer, TileLayer, Marker, Polyline, Popup, ZoomControl, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { ExternalLink } from 'lucide-react'
 import { TILE_LAYERS, type MapTileType } from '@/components/maps/map-constants'
+import { InvalidateOnResize } from '@/components/maps/invalidate-on-resize'
 
 const PIN_PATH =
   'M172.268 501.67C26.97 291.031 0 269.413 0 192 0 85.961 85.961 0 192 0s192 85.961 192 192c0 77.413-26.97 99.031-172.268 309.67-9.535 13.774-29.93 13.773-39.464 0zM192 272c44.183 0 80-35.817 80-80s-35.817-80-80-80-80 35.817-80 80 35.817 80 80 80z'
@@ -70,31 +72,18 @@ function createHighlightIcon(kind: 'meeting' | 'search') {
   })
 }
 
-/**
- * Leaflet caches the container's pixel size and only re-tiles on window resize.
- * Our container also changes width when the list collapses/expands, which
- * Leaflet never hears about — leaving an untiled grey strip. Watch the element
- * itself and tell Leaflet to remeasure.
- */
-function InvalidateOnResize() {
-  const map = useMap()
-  useEffect(() => {
-    const container = map.getContainer()
-    const observer = new ResizeObserver(() => {
-      // Wait for the layout/animation frame to settle before remeasuring.
-      requestAnimationFrame(() => map.invalidateSize({ animate: false }))
-    })
-    observer.observe(container)
-    return () => observer.disconnect()
-  }, [map])
-  return null
-}
-
 /** Flies the map to `focus` whenever it changes. Null leaves the view alone. */
 function FlyTo({ focus }: { focus: FocusTarget | null }) {
   const map = useMap()
   useEffect(() => {
     if (!focus) return
+    // Last line of defence, not a data check: Leaflet THROWS on a non-finite
+    // pair ("Invalid LatLng object: (NaN, NaN)"), and because this runs in an
+    // effect the throw escapes to the error boundary and blanks the entire
+    // page — losing the map, the list and the panel over one bad number.
+    // Callers already gate on isPlottableMeeting/parseLatLng, so reaching this
+    // means bad data upstream; staying put is the recoverable answer.
+    if (!Number.isFinite(focus.lat) || !Number.isFinite(focus.lng)) return
     map.flyTo([focus.lat, focus.lng], focus.zoom ?? 15, { duration: 0.6 })
   }, [focus, map])
   return null
@@ -134,6 +123,16 @@ export interface MapPin {
   active: boolean
   label: string
   sublabel?: string
+  /**
+   * Extra popup lines under the sublabel, rendered muted and one per line.
+   *
+   * Exists because a pin's caption is several separate facts — when the record
+   * was captured, where the coordinates actually resolve to, what the worker
+   * tagged it as — and folding them into one dot-separated sentence made the
+   * popup read as a single ambiguous statement. Empty/undefined entries are
+   * dropped, so callers can build the list conditionally without filtering.
+   */
+  meta?: (string | null | undefined)[]
   avatarUrl?: string | null
   /** Position in a trip, drawn as a small numbered bubble on the pin. */
   badge?: string | number | null
@@ -173,9 +172,65 @@ export interface HighlightMarker {
   lng: number
   kind: 'meeting' | 'search'
   label?: string
+  /** Muted lines under the label — same purpose as `MapPin.meta`. */
+  meta?: (string | null | undefined)[]
   /** For kind 'meeting': status colour + agent face so it matches the status pins. */
   color?: string
   avatarUrl?: string | null
+}
+
+/**
+ * The muted tail of a popup. Inline styles rather than Tailwind because Leaflet
+ * renders popups into its own DOM subtree with its own reset, where the app's
+ * type scale doesn't reach.
+ */
+function PopupMeta({ meta }: { meta?: (string | null | undefined)[] }) {
+  const lines = (meta ?? []).filter((line): line is string => !!line)
+  if (lines.length === 0) return null
+  return (
+    <div style={{ marginTop: 2, opacity: 0.75 }}>
+      {/* Index keys: these are plain caption lines in a fixed order, and two of
+          them can legitimately read the same. */}
+      {lines.map((line, i) => (
+        <div key={i}>{line}</div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * "Open in Google Maps" for the coordinate a popup is describing.
+ *
+ * Built here from the marker's own position rather than passed in, so every pin
+ * on every lens gets it for free and no caller can supply a link that points
+ * somewhere other than its pin.
+ *
+ * It lives on the popup — not in the detail panel, where it used to sit next to
+ * a place name. The panel names the CLIENT; a coordinate you can open on the
+ * ground belongs to the marker standing on it, which is also where a user
+ * already is when they want it.
+ */
+function PopupMapsLink({ lat, lng }: { lat: number; lng: number }) {
+  return (
+    <a
+      href={`https://www.google.com/maps?q=${lat},${lng}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        marginTop: 6,
+        fontSize: 11,
+        fontWeight: 600,
+        color: 'var(--primary, #059669)',
+        textDecoration: 'none',
+      }}
+    >
+      Open in Google Maps
+      <ExternalLink style={{ width: 11, height: 11 }} />
+    </a>
+  )
 }
 
 interface FieldMapProps {
@@ -277,12 +332,9 @@ export default function FieldMap({
           <Popup>
             <div style={{ fontSize: 12, lineHeight: 1.5 }}>
               <strong>{pin.label}</strong>
-              {pin.sublabel && (
-                <>
-                  <br />
-                  {pin.sublabel}
-                </>
-              )}
+              {pin.sublabel && <div>{pin.sublabel}</div>}
+              <PopupMeta meta={pin.meta} />
+              <PopupMapsLink lat={pin.lat} lng={pin.lng} />
             </div>
           </Popup>
         </Marker>
@@ -302,7 +354,11 @@ export default function FieldMap({
         >
           {highlight.label && (
             <Popup>
-              <div style={{ fontSize: 12, lineHeight: 1.5 }}>{highlight.label}</div>
+              <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                <strong>{highlight.label}</strong>
+                <PopupMeta meta={highlight.meta} />
+                <PopupMapsLink lat={highlight.lat} lng={highlight.lng} />
+              </div>
             </Popup>
           )}
         </Marker>

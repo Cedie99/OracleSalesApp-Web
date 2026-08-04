@@ -8,6 +8,7 @@ import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CircularProgress } from '@/components/ui/circular-progress'
 import { getClientProgress } from '@/lib/client-progress'
+import { clientAddress, hasOfficePin, officePinSourceLabel } from '@/lib/client-info'
 import type { Client, Meeting, MeetingOutcome } from '@/types'
 import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, X as XIcon } from 'lucide-react'
 import { format } from 'date-fns'
@@ -170,18 +171,19 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                           <p className="text-[11px] font-medium text-muted-foreground mb-1.5">Office Address</p>
                           <div className="flex items-start gap-2 text-sm text-foreground">
                             <MapPin className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
-                            <span>
-                              {client.office_address ||
-                                [client.city, client.province].filter(Boolean).join(', ') ||
-                                'No address on file'}
-                            </span>
+                            <span>{clientAddress(client).full ?? 'No address on file'}</span>
                           </div>
+                          {clientAddress(client).landmark && (
+                            <p className="text-xs text-muted-foreground mt-1 pl-6">
+                              Landmark: {clientAddress(client).landmark}
+                            </p>
+                          )}
                         </div>
 
-                        {/* Hidden until clients carry their own coordinates.
-                            Deliberately not falling back to meeting GPS — that
-                            is where the agent stood, not the client's address. */}
-                        {client.office_lat != null && client.office_lng != null && (
+                        {/* The client's own office pin (migration 052), for the
+                            rows that have one — never meeting GPS, which is
+                            where the agent stood, not where the client is. */}
+                        {hasOfficePin(client) && (
                           <div className="space-y-1.5">
                             <div className="h-64 rounded-md overflow-hidden border border-border">
                               <ClientMap
@@ -194,8 +196,9 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                               <Navigation className="w-3 h-3 shrink-0" />
                               <span className="font-mono">
-                                {client.office_lat.toFixed(4)}, {client.office_lng.toFixed(4)}
+                                {client.office_lat!.toFixed(4)}, {client.office_lng!.toFixed(4)}
                               </span>
+                              <span>· {officePinSourceLabel(client.office_pin_source)}</span>
                             </div>
                           </div>
                         )}

@@ -57,6 +57,22 @@ export interface TripStop {
   lng: number | null
   /** When the stop closed out. Null while nobody has reached it. */
   at: string | null
+  /**
+   * When the worker ARRIVED, in the modules that record it.
+   *
+   * Delivery does — `time_in` off the trip report — so its stops read as a
+   * window ("9:58 – 10:12 AM"). Collection does not: the phone stamps a single
+   * `visited_at` when the payment photo is taken, and there is no second
+   * timestamp to pair it with, so this is always null there and the UI shows
+   * one time rather than inventing a window.
+   */
+  startedAt: string | null
+  /**
+   * Minutes spent at the stop — Delivery's dwell. Null wherever both ends
+   * aren't recorded, which is every Collection stop; never 0-as-unknown, so a
+   * null must render as an absence rather than as an instant visit.
+   */
+  durationMinutes: number | null
   tone: TripStopTone
   statusLabel: string
   /** Peso figure for the row, pre-formatted, or null where money isn't involved. */

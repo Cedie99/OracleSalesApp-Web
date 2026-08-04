@@ -19,9 +19,11 @@ import {
 } from '@/lib/trips'
 import {
   Search, Layers, ChevronDown, Check, Info, PanelLeftClose, PanelLeftOpen,
-  X, Crosshair, Clock, CameraOff, MapPin as MapPinIcon, Route,
+  X, Crosshair, Clock, CameraOff, MapPin as MapPinIcon, Route, Building2, ExternalLink,
 } from 'lucide-react'
 import { format } from 'date-fns'
+import { useReverseGeocode } from '@/lib/hooks/use-reverse-geocode'
+import { formatDurationMinutes } from '@/lib/utils'
 
 const FieldMap = dynamic(() => import('@/components/maps/field-map'), {
   ssr: false,
@@ -81,6 +83,36 @@ interface TripMapViewProps {
 
 function plural(n: number, [one, many]: [string, string]): string {
   return `${n} ${n === 1 ? one : many}`
+}
+
+/**
+ * When a stop was worked, pre-formatted. Null while nobody has reached it.
+ *
+ * A stop used to be captioned by its status alone — "#3 · Ramon · Collected" —
+ * which says nothing about WHEN, the first thing anyone checking a run wants.
+ * `window` and `duration` fill in only where the module records both ends of the
+ * visit (Delivery's time-in/time-out); Collection stamps a single moment, so
+ * there is one time and no dwell, and the view says so rather than showing a
+ * blank where a number should be.
+ */
+function stopClock(stop: TripStop) {
+  if (!stop.at) return null
+  const at = new Date(stop.at)
+  const window = stop.startedAt
+    ? `${format(new Date(stop.startedAt), 'h:mm')} – ${format(at, 'h:mm a')}`
+    : null
+  const duration = formatDurationMinutes(stop.durationMinutes)
+  return {
+    date: format(at, 'MMM d, yyyy'),
+    time: format(at, 'h:mm a'),
+    dateTime: format(at, 'MMM d, yyyy · h:mm a'),
+    window,
+    duration,
+    /** One line for a popup: the window where there is one, the moment otherwise. */
+    summary: [format(at, 'MMM d, yyyy'), window ?? format(at, 'h:mm a'), duration]
+      .filter(Boolean)
+      .join(' · '),
+  }
 }
 
 /**
@@ -205,6 +237,33 @@ export function TripMapView({
     return openStops.filter(s => s.label.toLowerCase().includes(q))
   }, [openStops, search, coord])
 
+  // Plain derivation rather than a useMemo: the early-return-inside-a-loop shape
+  // is one the React Compiler can't preserve, and it bails out of optimising the
+  // whole component when it sees it. The scan is over one day's stops.
+  const selectedStop = selectedStopId
+    ? visibleTrips.reduce<{ stop: TripStop; trip: Trip } | null>((found, trip) => {
+        if (found) return found
+        const stop = trip.stops.find(s => s.id === selectedStopId)
+        return stop ? { stop, trip } : null
+      }, null)
+    : null
+
+  /**
+   * Where the selected stop's captured GPS actually IS, in words.
+   *
+   * The panel used to show only the address the OFFICE listed (a store's
+   * registered address, a delivery's area) plus raw coordinates — neither of
+   * which says where the phone was standing when the proof photo was taken, and
+   * the first of which reads as if it did. Same fix, same reasoning as the Sales
+   * map; see the note on `plotPlace` there.
+   *
+   * Declared above `pins` so the open pin's popup gets the resolved name too:
+   * clicking a pin selects that stop in the same event, so this is already
+   * resolving for exactly the stop whose popup is open, and no pin nobody
+   * clicked is ever geocoded.
+   */
+  const stopPlace = useReverseGeocode(selectedStop?.stop.lat, selectedStop?.stop.lng)
+
   const pins = useMemo<MapPin[]>(
     () =>
       // The not-worked lens has nothing to plot by definition, so the map clears
@@ -212,20 +271,31 @@ export function TripMapView({
       listMode === 'open'
         ? []
         : visibleTrips.flatMap(trip =>
-            trip.located.map(stop => ({
-              id: stop.id,
-              lat: stop.lat!,
-              lng: stop.lng!,
-              color: trip.color,
-              active: stop.id === selectedStopId,
-              label: stop.label,
-              sublabel: `#${stop.sequence} · ${trip.workerName} · ${stop.statusLabel}`,
-              avatarUrl: trip.avatarUrl,
-              badge: stop.sequence,
-              badgeColor: TRIP_TONE_COLOR[stop.tone],
-            }))
+            trip.located.map(stop => {
+              const active = stop.id === selectedStopId
+              const clock = stopClock(stop)
+              return {
+                id: stop.id,
+                lat: stop.lat!,
+                lng: stop.lng!,
+                color: trip.color,
+                active,
+                label: stop.label,
+                sublabel: `#${stop.sequence} · ${trip.workerName} · ${stop.statusLabel}`,
+                meta: [
+                  // When, then where. Both were missing from the pin: a popup
+                  // that names the worker and the outcome but neither the time
+                  // nor the place can't answer "was he there when he says?".
+                  clock ? clock.summary : 'Not yet closed out',
+                  active ? (stopPlace.loading ? 'Locating…' : stopPlace.label) : null,
+                ],
+                avatarUrl: trip.avatarUrl,
+                badge: stop.sequence,
+                badgeColor: TRIP_TONE_COLOR[stop.tone],
+              }
+            })
           ),
-    [visibleTrips, selectedStopId, listMode]
+    [visibleTrips, selectedStopId, listMode, stopPlace.loading, stopPlace.label]
   )
 
   const paths = useMemo<TripPath[]>(
@@ -252,17 +322,6 @@ export function TripMapView({
   const mappedCount = visibleTrips.reduce((n, t) => n + t.located.length, 0)
   const totalStops = visibleTrips.reduce((n, t) => n + t.stops.length, 0)
   const unlocatedCount = totalStops - mappedCount
-
-  // Plain derivation rather than a useMemo: the early-return-inside-a-loop shape
-  // is one the React Compiler can't preserve, and it bails out of optimising the
-  // whole component when it sees it. The scan is over one day's stops.
-  const selectedStop = selectedStopId
-    ? visibleTrips.reduce<{ stop: TripStop; trip: Trip } | null>((found, trip) => {
-        if (found) return found
-        const stop = trip.stops.find(s => s.id === selectedStopId)
-        return stop ? { stop, trip } : null
-      }, null)
-    : null
 
   function onSearchChange(value: string) {
     setSearch(value)
@@ -452,7 +511,19 @@ export function TripMapView({
                                       <span className="block text-[11px] text-muted-foreground truncate">
                                         {stop.statusLabel}
                                         {stop.amountLabel ? ` · ${stop.amountLabel}` : ''}
-                                        {stop.at ? ` · ${format(new Date(stop.at), 'HH:mm')}` : ''}
+                                      </span>
+                                      {/* The clock facts on their own line — the
+                                          old row buried a bare "14:05" behind the
+                                          status and amount, where it truncated
+                                          away first on a long store name. */}
+                                      <span className="block text-[10px] text-muted-foreground/80 truncate">
+                                        {(() => {
+                                          const clock = stopClock(stop)
+                                          if (!clock) return 'Not yet worked'
+                                          return [clock.window ?? clock.time, clock.duration]
+                                            .filter(Boolean)
+                                            .join(' · ')
+                                        })()}
                                       </span>
                                     </span>
                                     <span className="flex flex-col items-end gap-0.5 shrink-0">
@@ -699,11 +770,18 @@ export function TripMapView({
                   <h2 className="text-base font-semibold text-foreground leading-tight truncate">
                     {selectedStop.stop.label}
                   </h2>
+                  {/* What the OFFICE wrote on the day's list — a store's
+                      registered address or a delivery's area. Captioned because
+                      unlabelled next to a pin it reads as the pin's location,
+                      which is the captured GPS further down the panel. */}
                   <div className="flex items-start gap-1.5 mt-1">
-                    <MapPinIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                    <p className="text-xs text-muted-foreground">
-                      {selectedStop.stop.sublabel || 'No address on file'}
-                    </p>
+                    <Building2 className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-xs text-muted-foreground">
+                        {selectedStop.stop.sublabel || 'No address on file'}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground/70">As listed</p>
+                    </div>
                   </div>
                 </div>
                 <button
@@ -736,18 +814,54 @@ export function TripMapView({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Clock className="w-3.5 h-3.5 shrink-0" />
-                  {selectedStop.stop.at
-                    ? format(new Date(selectedStop.stop.at), 'MMM d, yyyy · h:mm a')
-                    : 'Not yet closed out'}
-                </div>
+                {/* When — the moment it closed out, plus the on-site window and
+                    dwell where the module records an arrival too (Delivery does,
+                    Collection doesn't; see stopClock). */}
+                {(() => {
+                  const clock = stopClock(selectedStop.stop)
+                  return (
+                    <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                      <Clock className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <p className="text-foreground">{clock?.dateTime ?? 'Not yet closed out'}</p>
+                        {clock?.window && (
+                          <p className="text-[10px] text-muted-foreground">
+                            On site {clock.window}
+                            {clock.duration && ` · ${clock.duration}`}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()}
 
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <MapPinIcon className="w-3.5 h-3.5 shrink-0" />
-                  {selectedStop.stop.lat != null
-                    ? `${selectedStop.stop.lat.toFixed(4)}° N, ${selectedStop.stop.lng?.toFixed(4)}° E`
-                    : 'No GPS captured'}
+                {/* Where the pin is, resolved from the captured fix — a different
+                    fact from the listed address in the header above it, which is
+                    why both are labelled. Linked out so the spot can be checked
+                    against the ground. */}
+                <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <MapPinIcon className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary" />
+                  {selectedStop.stop.lat != null ? (
+                    <div className="min-w-0">
+                      <a
+                        href={`https://www.google.com/maps?q=${selectedStop.stop.lat},${selectedStop.stop.lng}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="group inline-flex items-start gap-1 text-foreground hover:text-primary transition-colors"
+                      >
+                        <span className="min-w-0">
+                          {stopPlace.loading ? 'Locating…' : stopPlace.label}
+                        </span>
+                        <ExternalLink className="w-3 h-3 shrink-0 mt-0.5 text-muted-foreground group-hover:text-primary transition-colors" />
+                      </a>
+                      <p className="text-[10px] text-muted-foreground">
+                        Captured GPS · {selectedStop.stop.lat.toFixed(4)}° N,{' '}
+                        {selectedStop.stop.lng?.toFixed(4)}° E
+                      </p>
+                    </div>
+                  ) : (
+                    'No GPS captured'
+                  )}
                 </div>
 
                 {selectedStop.stop.missingProof && (

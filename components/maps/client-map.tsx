@@ -6,6 +6,7 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Client } from '@/types'
 import { mapStatusMeta, TILE_LAYERS, type MapTileType } from '@/components/maps/map-constants'
+import { InvalidateOnResize } from '@/components/maps/invalidate-on-resize'
 
 const PIN_PATH =
   'M172.268 501.67C26.97 291.031 0 269.413 0 192 0 85.961 85.961 0 192 0s192 85.961 192 192c0 77.413-26.97 99.031-172.268 309.67-9.535 13.774-29.93 13.773-39.464 0zM192 272c44.183 0 80-35.817 80-80s-35.817-80-80-80-80 35.817-80 80 35.817 80 80 80z'
@@ -53,15 +54,15 @@ interface ClientMapProps {
 }
 
 /**
- * Plots clients at their own recorded coordinates.
+ * Plots clients at their own PERMANENT office pin — `office_lat`/`office_lng`,
+ * live since migration 052 and written by the mobile Set/Update Office Location
+ * flow or by a meeting the agent tagged as being at the client's office.
  *
- * `office_lat`/`office_lng` do not exist on the live `clients` table yet — the
- * mobile app does not capture a location when a client is created, so nothing
- * plots today and the map renders empty by design. Deliberately NOT falling
- * back to meeting GPS: where an agent stood during a meeting is not the
- * client's address, and plotting it would assert a location the data cannot
- * support. Capturing a pin at client creation is a planned app change; when
- * those columns land, this component already reads them.
+ * Deliberately NOT falling back to meeting GPS: where an agent stood during a
+ * visit is not the client's address (for an online meeting it is nowhere near
+ * it), and the office-location contract forbids inferring the pin from it. A
+ * client without a pin simply doesn't plot — most rows are still in that state,
+ * since the columns were added without a backfill.
  */
 export default function ClientMap({ clients, selectedId, onSelect, mapType }: ClientMapProps) {
   const plottable = clients.filter(c => c.office_lat != null && c.office_lng != null)
@@ -125,6 +126,9 @@ export default function ClientMap({ clients, selectedId, onSelect, mapType }: Cl
         )
       })}
       <FlyToSelected client={selected} />
+      {/* This map lives inside a dialog that animates open from nothing — see
+          InvalidateOnResize, without which it paints a grey box. */}
+      <InvalidateOnResize />
     </MapContainer>
   )
 }
