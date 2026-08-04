@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { SearchableSelect } from '@/components/ui/searchable-select'
+import { PersonSelect, type PersonOption, type PersonTeamOption } from '@/components/ui/person-select'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -43,24 +43,12 @@ export function downloadSheet(
   XLSX.writeFile(wb, `${fileSlug}-${format(new Date(), 'yyyy-MM-dd')}.xlsx`)
 }
 
-interface WorkerOption {
-  id: string
-  name: string
-  /** Groups the person under their team in the picker. Null renders as "No team". */
-  teamId?: string | null
-}
-
-interface TeamOption {
-  id: string
-  name: string
-}
-
 interface ReportFiltersProps {
   /** e.g. "Filter by agent" / "Filter by collector". */
   label: string
   /** e.g. "All Agents". */
   allLabel: string
-  options: WorkerOption[]
+  options: PersonOption[]
   value: string
   onChange: (value: string) => void
   dateFilter: DateRangeFilterState
@@ -69,7 +57,7 @@ interface ReportFiltersProps {
    * organised into teams — the control disappears rather than showing an empty
    * dropdown.
    */
-  teams?: TeamOption[]
+  teams?: PersonTeamOption[]
   teamValue?: string
   onTeamChange?: (value: string) => void
 }
@@ -81,10 +69,10 @@ interface ReportFiltersProps {
  * by "agent" would be offered sales staff who never touch a collection run —
  * so the options and both labels are passed in rather than assumed.
  *
- * The person picker is a searchable combobox rather than a plain select: these
- * lists grow with headcount, and hunting one known name down a forty-row
- * dropdown is the complaint that prompted it. Choosing a team narrows the
- * picker to that team's staff, so the two filters compose instead of competing.
+ * The picker itself is the shared <PersonSelect> — a searchable combobox rather
+ * than a plain select, because these lists grow with headcount. Choosing a team
+ * narrows it to that team's staff, so the two filters compose instead of
+ * competing.
  */
 export function ReportFilters({
   label,
@@ -101,56 +89,6 @@ export function ReportFilters({
 
   const selected = options.find(o => o.id === value)
   const selectedTeam = teams?.find(t => t.id === teamValue)
-
-  /**
-   * The picker's sections.
-   *
-   * Memoised on the raw inputs rather than on a derived list, and deliberately
-   * so: this array is handed to Combobox.Root as `items`, and a fresh identity
-   * every render makes it re-derive its collection every render. An
-   * intermediate `const` in the render body would defeat the memo entirely,
-   * because its identity changes each time even when nothing else has.
-   */
-  const groups = React.useMemo(() => {
-    // Narrowed to the chosen team, so the picker never offers a name that the
-    // team filter would immediately exclude from every report.
-    const inScope =
-      showTeams && teamValue !== 'all'
-        ? options.filter(o => (o.teamId ?? '') === teamValue)
-        : options
-
-    const all = { id: 'all', value: '', items: [{ value: 'all', label: allLabel }] }
-    if (!showTeams) {
-      return [
-        all,
-        {
-          id: 'everyone',
-          value: '',
-          items: inScope.map(o => ({ value: o.id, label: o.name })),
-        },
-      ]
-    }
-    // One section per team, in the order the teams were given, plus a trailing
-    // section for staff with no team — dropped silently they would be
-    // unreachable through the picker entirely.
-    const sections = (teams ?? [])
-      .map(t => ({
-        id: t.id,
-        value: t.name,
-        items: inScope.filter(o => o.teamId === t.id).map(o => ({ value: o.id, label: o.name })),
-      }))
-      .filter(s => s.items.length > 0)
-
-    const orphans = inScope.filter(o => !o.teamId)
-    if (orphans.length > 0) {
-      sections.push({
-        id: 'no-team',
-        value: 'No team',
-        items: orphans.map(o => ({ value: o.id, label: o.name })),
-      })
-    }
-    return [all, ...sections]
-  }, [allLabel, options, showTeams, teamValue, teams])
 
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -183,14 +121,14 @@ export function ReportFilters({
       )}
 
       <p className="text-sm text-muted-foreground">{label}:</p>
-      <SearchableSelect
-        groups={groups}
-        value={value === 'all' ? 'all' : value}
-        onChange={v => onChange(v === '' ? 'all' : v)}
-        placeholder={selected ? selected.name : allLabel}
-        emptyLabel="No one matches that name"
+      <PersonSelect
+        options={options}
+        value={value}
+        onChange={onChange}
+        allLabel={allLabel}
+        teams={showTeams ? teams : undefined}
+        teamValue={teamValue}
         aria-label={label}
-        className="w-56"
       />
 
       <p className="text-sm text-muted-foreground">Date range:</p>
