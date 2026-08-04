@@ -316,6 +316,12 @@ function MeetingHistoryRow({
 interface SalesMapViewProps {
   /** The module switcher, when this admin has more than one lens. */
   headerAction?: React.ReactNode
+  /**
+   * Deep link from the Clients page's agent drill-down ("View on map"):
+   * pre-filters the list to this agent's clients, matching the Collection and
+   * Delivery "View on map" links. `null`/omitted leaves the lens unfiltered.
+   */
+  initialAgentId?: string | null
 }
 
 /**
@@ -338,12 +344,24 @@ interface SalesMapViewProps {
  * being over-worked, which is a short list. A client at zero still appears, so
  * genuine neglect is not hidden — it just no longer drowns the page.
  */
-export function SalesMapView({ headerAction }: SalesMapViewProps) {
+export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | MapStatus>('all')
-  const [agentFilter, setAgentFilter] = useState<'all' | 'unassigned' | string>('all')
+  // Touched pattern, mirroring TripMapView's `initialWorkerId` — the deep-linked
+  // agent stands in until the admin picks one themselves, so it keeps working
+  // even if this view doesn't remount on navigation.
+  const [pickedAgent, setPickedAgent] = useState<'all' | 'unassigned' | string>('all')
+  const [touchedAgent, setTouchedAgent] = useState(false)
+  const agentFilter = touchedAgent ? pickedAgent : (initialAgentId ?? 'all')
+  const setAgentFilter = (id: 'all' | 'unassigned' | string) => {
+    setTouchedAgent(true)
+    setPickedAgent(id)
+  }
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
-  const dateFilter = useDateRangeFilter({ defaultPreset: 'day' })
+  // A deep-linked agent means "show everything this agent has", not "show
+  // today" — the default single-day window would otherwise land on an
+  // near-empty map for a link that promised "all its clients".
+  const dateFilter = useDateRangeFilter({ defaultPreset: initialAgentId ? 'all' : 'day' })
   const [teamFilter, setTeamFilter] = useState<'all' | string>('all')
   const [colorBy, setColorBy] = useState<'status' | 'outcome'>('status')
   const [listMode, setListMode] = useState<'visited' | 'quota'>('visited')
@@ -479,6 +497,13 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
     }
   }, [clients, teamFilter])
 
+  // The single agent the list is scoped to, if any — shown once as a header
+  // instead of repeated on every row below (see the per-row agent block).
+  const selectedAgent = useMemo(() => {
+    if (agentFilter === 'all' || agentFilter === 'unassigned') return null
+    return clients.find(c => c.agent?.id === agentFilter)?.agent ?? null
+  }, [clients, agentFilter])
+
   const coord = useMemo(() => parseLatLng(search), [search])
 
   // A raw lat/lng in the search box is a "go here" command, not a list filter —
@@ -513,9 +538,17 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
       client: Client
       inRange: Meeting[]
       plotMeeting: Meeting | null
-      lastVisit: string
+      lastVisit: string | null
     }[] = []
     const quotaRows: QuotaRow[] = []
+
+    // Scoped to one agent (the Clients page's "View on map" deep link) means
+    // the whole roster, not just the ones with a meeting in range — a client
+    // with no visit yet is still one of theirs, just unlocated. Left off the
+    // unscoped list on purpose (see the block comment above `SalesMapView`):
+    // that would resurrect the old "Not visited" lens, which dumped nearly
+    // every client in the database with nothing actionable in it.
+    const isAgentScoped = agentFilter !== 'all' && agentFilter !== 'unassigned'
 
     for (const client of clients) {
       // Client-level filters apply to both buckets.
@@ -554,14 +587,22 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
         return t >= range.start.getTime() && t <= range.end.getTime()
       })
 
-      if (inRange.length === 0) continue
+      if (inRange.length === 0 && !isAgentScoped) continue
 
       // Pin sits at the most recent plottable f2f visit in range.
       const plotMeeting = inRange.find(isPlottableMeeting) ?? null
-      vis.push({ client, inRange, plotMeeting, lastVisit: inRange[0].meeting_date })
+      vis.push({ client, inRange, plotMeeting, lastVisit: inRange[0]?.meeting_date ?? null })
     }
 
-    vis.sort((a, b) => new Date(b.lastVisit).getTime() - new Date(a.lastVisit).getTime())
+    // Visited-most-recently first, same as before; a client with no visit at
+    // all (only possible when agent-scoped) has nothing to rank by time, so
+    // those sink to the bottom, alphabetically.
+    vis.sort((a, b) => {
+      if (a.lastVisit && b.lastVisit) return new Date(b.lastVisit).getTime() - new Date(a.lastVisit).getTime()
+      if (a.lastVisit) return -1
+      if (b.lastVisit) return 1
+      return a.client.company_name.localeCompare(b.client.company_name)
+    })
     quotaRows.sort(
       (a, b) =>
         QUOTA_RANK[a.usage.state] - QUOTA_RANK[b.usage.state] ||
@@ -970,6 +1011,29 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                 <PanelLeftClose className="w-4 h-4" />
               </button>
             </div>
+
+            {/* Agent identity, once — mirrors the Collection/Delivery run header
+                (worker shown once at the top) rather than repeating their name
+                on every row below, which just clutters an already-scoped list. */}
+            {selectedAgent && (
+              <div className="flex items-center gap-2.5 px-3 py-2.5 border-b border-border bg-muted/30">
+                <Avatar size="default">
+                  {selectedAgent.avatar_url && <AvatarImage src={selectedAgent.avatar_url} alt="" />}
+                  <AvatarFallback className="bg-primary/20 text-primary text-xs font-bold">
+                    {selectedAgent.full_name.charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    Agent
+                  </p>
+                  <p className="text-sm font-semibold text-foreground truncate">
+                    {selectedAgent.full_name}
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="flex-1 overflow-y-auto divide-y divide-border min-h-0">
               {listMode === 'visited' ? (
                 <>
@@ -989,7 +1053,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                           />
                           <p className="text-sm font-medium text-foreground truncate flex-1">{client.company_name}</p>
                           <span className="text-[10px] text-muted-foreground shrink-0">
-                            {format(new Date(lastVisit), 'MMM d')}
+                            {lastVisit ? format(new Date(lastVisit), 'MMM d') : 'No visits'}
                           </span>
                         </div>
                         {/* Prefixed because this is the account's address, not
@@ -999,7 +1063,8 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                           {officeAddressLine(client)}
                         </p>
                         <div className="flex items-center gap-1.5 mt-1 pl-4">
-                          {client.agent && (
+                          {/* Redundant once the agent is the list's own header. */}
+                          {!selectedAgent && client.agent && (
                             <Avatar className="size-4 after:border-0">
                               {client.agent.avatar_url && <AvatarImage src={client.agent.avatar_url} alt="" />}
                               <AvatarFallback className="text-[8px] bg-primary/20 text-primary">
@@ -1007,9 +1072,11 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                               </AvatarFallback>
                             </Avatar>
                           )}
-                          <p className="text-[11px] text-muted-foreground truncate">
-                            {client.agent?.full_name ?? 'Unassigned'}
-                          </p>
+                          {!selectedAgent && (
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {client.agent?.full_name ?? 'Unassigned'}
+                            </p>
+                          )}
                           <span className="ml-auto flex items-center gap-1 shrink-0">
                             <Badge variant="outline" className="text-[9px] px-1 h-3.5">
                               {inRange.length} {inRange.length === 1 ? 'visit' : 'visits'}
@@ -1110,7 +1177,8 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                           {officeAddressLine(client)}
                         </p>
                         <div className="flex items-center gap-1.5 mt-1 pl-4">
-                          {client.agent && (
+                          {/* Redundant once the agent is the list's own header. */}
+                          {!selectedAgent && client.agent && (
                             <Avatar className="size-4 after:border-0">
                               {client.agent.avatar_url && <AvatarImage src={client.agent.avatar_url} alt="" />}
                               <AvatarFallback className="text-[8px] bg-primary/20 text-primary">
@@ -1118,9 +1186,11 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                               </AvatarFallback>
                             </Avatar>
                           )}
-                          <p className="text-[11px] text-muted-foreground truncate">
-                            {client.agent?.full_name ?? 'Unassigned'}
-                          </p>
+                          {!selectedAgent && (
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {client.agent?.full_name ?? 'Unassigned'}
+                            </p>
+                          )}
                           {/* A pending tag-along reserves no slot, so the number
                               to its left can still move. Flagged so it isn't
                               read as settled. */}

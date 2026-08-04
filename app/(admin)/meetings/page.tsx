@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -18,7 +19,7 @@ import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import type { Meeting, MeetingOutcome } from '@/types'
 import {
-  Search, CalendarCheck, MapPin, Camera, Video, Navigation, Users, CheckCircle2, Loader2,
+  Search, CalendarCheck, MapPin, Map as MapIcon, Camera, Video, Navigation, Users, CheckCircle2, Loader2,
   Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown, ArrowLeft, User, ExternalLink,
 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -48,6 +49,7 @@ const DEFAULT_SORT_DIR: Record<SortKey, SortState['dir']> = {
 const OUTCOME_ORDER: MeetingOutcome[] = ['successful', 'follow_up', 'no_decision', 'lost_opportunity']
 
 export default function MeetingsPage() {
+  const router = useRouter()
   const [search, setSearch] = useState('')
   const [outcomeFilter, setOutcomeFilter] = useState<string>('all')
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
@@ -55,6 +57,7 @@ export default function MeetingsPage() {
   const [sort, setSort] = useState<SortState>({ key: 'date', dir: 'desc' })
   const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
+  const [selectedManagerKey, setSelectedManagerKey] = useState<string | null>(null)
   const { meetings, loading, error } = useMeetings()
   const { byRole } = useProfiles()
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
@@ -112,7 +115,12 @@ export default function MeetingsPage() {
     const buckets = managers.map(m => {
       const managerGroups = groups.filter(g => g.managerKey === m.id)
       const meetingCount = managerGroups.reduce((sum, g) => sum + g.meetings.length, 0)
-      return { key: m.id, label: m.full_name, agentCount: managerGroups.length, meetingCount }
+      // The manager's own footprint — meetings they personally recorded solo
+      // (agent_id is them) or tagged along on with one of their agents
+      // (recorded_by is them) — distinct from meetingCount, which is the
+      // whole team's total.
+      const ownMeetingCount = filtered.filter(mt => mt.agent_id === m.id || mt.recorded_by === m.id).length
+      return { key: m.id, label: m.full_name, agentCount: managerGroups.length, meetingCount, ownMeetingCount }
     })
     const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
     if (unassignedGroups.length > 0) {
@@ -121,12 +129,28 @@ export default function MeetingsPage() {
         label: 'Unassigned',
         agentCount: unassignedGroups.length,
         meetingCount: unassignedGroups.reduce((sum, g) => sum + g.meetings.length, 0),
+        ownMeetingCount: 0,
       })
     }
     return buckets
-  }, [managers, groups])
+  }, [managers, groups, filtered])
 
   const selectedGroup = selectedAgentId ? groups.find(g => g.agentId === selectedAgentId) ?? null : null
+
+  // A manager's own records — meetings they personally attended, whether
+  // solo (agent_id is them) or tagging along on an agent's visit
+  // (recorded_by is them). This is deliberately *not* the whole team's
+  // meetings — just the manager's own footprint, matching the mobile app.
+  const selectedManagerBucket = selectedManagerKey
+    ? managerBuckets.find(b => b.key === selectedManagerKey) ?? null
+    : null
+  const managerMeetings = useMemo(
+    () => (selectedManagerKey
+      ? filtered.filter(mt => mt.agent_id === selectedManagerKey || mt.recorded_by === selectedManagerKey)
+      : []),
+    [selectedManagerKey, filtered],
+  )
+  const activeMeetings = selectedGroup?.meetings ?? (selectedManagerBucket ? managerMeetings : null)
 
   function toggleSort(key: SortKey) {
     setSort(prev =>
@@ -136,7 +160,7 @@ export default function MeetingsPage() {
     )
   }
 
-  const sorted = [...(selectedGroup?.meetings ?? [])].sort((a, b) => {
+  const sorted = [...(activeMeetings ?? [])].sort((a, b) => {
     const dir = sort.dir === 'asc' ? 1 : -1
     // Every column falls back to client name so equal rows keep a stable order.
     const byClient = (a.client?.company_name ?? '').localeCompare(b.client?.company_name ?? '', undefined, { sensitivity: 'base' })
@@ -175,7 +199,7 @@ export default function MeetingsPage() {
   })
 
   const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
-    sorted, 10, `${selectedAgentId}|${search}|${outcomeFilter}|${typeFilter}|${dateFilter.key}|${sort.key}|${sort.dir}`,
+    sorted, 10, `${selectedAgentId}|${selectedManagerKey}|${search}|${outcomeFilter}|${typeFilter}|${dateFilter.key}|${sort.key}|${sort.dir}`,
   )
 
   return (
@@ -260,14 +284,14 @@ export default function MeetingsPage() {
           </Alert>
         )}
 
-        {!loading && !error && !selectedGroup && (
+        {!loading && !error && !selectedGroup && !selectedManagerBucket && (
           <>
             {/* Managers — click one to drop down their team's agents right below it */}
             <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
               Managers
             </p>
             <div className="space-y-3">
-              {managerBuckets.map(({ key, label, agentCount, meetingCount }) => {
+              {managerBuckets.map(({ key, label, agentCount, meetingCount, ownMeetingCount }) => {
                 const isOpen = expandedManagerKey === key
                 const bucketGroups = groups.filter(g => g.managerKey === key)
                 return (
@@ -293,33 +317,63 @@ export default function MeetingsPage() {
                     </button>
 
                     {isOpen && (
-                      <div className="bg-muted/40 border-t border-border p-4 pl-6 space-y-2.5">
-                        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                          Agents under {label}
-                        </p>
-                        {bucketGroups.map(group => (
-                          <button
-                            key={group.agentId}
-                            type="button"
-                            onClick={() => setSelectedAgentId(group.agentId)}
-                            className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-border shadow-sm text-left hover:border-primary/40 hover:bg-accent/30 transition-colors"
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                                <span className="text-xs font-bold text-primary">
-                                  {group.agentName.charAt(0)}
-                                </span>
+                      <div className="bg-muted/40 border-t border-border p-4 pl-6 space-y-4">
+                        {key !== 'unassigned' && (
+                          <div className="space-y-2.5">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                              Manager
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => { setSelectedManagerKey(key); setSelectedAgentId(null) }}
+                              className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-primary/50 shadow-sm text-left hover:border-primary hover:bg-primary/5 transition-colors"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                                  <span className="text-xs font-bold text-primary">
+                                    {label.charAt(0)}
+                                  </span>
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-foreground truncate">{label}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Tag-along: {ownMeetingCount} record{ownMeetingCount === 1 ? '' : 's'}
+                                  </p>
+                                </div>
                               </div>
-                              <div className="min-w-0">
-                                <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
-                                <p className="text-xs text-muted-foreground">
-                                  {group.meetings.length} meeting{group.meetings.length === 1 ? '' : 's'}
-                                </p>
+                              <ChevronRight className="w-4 h-4 text-primary shrink-0" />
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="space-y-2.5">
+                          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                            Agents under {label}
+                          </p>
+                          {bucketGroups.map(group => (
+                            <button
+                              key={group.agentId}
+                              type="button"
+                              onClick={() => { setSelectedAgentId(group.agentId); setSelectedManagerKey(null) }}
+                              className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-border shadow-sm text-left hover:border-primary/40 hover:bg-accent/30 transition-colors"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                                  <span className="text-xs font-bold text-primary">
+                                    {group.agentName.charAt(0)}
+                                  </span>
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {group.meetings.length} meeting{group.meetings.length === 1 ? '' : 's'}
+                                  </p>
+                                </div>
                               </div>
-                            </div>
-                            <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
-                          </button>
-                        ))}
+                              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -329,11 +383,14 @@ export default function MeetingsPage() {
           </>
         )}
 
-        {!loading && !error && selectedGroup && (
+        {!loading && !error && (selectedGroup || selectedManagerBucket) && (
           <>
-            {/* Selected agent's meetings */}
+            {/* Selected agent's or manager's meetings */}
             <div className="space-y-3">
-              <Button variant="outline" size="sm" className="h-9 gap-2" onClick={() => setSelectedAgentId(null)}>
+              <Button
+                variant="outline" size="sm" className="h-9 gap-2"
+                onClick={() => { setSelectedAgentId(null); setSelectedManagerKey(null) }}
+              >
                 <ArrowLeft className="w-4 h-4" />
                 Back to agents
               </Button>
@@ -341,16 +398,28 @@ export default function MeetingsPage() {
               <div className="flex items-center gap-3 p-4 rounded-lg border border-border bg-card">
                 <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
                   <span className="text-sm font-bold text-primary">
-                    {selectedGroup.agentName.charAt(0)}
+                    {(selectedGroup?.agentName ?? selectedManagerBucket?.label ?? '').charAt(0)}
                   </span>
                 </div>
-                <div className="min-w-0">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Agent</p>
-                  <p className="text-base font-semibold text-foreground truncate">{selectedGroup.agentName}</p>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    {selectedGroup ? 'Agent' : 'Manager · Tag-along records'}
+                  </p>
+                  <p className="text-base font-semibold text-foreground truncate">
+                    {selectedGroup?.agentName ?? selectedManagerBucket?.label}
+                  </p>
                   <p className="text-xs text-muted-foreground">
-                    {selectedGroup.meetings.length} meeting{selectedGroup.meetings.length === 1 ? '' : 's'}
+                    {(activeMeetings ?? []).length} meeting{(activeMeetings ?? []).length === 1 ? '' : 's'}
                   </p>
                 </div>
+                {selectedGroup && (
+                  <Button
+                    variant="outline" size="sm"
+                    onClick={() => router.push(`/maps?module=sales&agent=${encodeURIComponent(selectedGroup.agentId)}`)}
+                  >
+                    <MapIcon /> View on map
+                  </Button>
+                )}
               </div>
             </div>
 

@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -21,7 +22,7 @@ import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { createClient as createSupabaseClient } from '@/lib/supabase/client'
 import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
-import { Search, Building2, Phone, MapPin, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users } from 'lucide-react'
+import { Search, Building2, Phone, MapPin, Map as MapIcon, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users } from 'lucide-react'
 import { format, addDays } from 'date-fns'
 import { toast } from 'sonner'
 import {
@@ -60,6 +61,7 @@ const EMPTY_CLIENT_FORM: ClientFormData = {
 }
 
 export default function ClientsPage() {
+  const router = useRouter()
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [channelFilter, setChannelFilter] = useState<string>('all')
@@ -74,6 +76,7 @@ export default function ClientsPage() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
   const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
+  const [selectedManagerKey, setSelectedManagerKey] = useState<string | null>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Client | null>(null)
@@ -145,7 +148,15 @@ export default function ClientsPage() {
     const buckets = managers.map(m => {
       const managerGroups = groups.filter(g => g.managerKey === m.id)
       const clientCount = managerGroups.reduce((sum, g) => sum + g.clients.length, 0)
-      return { key: m.id, label: m.full_name, agentCount: managerGroups.length, clientCount }
+      // The manager's own footprint — clients they personally met with, solo
+      // (a meeting's agent_id is them) or tagging along on an agent's visit
+      // (a meeting's recorded_by is them) — distinct from clientCount, which
+      // is the whole team's total.
+      const ownClientIds = new Set(
+        meetings.filter(mt => mt.agent_id === m.id || mt.recorded_by === m.id).map(mt => mt.client_id)
+      )
+      const ownClientCount = filtered.filter(c => ownClientIds.has(c.id)).length
+      return { key: m.id, label: m.full_name, agentCount: managerGroups.length, clientCount, ownClientCount }
     })
     const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
     if (unassignedGroups.length > 0) {
@@ -154,17 +165,33 @@ export default function ClientsPage() {
         label: 'Unassigned',
         agentCount: unassignedGroups.length,
         clientCount: unassignedGroups.reduce((sum, g) => sum + g.clients.length, 0),
+        ownClientCount: 0,
       })
     }
     return buckets
-  }, [managers, groups])
+  }, [managers, groups, meetings, filtered])
 
   // The selected agent's clients (drill-down screen, unchanged regardless of
   // which team's dropdown is open).
   const selectedGroup = selectedAgentId ? groups.find(g => g.agentId === selectedAgentId) ?? null : null
 
+  // A manager's own records — clients they personally met with, whether solo
+  // or tagging along on an agent's visit. Deliberately *not* the whole
+  // team's clients — just the manager's own footprint, matching the mobile app.
+  const selectedManagerBucket = selectedManagerKey
+    ? managerBuckets.find(b => b.key === selectedManagerKey) ?? null
+    : null
+  const managerClients = useMemo(() => {
+    if (!selectedManagerKey) return []
+    const ownClientIds = new Set(
+      meetings.filter(mt => mt.agent_id === selectedManagerKey || mt.recorded_by === selectedManagerKey).map(mt => mt.client_id)
+    )
+    return filtered.filter(c => ownClientIds.has(c.id))
+  }, [selectedManagerKey, meetings, filtered])
+  const activeClients = selectedGroup?.clients ?? (selectedManagerBucket ? managerClients : null)
+
   const { pageItems: pageClients, page: clientPage, pageCount: clientPageCount, from: clientFrom, to: clientTo, total: clientTotal, setPage: setClientPage } = usePagination(
-    selectedGroup?.clients ?? [], 9, `${selectedAgentId}|${search}|${typeFilter}|${channelFilter}|${statusFilter}`,
+    activeClients ?? [], 9, `${selectedAgentId}|${selectedManagerKey}|${search}|${typeFilter}|${channelFilter}|${statusFilter}`,
   )
 
   function openCreate() {
@@ -346,14 +373,14 @@ export default function ClientsPage() {
           </Button> */}
         </div>
 
-        {!selectedGroup ? (
+        {!selectedGroup && !selectedManagerBucket ? (
           <>
             {/* Managers — click one to drop down their team's agents right below it */}
             <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
               Managers
             </p>
             <div className="space-y-3">
-              {managerBuckets.map(({ key, label, agentCount, clientCount }) => {
+              {managerBuckets.map(({ key, label, agentCount, clientCount, ownClientCount }) => {
                 const isOpen = expandedManagerKey === key
                 const bucketGroups = groups.filter(g => g.managerKey === key)
                 return (
@@ -379,33 +406,63 @@ export default function ClientsPage() {
                     </button>
 
                     {isOpen && (
-                      <div className="bg-muted/40 border-t border-border p-4 pl-6 space-y-2.5">
-                        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                          Agents under {label}
-                        </p>
-                        {bucketGroups.map(group => (
-                          <button
-                            key={group.agentId}
-                            type="button"
-                            onClick={() => setSelectedAgentId(group.agentId)}
-                            className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-border shadow-sm text-left hover:border-primary/40 hover:bg-accent/30 transition-colors"
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                                <span className="text-xs font-bold text-primary">
-                                  {group.agentName.charAt(0)}
-                                </span>
+                      <div className="bg-muted/40 border-t border-border p-4 pl-6 space-y-4">
+                        {key !== 'unassigned' && (
+                          <div className="space-y-2.5">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                              Manager
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => { setSelectedManagerKey(key); setSelectedAgentId(null) }}
+                              className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-primary/50 shadow-sm text-left hover:border-primary hover:bg-primary/5 transition-colors"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                                  <span className="text-xs font-bold text-primary">
+                                    {label.charAt(0)}
+                                  </span>
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-foreground truncate">{label}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Tag-along: {ownClientCount} record{ownClientCount === 1 ? '' : 's'}
+                                  </p>
+                                </div>
                               </div>
-                              <div className="min-w-0">
-                                <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
-                                <p className="text-xs text-muted-foreground">
-                                  {group.clients.length} client{group.clients.length === 1 ? '' : 's'}
-                                </p>
+                              <ChevronRight className="w-4 h-4 text-primary shrink-0" />
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="space-y-2.5">
+                          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                            Agents under {label}
+                          </p>
+                          {bucketGroups.map(group => (
+                            <button
+                              key={group.agentId}
+                              type="button"
+                              onClick={() => { setSelectedAgentId(group.agentId); setSelectedManagerKey(null) }}
+                              className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-border shadow-sm text-left hover:border-primary/40 hover:bg-accent/30 transition-colors"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                                  <span className="text-xs font-bold text-primary">
+                                    {group.agentName.charAt(0)}
+                                  </span>
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {group.clients.length} client{group.clients.length === 1 ? '' : 's'}
+                                  </p>
+                                </div>
                               </div>
-                            </div>
-                            <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
-                          </button>
-                        ))}
+                              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -415,9 +472,12 @@ export default function ClientsPage() {
           </>
         ) : (
           <>
-            {/* Selected agent's clients */}
+            {/* Selected agent's or manager's clients */}
             <div className="space-y-3">
-              <Button variant="outline" size="sm" className="h-9 gap-2" onClick={() => setSelectedAgentId(null)}>
+              <Button
+                variant="outline" size="sm" className="h-9 gap-2"
+                onClick={() => { setSelectedAgentId(null); setSelectedManagerKey(null) }}
+              >
                 <ArrowLeft className="w-4 h-4" />
                 Back to agents
               </Button>
@@ -425,16 +485,28 @@ export default function ClientsPage() {
               <div className="flex items-center gap-3 p-4 rounded-lg border border-border bg-card">
                 <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
                   <span className="text-sm font-bold text-primary">
-                    {selectedGroup.agentName.charAt(0)}
+                    {(selectedGroup?.agentName ?? selectedManagerBucket?.label ?? '').charAt(0)}
                   </span>
                 </div>
-                <div className="min-w-0">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Agent</p>
-                  <p className="text-base font-semibold text-foreground truncate">{selectedGroup.agentName}</p>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    {selectedGroup ? 'Agent' : 'Manager · Tag-along records'}
+                  </p>
+                  <p className="text-base font-semibold text-foreground truncate">
+                    {selectedGroup?.agentName ?? selectedManagerBucket?.label}
+                  </p>
                   <p className="text-xs text-muted-foreground">
-                    {selectedGroup.clients.length} client{selectedGroup.clients.length === 1 ? '' : 's'}
+                    {(activeClients ?? []).length} client{(activeClients ?? []).length === 1 ? '' : 's'}
                   </p>
                 </div>
+                {selectedGroup && (
+                  <Button
+                    variant="outline" size="sm"
+                    onClick={() => router.push(`/maps?module=sales&agent=${encodeURIComponent(selectedGroup.agentId)}`)}
+                  >
+                    <MapIcon /> View on map
+                  </Button>
+                )}
               </div>
             </div>
 

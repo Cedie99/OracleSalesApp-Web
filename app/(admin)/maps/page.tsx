@@ -61,6 +61,8 @@ function MapsPageContent() {
   const searchParams = useSearchParams()
   const rawModule = searchParams.get('module')
   const linkedTripId = searchParams.get('trip')
+  // `?module=sales&agent=<id>` — the Clients page's agent "View on map" link.
+  const linkedAgentId = searchParams.get('agent')
   const linkedModule =
     rawModule && isAdminModule(rawModule) && modules.includes(rawModule) ? rawModule : null
   /**
@@ -168,7 +170,12 @@ function MapsPageContent() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      {effectiveModule ==='sales' && <SalesMapView headerAction={switcher} />}
+      {effectiveModule ==='sales' && (
+        <SalesMapView
+          headerAction={switcher}
+          initialAgentId={linkedModule === 'sales' ? linkedAgentId : null}
+        />
+      )}
 
       {effectiveModule ==='collection' && (
         <TripMapView
