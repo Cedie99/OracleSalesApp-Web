@@ -1,4 +1,9 @@
--- 063 — Real quota targets: Sales per cutoff, RSR per working day.
+-- 064 — Real quota targets: Sales per cutoff, RSR per working day.
+--
+-- (Numbered 063 in an earlier draft; 063 went to an unrelated lifecycle fix.
+-- The `comment on column` text below still says "migration 063" — left as-is
+-- rather than edited, since changing it here would not update the already-
+-- applied comment in the database and would only add file/DB drift.)
 --
 -- Migration 057 gave every role a single per-PERIOD target. That is right for
 -- Sales (35 meetings per cutoff) and wrong for RSR, whose real target is 16
