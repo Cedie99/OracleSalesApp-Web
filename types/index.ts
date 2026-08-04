@@ -615,10 +615,24 @@ export interface CutoffPeriod {
   label: string
   starts_on: string
   ends_on: string
-  /** Period target for sales_specialist. Null = not configured for that role. */
+  /** Period target for sales_specialist, in meetings per CUTOFF. Null = not configured. */
   sales_target: number | null
-  /** Period target for rsr. Null = not configured for that role. */
+  /**
+   * @deprecated Migration 063. Was a per-period number for rsr, which was the
+   * wrong unit — an RSR is measured per working day. Use `rsr_daily_target`.
+   * The column survives only because mobile's sync-down still selects it.
+   */
   rsr_target: number | null
+  /**
+   * Target for rsr, in visits per WORKING DAY. The period expectation is this
+   * times `workingDaysIn(period)`. Null = not configured for that role.
+   */
+  rsr_daily_target: number | null
+  /**
+   * Explicit working-day count, overriding weekdays-minus-holidays. For a
+   * schedule the rule cannot express. Null means derive it.
+   */
+  working_days_override: number | null
   /** Per-client meeting ceiling: one pool shared across new and existing. */
   client_meeting_cap: number
   status: CutoffPeriodStatus
@@ -648,6 +662,50 @@ export interface CutoffPeriod {
  * - `unattributed` — no active period covered the meeting's start time. Counts
  *   toward nothing and is never automatically reassigned to a later period.
  */
+/**
+ * The standing quota numbers, and the one surface an admin edits (migration
+ * 063). Single-row: the primary key can only hold `true`.
+ *
+ * Periods snapshot these at creation rather than reading them live, so changing
+ * a target cannot rewrite what a finished cutoff was measured against.
+ * `apply_standing_targets()` pushes a change forward to periods that have not
+ * ended.
+ */
+export interface QuotaSettings {
+  id: boolean
+  /** Meetings per cutoff for sales_specialist. Null = not configured. */
+  sales_target: number | null
+  /** Visits per working day for rsr. Null = not configured. */
+  rsr_daily_target: number | null
+  /** The per-client ceiling. A limit, not a goal — see QuotaState. */
+  client_meeting_cap: number
+  updated_by: string | null
+  updated_at: string
+}
+
+/** A company-wide non-working day. Weekends are derived, not stored. */
+export interface Holiday {
+  holiday_date: string
+  label: string
+  created_by: string | null
+  created_at: string
+}
+
+/**
+ * One field change on one period (migration 063), written only by
+ * `apply_standing_targets()`. No client role may insert, which is the whole
+ * point of an audit trail.
+ */
+export interface CutoffPeriodChange {
+  id: string
+  period_id: string
+  changed_by: string | null
+  changed_at: string
+  field: string
+  old_value: string | null
+  new_value: string | null
+}
+
 export type CutoffAttribution =
   | 'counted'
   | 'over_cap'

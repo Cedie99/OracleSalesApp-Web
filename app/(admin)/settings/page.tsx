@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Header } from '@/components/header'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -10,7 +10,10 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { canManageUsers } from '@/lib/permissions'
-import { useCutoffPeriods } from '@/lib/hooks/use-cutoff'
+import { useCutoffPeriods, useQuotaSettings } from '@/lib/hooks/use-cutoff'
+import { StandingTargetsCard } from '@/components/settings/standing-targets-card'
+import { HolidaysCard } from '@/components/settings/holidays-card'
+import { PeriodHistoryCard } from '@/components/settings/period-history-card'
 import {
   activePeriod,
   generatePeriods,
@@ -136,6 +139,12 @@ export default function SettingsPage() {
   const { profile } = useCurrentProfile()
   const canEdit = canManageUsers(profile?.role)
   const { periods, loading, error, refresh } = useCutoffPeriods()
+  const { settings, holidays, refresh: refreshSettings } = useQuotaSettings()
+
+  /** Both, because a target change rewrites period rows and vice versa. */
+  const refreshAll = useCallback(async () => {
+    await Promise.all([refresh(), refreshSettings()])
+  }, [refresh, refreshSettings])
 
   const [draft, setDraft] = useState<DraftPeriod>(EMPTY_DRAFT)
   const [creating, setCreating] = useState(false)
@@ -143,6 +152,24 @@ export default function SettingsPage() {
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const [repeat, setRepeat] = useState<RepeatDraft>({ ...EMPTY_REPEAT, fromMonth: currentMonth() })
+
+  /**
+   * New periods start from the standing numbers rather than a literal in the
+   * code — the whole point of quota_settings is that 35, 16 and 2 live in one
+   * place. Applied once, when settings first arrive; typing over them afterwards
+   * is a per-period override and must not be clobbered by a re-render.
+   */
+  const [inherited, setInherited] = useState(false)
+  useEffect(() => {
+    if (inherited || !settings) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setInherited(true)
+    const cap = String(settings.client_meeting_cap)
+    const sales = settings.sales_target != null ? String(settings.sales_target) : ''
+    const rsr = settings.rsr_daily_target != null ? String(settings.rsr_daily_target) : ''
+    setDraft(d => ({ ...d, client_meeting_cap: cap, sales_target: sales, rsr_target: rsr }))
+    setRepeat(r => ({ ...r, client_meeting_cap: cap, sales_target: sales, rsr_target: rsr }))
+  }, [settings, inherited])
   const [generating, setGenerating] = useState(false)
   const [showAll, setShowAll] = useState(false)
 
@@ -242,7 +269,9 @@ export default function SettingsPage() {
         ends_on: row.ends_on,
         client_meeting_cap: Number(repeat.client_meeting_cap),
         sales_target: repeat.sales_target === '' ? null : Number(repeat.sales_target),
-        rsr_target: repeat.rsr_target === '' ? null : Number(repeat.rsr_target),
+        // rsr_daily_target, not the deprecated rsr_target: an RSR is measured
+        // per working day, and 063 moved the number to a column that says so.
+        rsr_daily_target: repeat.rsr_target === '' ? null : Number(repeat.rsr_target),
         status: 'active' as const,
         created_by: profile?.id ?? null,
       }))
@@ -279,7 +308,7 @@ export default function SettingsPage() {
       // Empty means "not configured for this role" and must stay null — a zero
       // would render as a real target of nothing (contract O-6).
       sales_target: draft.sales_target === '' ? null : Number(draft.sales_target),
-      rsr_target: draft.rsr_target === '' ? null : Number(draft.rsr_target),
+      rsr_daily_target: draft.rsr_target === '' ? null : Number(draft.rsr_target),
       status,
       created_by: profile?.id ?? null,
     })
@@ -399,6 +428,25 @@ export default function SettingsPage() {
           </Alert>
         )}
 
+        {/* The real quota, first: this is what agents are measured on. The
+            per-period cards below are about WHEN a cutoff runs, not how much
+            work it expects. */}
+        <StandingTargetsCard
+          settings={settings}
+          holidays={holidays}
+          periods={periods}
+          canEdit={canEdit}
+          onSaved={refreshAll}
+        />
+
+        <HolidaysCard
+          holidays={holidays}
+          periods={periods}
+          profileId={profile?.id}
+          canEdit={canEdit}
+          onChanged={refreshAll}
+        />
+
         {/* ---- Existing periods -------------------------------------------- */}
         <Card>
           <CardHeader>
@@ -448,19 +496,30 @@ export default function SettingsPage() {
                   <span className="text-xs text-muted-foreground">{periodDateLabel(period)}</span>
                 )}
 
+                {/* Units spelled out. "RSR 16" beside "Sales 35" reads as two
+                    comparable numbers, and they are not — one is a fortnight's
+                    work and the other a single day's. */}
                 <div className="flex items-center gap-3 text-xs text-muted-foreground ml-auto">
                   <span>
-                    Cap <span className="text-foreground font-medium">{period.client_meeting_cap}</span>
+                    Limit{' '}
+                    <span className="text-foreground font-medium">
+                      {period.client_meeting_cap}
+                    </span>
+                    /client
                   </span>
                   <span>
                     Sales{' '}
                     <span className="text-foreground font-medium">
                       {period.sales_target ?? '—'}
                     </span>
+                    /cutoff
                   </span>
                   <span>
                     RSR{' '}
-                    <span className="text-foreground font-medium">{period.rsr_target ?? '—'}</span>
+                    <span className="text-foreground font-medium">
+                      {period.rsr_daily_target ?? '—'}
+                    </span>
+                    /day
                   </span>
                 </div>
 
@@ -581,7 +640,7 @@ export default function SettingsPage() {
 
               <div className="grid gap-3 sm:grid-cols-3">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="r-cap">Meetings per client</Label>
+                  <Label htmlFor="r-cap">Visit limit per client</Label>
                   <Input
                     id="r-cap"
                     type="number"
@@ -591,7 +650,7 @@ export default function SettingsPage() {
                   />
                 </div>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="r-sales">Sales target</Label>
+                  <Label htmlFor="r-sales">Sales target (per cutoff)</Label>
                   <Input
                     id="r-sales"
                     type="number"
@@ -602,7 +661,7 @@ export default function SettingsPage() {
                   />
                 </div>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="r-rsr">RSR target</Label>
+                  <Label htmlFor="r-rsr">RSR target (per working day)</Label>
                   <Input
                     id="r-rsr"
                     type="number"
@@ -707,7 +766,7 @@ export default function SettingsPage() {
 
               <div className="grid gap-3 sm:grid-cols-3">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="p-cap">Meetings per client</Label>
+                  <Label htmlFor="p-cap">Visit limit per client</Label>
                   <Input
                     id="p-cap"
                     type="number"
@@ -720,7 +779,7 @@ export default function SettingsPage() {
                   </p>
                 </div>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="p-sales">Sales target</Label>
+                  <Label htmlFor="p-sales">Sales target (per cutoff)</Label>
                   <Input
                     id="p-sales"
                     type="number"
@@ -731,7 +790,7 @@ export default function SettingsPage() {
                   />
                 </div>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="p-rsr">RSR target</Label>
+                  <Label htmlFor="p-rsr">RSR target (per working day)</Label>
                   <Input
                     id="p-rsr"
                     type="number"
@@ -763,6 +822,10 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* Last, and collapsed: a record to consult when a number is disputed,
+            not something to read on the way past. */}
+        <PeriodHistoryCard periods={periods} />
       </div>
     </div>
   )

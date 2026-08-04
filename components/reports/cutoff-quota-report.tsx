@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useCutoffAttributions, useCutoffPeriods } from '@/lib/hooks/use-cutoff'
+import { useCutoffAttributions, useCutoffPeriods, useQuotaSettings } from '@/lib/hooks/use-cutoff'
 import { useTeams } from '@/lib/hooks/use-teams'
 import {
   ATTRIBUTION_LABEL,
@@ -14,13 +14,15 @@ import {
   agentPeriodUsage,
   attributionBuckets,
   clientQuotaUsage,
+  dailyUsage,
   periodDateLabel,
   periodPhase,
   reviewablePeriods,
   teamPeriodUsage,
+  workingDaysIn,
 } from '@/lib/cutoff'
 import { downloadSheet } from '@/components/reports/report-grid'
-import type { Client, Profile } from '@/types'
+import type { Client, Meeting, Profile } from '@/types'
 import {
   Gauge,
   FileSpreadsheet,
@@ -87,12 +89,15 @@ const BUCKET_HINT: Record<string, string> = {
 interface CutoffQuotaReportProps {
   clients: Client[]
   agents: Profile[]
+  /** Only for dating the ledger's rows — see `meetingDates`. */
+  meetings: Meeting[]
 }
 
-export function CutoffQuotaReport({ clients, agents }: CutoffQuotaReportProps) {
+export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaReportProps) {
   const { periods, loading: periodsLoading } = useCutoffPeriods()
   const { attributions, unattributedMeetingCount, loading: ledgerLoading } = useCutoffAttributions()
   const { teamName } = useTeams()
+  const { holidays } = useQuotaSettings()
   const [periodId, setPeriodId] = useState<string>('')
   const [showBreakdown, setShowBreakdown] = useState(false)
 
@@ -110,9 +115,19 @@ export function CutoffQuotaReport({ clients, agents }: CutoffQuotaReportProps) {
     return (id: string) => map.get(id)
   }, [agents])
 
+  /**
+   * Working days in the visible period. The denominator for every RSR figure
+   * below — their target is per day, so the period expectation only exists once
+   * this is known.
+   */
+  const workingDays = useMemo(
+    () => (period ? workingDaysIn(period, holidays.map(h => h.holiday_date)) : 0),
+    [period, holidays]
+  )
+
   const byAgent = useMemo(
-    () => (period ? agentPeriodUsage(attributions, period, roleOf) : new Map()),
-    [attributions, period, roleOf]
+    () => (period ? agentPeriodUsage(attributions, period, roleOf, workingDays) : new Map()),
+    [attributions, period, roleOf, workingDays]
   )
   const byClient = useMemo(
     () => (period ? clientQuotaUsage(attributions, period) : new Map()),
@@ -120,8 +135,20 @@ export function CutoffQuotaReport({ clients, agents }: CutoffQuotaReportProps) {
   )
 
   const byTeam = useMemo(
-    () => (period ? teamPeriodUsage(attributions, period, agents) : new Map()),
-    [attributions, period, agents]
+    () => (period ? teamPeriodUsage(attributions, period, agents, workingDays) : new Map()),
+    [attributions, period, agents, workingDays]
+  )
+
+  /** meeting_id -> its date, so daily counts sit on the day the visit happened. */
+  const meetingDates = useMemo(
+    () => new Map(meetings.map(m => [m.id, m.meeting_date.slice(0, 10)])),
+    [meetings]
+  )
+
+  const days = useMemo(
+    () =>
+      period ? dailyUsage(attributions, meetingDates, period, holidays.map(h => h.holiday_date)) : [],
+    [attributions, meetingDates, period, holidays]
   )
 
   /** Teams with the most over-cap first — the report exists to surface those. */
@@ -200,6 +227,11 @@ export function CutoffQuotaReport({ clients, agents }: CutoffQuotaReportProps) {
         'Team': teamOfAgent(u.agentId),
         'Role': roleOf(u.agentId) ?? '',
         'Period': period.label,
+        // The unit and its inputs, so the target can be re-derived in the sheet
+        // rather than taken on trust — 176 is meaningless without "16 x 11".
+        'Target Basis': u.role === 'rsr' ? 'per working day' : u.role ? 'per cutoff' : '',
+        'Daily Target': u.role === 'rsr' ? period.rsr_daily_target ?? '' : '',
+        'Working Days': u.role === 'rsr' ? workingDays : '',
         'Toward Target': u.towardTarget,
         // Blank, never 0 — an unconfigured target is not a target of nothing
         // (O-6), and a 0 here would read as one in the spreadsheet.
@@ -221,13 +253,15 @@ export function CutoffQuotaReport({ clients, agents }: CutoffQuotaReportProps) {
           'Client': client?.company_name ?? '',
           'Assigned Agent': client?.agent?.full_name ?? '',
           'Period': period.label,
-          'Used': u.used,
-          'Cap': u.cap,
-          'Remaining': Math.max(0, u.cap - u.used),
-          'Over Cap': u.overCap,
-          'Uncapped': u.uncapped,
-          'Pending': u.pending,
-          'State': u.state,
+          'Visits': u.used,
+          // The ceiling, for reference. No "Remaining" column: the allowance is
+          // a limit, not a budget to spend down, and a remaining count invites
+          // exactly the reading that an unfilled client needs topping up.
+          'Limit': u.cap,
+          'Past Limit': u.overCap,
+          'Prospect Visits': u.uncapped,
+          'Awaiting Approval': u.pending,
+          'Over Limit': u.state === 'over' ? 'Yes' : 'No',
         }
       }),
       'Client Allowance',
@@ -325,12 +359,34 @@ export function CutoffQuotaReport({ clients, agents }: CutoffQuotaReportProps) {
           )}
 
           <p className="text-xs text-muted-foreground mt-2">
-            {period.label} · each client may be visited {period.client_meeting_cap}{' '}
+            {period.label} · {workingDays} working {workingDays === 1 ? 'day' : 'days'} · each
+            client may be visited {period.client_meeting_cap}{' '}
             {period.client_meeting_cap === 1 ? 'time' : 'times'} this cutoff
             {headline.idle > 0 && (
               <> · {headline.idle} {headline.idle === 1 ? 'agent has' : 'agents have'} recorded nothing</>
             )}
           </p>
+
+          {/* Sales is a per-cutoff number and RSR a per-day one, so the single
+              bar above is a blend of two different questions. Spelling both out
+              stops it being read as one. */}
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px] text-muted-foreground">
+            <span>
+              Sales{' '}
+              <span className="text-foreground font-medium">{period.sales_target ?? '—'}</span> per
+              cutoff
+            </span>
+            <span>
+              RSR{' '}
+              <span className="text-foreground font-medium">
+                {period.rsr_daily_target ?? '—'}
+              </span>{' '}
+              per working day
+              {period.rsr_daily_target != null && (
+                <> ({period.rsr_daily_target * workingDays} this cutoff)</>
+              )}
+            </span>
+          </div>
         </div>
 
         {/* ---- Only what somebody has to act on --------------------------- */}
@@ -416,6 +472,52 @@ export function CutoffQuotaReport({ clients, agents }: CutoffQuotaReportProps) {
               backfills them.
             </AlertDescription>
           </Alert>
+        )}
+
+        {/* ---- Day by day --------------------------------------------------
+            RSRs are managed against a daily number, so a period total hides the
+            thing that matters: which days had nothing. Non-working days are
+            drawn but greyed — they are not misses, and omitting them entirely
+            would make a fortnight look like a continuous run of work. */}
+        {period.rsr_daily_target != null && days.length > 0 && (
+          <div className="rounded-lg border border-border p-3">
+            <p className="text-xs font-medium text-foreground">
+              Each day against the RSR target of {period.rsr_daily_target}
+            </p>
+            <div className="flex items-end gap-1 mt-2.5 h-16">
+              {days.map(d => {
+                const pctOfDay = Math.min(
+                  100,
+                  Math.round((d.count / period.rsr_daily_target!) * 100)
+                )
+                return (
+                  <div
+                    key={d.date}
+                    className="flex-1 flex flex-col items-center gap-1 min-w-0"
+                    title={`${d.date} · ${d.count} ${d.count === 1 ? 'visit' : 'visits'}${
+                      d.isWorkingDay ? '' : ' · not a working day'
+                    }`}
+                  >
+                    <div className="w-full h-12 flex items-end rounded-sm bg-muted/50 overflow-hidden">
+                      <div
+                        className={`w-full rounded-sm ${
+                          d.isWorkingDay ? 'bg-primary' : 'bg-muted-foreground/40'
+                        }`}
+                        style={{ height: `${Math.max(d.count > 0 ? 6 : 0, pctOfDay)}%` }}
+                      />
+                    </div>
+                    <span
+                      className={`text-[9px] tabular-nums ${
+                        d.isWorkingDay ? 'text-muted-foreground' : 'text-muted-foreground/50'
+                      }`}
+                    >
+                      {d.date.slice(8)}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         )}
 
         {/* ---- Per team ---------------------------------------------------- */}
