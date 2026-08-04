@@ -229,7 +229,7 @@ export function SalesReports() {
           question from the three exports above — those are "what happened",
           this is "what counted" — and it is scoped by cutoff period rather than
           by the toolbar's agent and date filters, which do not apply to it. */}
-      <CutoffQuotaReport clients={clients} agents={agents} />
+      <CutoffQuotaReport clients={clients} agents={agents} meetings={meetings} />
 
       <p className="text-xs text-muted-foreground text-center">
         Reports are exported as .xlsx files and include all data across every team.

@@ -70,8 +70,12 @@ const TILE_KEYS = Object.keys(TILE_LAYERS) as MapTileType[]
 
 type TypeFilter = 'all' | 'f2f' | 'online'
 
-/** Worst first — the quota list exists to surface violations, not to be alphabetical. */
-const QUOTA_RANK: Record<QuotaState, number> = { over: 0, at: 1, under: 2, exempt: 3 }
+/**
+ * Worst first — the quota list exists to surface violations, not to be
+ * alphabetical. Only 'over' is a violation: the cap is a ceiling, so a client
+ * that used its whole allowance ranks with the ones that used none.
+ */
+const QUOTA_RANK: Record<QuotaState, number> = { over: 0, within: 1, exempt: 2 }
 
 /** A client measured against its per-period meeting allowance. */
 interface QuotaRow {
@@ -399,8 +403,8 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
             r.usage.state === 'exempt'
               ? `${r.usage.uncapped} uncapped ${r.usage.uncapped === 1 ? 'meeting' : 'meetings'}`
               : r.usage.overCap > 0
-                ? `${r.usage.used} of ${r.usage.cap} · ${r.usage.overCap} over cap`
-                : `${r.usage.used} of ${r.usage.cap} this period`,
+                ? `${r.usage.used + r.usage.overCap} visits · ${r.usage.overCap} past the limit`
+                : `${r.usage.used} ${r.usage.used === 1 ? 'visit' : 'visits'} this period`,
           avatarUrl: r.client.agent?.avatar_url,
         }))
     }
@@ -536,7 +540,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
         // date filter were still driving it.
         subtitle={
           listMode === 'quota'
-            ? `Cutoff ${period?.label ?? '—'} · ${quota.length} ${quota.length === 1 ? 'client' : 'clients'} · ${quotaCounts.over} over limit · ${quotaCounts.at} at limit`
+            ? `Cutoff ${period?.label ?? '—'} · ${quota.length} ${quota.length === 1 ? 'client' : 'clients'} · ${quotaCounts.over} over limit`
             : `${rangeLabel} · ${visited.length} ${visited.length === 1 ? 'client' : 'clients'} visited · ${mappedCount} mapped · ${unlocatedCount} no location`
         }
         action={headerAction}
@@ -698,9 +702,12 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                   {isConfigured && (
                     <TabsTrigger value="quota" className="px-2 text-xs">
                       Quota
-                      <span className="ml-1 opacity-60">
-                        {quotaCounts.over + quotaCounts.at}/{quota.length}
-                      </span>
+                      {/* Only violations are worth a badge. A count of clients
+                          that merely used their allowance would be a number
+                          nobody can act on. */}
+                      {quotaCounts.over > 0 && (
+                        <span className="ml-1 opacity-60">{quotaCounts.over}</span>
+                      )}
                     </TabsTrigger>
                   )}
                 </TabsList>
@@ -785,24 +792,27 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                 </>
               ) : (
                 <>
-                  {/* Names the window and tallies it, so every fraction below has
-                      a stated denominator. Sticky because the list is sorted
-                      worst-first and the counts are the summary of what follows. */}
+                  {/* Names the window and states the ceiling once, here, rather
+                      than stamping it on every row as a denominator. Sticky
+                      because the list is sorted worst-first and the counts are
+                      the summary of what follows. */}
                   <div className="sticky top-0 z-10 px-4 py-2.5 bg-card border-b border-border">
                     <p className="text-[11px] font-medium text-foreground">
                       {period?.label}
                       {period && (
-                        <span className="text-muted-foreground font-normal"> · cap {period.client_meeting_cap}</span>
+                        <span className="text-muted-foreground font-normal">
+                          {' '}· at most {period.client_meeting_cap} per client
+                        </span>
                       )}
                     </p>
                     <div className="flex items-center gap-2.5 mt-1 text-[10px] text-muted-foreground">
-                      {(['over', 'at', 'under'] as const).map(key => (
+                      {(['over', 'within'] as const).map(key => (
                         <span key={key} className="flex items-center gap-1">
                           <span
                             className="w-1.5 h-1.5 rounded-full shrink-0"
                             style={{ background: QUOTA_META[key].color }}
                           />
-                          {quotaCounts[key]} {key === 'under' ? 'within' : key}
+                          {quotaCounts[key]} {QUOTA_META[key].label.toLowerCase()}
                         </span>
                       ))}
                     </div>
@@ -831,13 +841,17 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                             style={{ background: meta.color }}
                           />
                           <p className="text-sm font-medium text-foreground truncate flex-1">{client.company_name}</p>
-                          {/* Uncapped accounts show a bare count — a denominator
-                              would imply a ceiling that deliberately isn't there. */}
+                          {/* A bare count, never `used/cap`. The fraction read as
+                              progress toward a quota the client is expected to
+                              fill, and the cap is a ceiling — 2 of 2 is no more
+                              notable than 0 of 2. The ceiling is stated once in
+                              the header; only going PAST it earns a colour. */}
                           <span
                             className="text-[11px] font-semibold shrink-0 tabular-nums"
-                            style={{ color: usage.state === 'under' || usage.state === 'exempt' ? undefined : meta.color }}
+                            style={{ color: usage.state === 'over' ? meta.color : undefined }}
                           >
-                            {usage.state === 'exempt' ? usage.uncapped : `${usage.used}/${usage.cap}`}
+                            {usage.state === 'exempt' ? usage.uncapped : usage.used}
+                            {usage.overCap > 0 && ` +${usage.overCap}`}
                           </span>
                         </div>
                         {/* Prefixed because this is the account's address, not
@@ -899,7 +913,7 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
             <span className="text-[10px] font-semibold [writing-mode:vertical-rl]">
               {listMode === 'visited'
                 ? `${visited.length} visited`
-                : `${quotaCounts.over + quotaCounts.at} at/over limit`}
+                : `${quotaCounts.over} over limit`}
             </span>
           </button>
         )}

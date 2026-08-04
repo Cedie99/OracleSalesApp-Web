@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { CutoffPeriod, MeetingCutoffAttribution } from '@/types'
+import type {
+  CutoffPeriod,
+  CutoffPeriodChange,
+  Holiday,
+  MeetingCutoffAttribution,
+  QuotaSettings,
+} from '@/types'
 
 /**
  * Cutoff periods and the attribution ledger (migrations 057-060).
@@ -19,8 +25,9 @@ import type { CutoffPeriod, MeetingCutoffAttribution } from '@/types'
  */
 
 const PERIOD_COLUMNS = `
-  id, label, starts_on, ends_on, sales_target, rsr_target, client_meeting_cap,
-  status, supersedes_period_id, version, created_by, created_at, updated_at
+  id, label, starts_on, ends_on, sales_target, rsr_target, rsr_daily_target,
+  working_days_override, client_meeting_cap, status, supersedes_period_id,
+  version, created_by, created_at, updated_at
 `
 
 const ATTRIBUTION_COLUMNS = `
@@ -126,4 +133,103 @@ export function useCutoffAttributions(): UseCutoffAttributionsResult {
   }, [load])
 
   return { attributions, unattributedMeetingCount, loading, error, refresh }
+}
+
+interface UseQuotaSettingsResult {
+  settings: QuotaSettings | null
+  holidays: Holiday[]
+  loading: boolean
+  error: string
+  refresh: () => Promise<void>
+}
+
+/**
+ * The standing quota numbers and the working calendar (migration 063).
+ *
+ * Loaded together because neither is useful alone: an RSR daily target means
+ * nothing until you know how many working days a period holds, and every
+ * surface that shows one shows the other.
+ */
+export function useQuotaSettings(): UseQuotaSettingsResult {
+  const [settings, setSettings] = useState<QuotaSettings | null>(null)
+  const [holidays, setHolidays] = useState<Holiday[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  const load = useCallback(async () => {
+    const supabase = createClient()
+    const [settingsRow, holidayRows] = await Promise.all([
+      supabase
+        .from('quota_settings')
+        .select('id, sales_target, rsr_daily_target, client_meeting_cap, updated_by, updated_at')
+        .maybeSingle(),
+      supabase
+        .from('holidays')
+        .select('holiday_date, label, created_by, created_at')
+        .order('holiday_date', { ascending: true }),
+    ])
+
+    if (settingsRow.error) setError(settingsRow.error.message)
+    else if (holidayRows.error) setError(holidayRows.error.message)
+    else {
+      setError('')
+      setSettings((settingsRow.data ?? null) as unknown as QuotaSettings | null)
+      setHolidays((holidayRows.data ?? []) as unknown as Holiday[])
+    }
+    setLoading(false)
+  }, [])
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    await load()
+  }, [load])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load()
+  }, [load])
+
+  return { settings, holidays, loading, error, refresh }
+}
+
+interface UsePeriodChangesResult {
+  changes: CutoffPeriodChange[]
+  loading: boolean
+  error: string
+  refresh: () => Promise<void>
+}
+
+/** The quota-policy audit trail, newest first (ADR-053 Batch 7B). */
+export function usePeriodChanges(limit = 100): UsePeriodChangesResult {
+  const [changes, setChanges] = useState<CutoffPeriodChange[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  const load = useCallback(async () => {
+    const supabase = createClient()
+    const { data, error: queryError } = await supabase
+      .from('cutoff_period_changes')
+      .select('id, period_id, changed_by, changed_at, field, old_value, new_value')
+      .order('changed_at', { ascending: false })
+      .limit(limit)
+
+    if (queryError) setError(queryError.message)
+    else {
+      setError('')
+      setChanges((data ?? []) as unknown as CutoffPeriodChange[])
+    }
+    setLoading(false)
+  }, [limit])
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    await load()
+  }, [load])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load()
+  }, [load])
+
+  return { changes, loading, error, refresh }
 }

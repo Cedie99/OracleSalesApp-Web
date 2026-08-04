@@ -76,13 +76,18 @@ export const OUTCOME_META: Record<MeetingOutcome, { label: string; color: string
  * this cutoff, rather than what it is or how the visit went. A third palette
  * for the same reason OUTCOME_META is a second one: only ever shown alone.
  *
- * Ordered best-to-worst so the legend reads as a scale. 'exempt' sits last and
- * borrows the prospect purple, because in practice that IS the prospect bucket
- * — uncapped is a property of the lifecycle stage, not a quota outcome.
+ * There is no "approaching the limit" colour, deliberately. The cap is a
+ * CEILING, not a target: a client at 2 of 2 is in exactly as good a state as
+ * one at 0 of 2, and nobody is in trouble for not having visited an account.
+ * An amber "At limit" band said the opposite — that filling the allowance was
+ * a thing to chase, and that stopping just short deserved a warning colour.
+ *
+ * 'exempt' borrows the prospect purple, because in practice that IS the
+ * prospect bucket — uncapped is a property of the lifecycle stage, not a quota
+ * outcome.
  */
 export const QUOTA_META: Record<QuotaState, { label: string; color: string }> = {
-  under: { label: 'Within limit', color: '#34d399' },
-  at: { label: 'At limit', color: '#fbbf24' },
+  within: { label: 'Within limit', color: '#34d399' },
   over: { label: 'Over limit', color: '#f87171' },
   exempt: { label: 'Uncapped', color: '#c084fc' },
 }

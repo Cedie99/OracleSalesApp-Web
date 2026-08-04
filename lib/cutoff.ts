@@ -14,8 +14,17 @@ import type { CutoffAttribution, CutoffPeriod, MeetingCutoffAttribution } from '
  * are gone because the database now owns both questions.
  */
 
-/** How a client stands against its per-period meeting cap. */
-export type QuotaState = 'exempt' | 'under' | 'at' | 'over'
+/**
+ * How a client stands against its per-period meeting cap.
+ *
+ * Three states, not four, and there is deliberately no "at the limit" among
+ * them. The cap is a CEILING, not a target — the rule agreed 2026-08-02 says a
+ * client may be visited at most N times, never that it should be. A client at
+ * 2 of 2 has done nothing wrong and needs no attention, so distinguishing it
+ * from one at 0 of 2 only invites the reading that the allowance is a score to
+ * fill. The one fact worth reporting is whether somebody went past the wall.
+ */
+export type QuotaState = 'exempt' | 'within' | 'over'
 
 /** Attribution values that consumed one of a client's slots. */
 export const SLOT_CONSUMING: CutoffAttribution[] = ['counted']
@@ -296,7 +305,7 @@ export function clientQuotaUsage(
     uncapped: 0,
     pending: 0,
     cap: period.client_meeting_cap,
-    state: 'under',
+    state: 'within',
   })
 
   for (const row of attributions) {
@@ -320,19 +329,135 @@ export function clientQuotaUsage(
  * Where a client sits against its cap.
  *
  * 'exempt' means every attributed meeting was on an uncapped stage — the client
- * was a prospect throughout, so no ceiling applies. Checked before the cap
- * comparison because such a client has `used = 0`, which would otherwise read
- * as "plenty of room left" rather than "no limit here".
+ * was a prospect throughout, so no ceiling applies. Checked before anything else
+ * because such a client has `used = 0`, which would otherwise read as "plenty of
+ * room left" rather than "no limit here".
  *
  * 'over' keys off `overCap`, never off `used > cap`. The server allocates slots
  * up to the cap and classifies the rest as over_cap, so `used` can never exceed
  * `cap` and a comparison would silently never fire.
+ *
+ * Everything else is 'within', with no gradient inside it — see QuotaState.
  */
-export function quotaState(usage: Pick<ClientQuotaUsage, 'used' | 'overCap' | 'uncapped' | 'cap'>): QuotaState {
+export function quotaState(
+  usage: Pick<ClientQuotaUsage, 'used' | 'overCap' | 'uncapped' | 'cap'>
+): QuotaState {
   if (usage.overCap > 0) return 'over'
   if (usage.used === 0 && usage.uncapped > 0) return 'exempt'
-  if (usage.used >= usage.cap) return 'at'
-  return 'under'
+  return 'within'
+}
+
+// --- Targets and the working calendar ----------------------------------------
+//
+// Two roles, two units. Sales is measured per CUTOFF (35 meetings); RSR is
+// measured per WORKING DAY (16 visits), so its period expectation is the daily
+// number times however many working days the period actually contains. Neither
+// number is written down here — both come from the period row, which an admin
+// edits (contract O-6, Batch-0 items 1-2).
+
+/** Roles that carry a quota. A manager has no personal target in this batch (O-7). */
+export type QuotaRole = 'sales_specialist' | 'rsr'
+
+/**
+ * Working days in a period: weekdays, minus company holidays, unless the period
+ * states its own count.
+ *
+ * The override exists for a schedule the rule cannot express — a worked
+ * Saturday, a shutdown week. Holidays are passed in rather than derived because
+ * Philippine holidays are declared by proclamation and no algorithm produces
+ * them.
+ */
+export function workingDaysIn(period: CutoffPeriod, holidays: string[] = []): number {
+  if (period.working_days_override != null) return period.working_days_override
+
+  const holidaySet = new Set(holidays)
+  let count = 0
+  // Iterated in UTC over the DATE columns' own calendar days, so the count is
+  // the same wherever it runs — a local-time walk would drop or double a day
+  // depending on the viewer's zone.
+  const cursor = new Date(`${period.starts_on}T00:00:00Z`)
+  const end = new Date(`${period.ends_on}T00:00:00Z`)
+
+  while (cursor.getTime() <= end.getTime()) {
+    const day = cursor.getUTCDay()
+    const iso = cursor.toISOString().slice(0, 10)
+    if (day !== 0 && day !== 6 && !holidaySet.has(iso)) count += 1
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return count
+}
+
+/**
+ * What one agent of this role is expected to do across the whole period.
+ *
+ * Null in, null out: an unconfigured role has no target, and must render as
+ * such rather than as zero (O-6). A role with no quota at all — manager,
+ * admin — is also null, which is why the parameter is widened to string.
+ */
+export function periodTargetFor(
+  role: string | undefined,
+  period: CutoffPeriod,
+  workingDays: number
+): number | null {
+  if (role === 'sales_specialist') return period.sales_target
+  if (role === 'rsr') {
+    return period.rsr_daily_target == null ? null : period.rsr_daily_target * workingDays
+  }
+  return null
+}
+
+/** One day's worth of an agent's, or a team's, target-contributing work. */
+export interface DailyUsage {
+  /** 'YYYY-MM-DD'. */
+  date: string
+  count: number
+  /** False for weekends and holidays — shown, but not counted against a target. */
+  isWorkingDay: boolean
+}
+
+/**
+ * Target-contributing meetings per calendar day of a period.
+ *
+ * Dated from the MEETING, not from the ledger row. `attributed_at` records when
+ * the trigger wrote its decision, which for anything synced late from a phone
+ * is a different day from the visit — and the daily target is about the day the
+ * work happened.
+ *
+ * Days with no meetings are still returned, because a gap is the thing a daily
+ * target exists to reveal; only returning days that have rows would draw a
+ * continuous line through a week nobody worked.
+ */
+export function dailyUsage(
+  attributions: MeetingCutoffAttribution[],
+  meetingDates: Map<string, string>,
+  period: CutoffPeriod,
+  holidays: string[] = []
+): DailyUsage[] {
+  const counts = new Map<string, number>()
+  for (const row of attributions) {
+    if (row.period_id !== period.id) continue
+    if (!TARGET_CONTRIBUTING.includes(row.attribution)) continue
+    const date = meetingDates.get(row.meeting_id)
+    if (!date) continue
+    counts.set(date, (counts.get(date) ?? 0) + 1)
+  }
+
+  const holidaySet = new Set(holidays)
+  const days: DailyUsage[] = []
+  const cursor = new Date(`${period.starts_on}T00:00:00Z`)
+  const end = new Date(`${period.ends_on}T00:00:00Z`)
+
+  while (cursor.getTime() <= end.getTime()) {
+    const iso = cursor.toISOString().slice(0, 10)
+    const day = cursor.getUTCDay()
+    days.push({
+      date: iso,
+      count: counts.get(iso) ?? 0,
+      isWorkingDay: day !== 0 && day !== 6 && !holidaySet.has(iso),
+    })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return days
 }
 
 // --- Reporting buckets -------------------------------------------------------
@@ -401,6 +526,8 @@ export interface AgentPeriodUsage {
   towardTarget: number
   /** Null when no target is configured for this agent's role (O-6). */
   target: number | null
+  /** Carried so a report can say which unit the target was expressed in. */
+  role: string | undefined
 }
 
 /**
@@ -414,7 +541,8 @@ export interface AgentPeriodUsage {
 export function agentPeriodUsage(
   attributions: MeetingCutoffAttribution[],
   period: CutoffPeriod,
-  roleOf: (agentId: string) => string | undefined
+  roleOf: (agentId: string) => string | undefined,
+  workingDays: number
 ): Map<string, AgentPeriodUsage> {
   const byAgent = new Map<string, AgentPeriodUsage>()
 
@@ -430,8 +558,10 @@ export function agentPeriodUsage(
           number
         >,
         towardTarget: 0,
-        target:
-          role === 'rsr' ? period.rsr_target : role === 'sales_specialist' ? period.sales_target : null,
+        // Via periodTargetFor, so an RSR's daily number is multiplied out to a
+        // period expectation rather than compared against a fortnight's work.
+        target: periodTargetFor(role, period, workingDays),
+        role,
       }
       byAgent.set(row.agent_id, entry)
     }
@@ -483,7 +613,8 @@ export interface RosterMember {
 export function teamPeriodUsage(
   attributions: MeetingCutoffAttribution[],
   period: CutoffPeriod,
-  roster: RosterMember[]
+  roster: RosterMember[],
+  workingDays: number
 ): Map<string | null, TeamPeriodUsage> {
   const blank = (teamId: string | null): TeamPeriodUsage => ({
     teamId,
@@ -505,12 +636,9 @@ export function teamPeriodUsage(
   for (const member of roster) {
     const entry = byTeam.get(member.team_id) ?? blank(member.team_id)
     entry.memberCount += 1
-    const memberTarget =
-      member.role === 'rsr'
-        ? period.rsr_target
-        : member.role === 'sales_specialist'
-          ? period.sales_target
-          : null
+    // Mixed-role teams sum correctly because each member is resolved in their
+    // own unit first: 35 per Sales head plus (16 x working days) per RSR head.
+    const memberTarget = periodTargetFor(member.role, period, workingDays)
     if (memberTarget != null) entry.target = (entry.target ?? 0) + memberTarget
     byTeam.set(member.team_id, entry)
   }
@@ -548,6 +676,6 @@ export function emptyUsage(clientId: string, period: CutoffPeriod): ClientQuotaU
     uncapped: 0,
     pending: 0,
     cap: period.client_meeting_cap,
-    state: 'under',
+    state: 'within',
   }
 }
