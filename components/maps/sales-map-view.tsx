@@ -35,14 +35,18 @@ import {
   type QuotaState,
 } from '@/lib/cutoff'
 import { useCutoffAttributions, useCutoffPeriods } from '@/lib/hooks/use-cutoff'
-import { useReverseGeocode } from '@/lib/hooks/use-reverse-geocode'
+import { formatCoords, useReverseGeocode } from '@/lib/hooks/use-reverse-geocode'
+import { formatDurationMinutes } from '@/lib/utils'
 import type { MapPin, FocusTarget, HighlightMarker } from '@/components/maps/field-map'
 import type { Client, Meeting, MeetingOutcome } from '@/types'
 import {
   Search, Building2, Phone, User, History, ShieldCheck, MapPin as MapPinIcon, Layers,
   LockOpen, ChevronDown, ChevronLeft, ChevronRight, CalendarDays, Check, Info, PanelLeftClose,
-  PanelLeftOpen, X, Crosshair, Video, Navigation,
+  PanelLeftOpen, X, Crosshair, Video, Navigation, Clock, Tag,
+  type LucideIcon,
 } from 'lucide-react'
+import { CHANNEL_LABEL } from '@/lib/status-styles'
+import { clientAddress, clientInfoGaps } from '@/lib/client-info'
 import { format } from 'date-fns'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
@@ -86,8 +90,15 @@ interface QuotaRow {
   plotMeeting: Meeting | null
 }
 
-/** How a meeting's location reads in the list / detail. */
-function meetingWhere(m: Meeting): string {
+/**
+ * What the AGENT TAGGED the meeting as — a venue kind, never a place.
+ *
+ * Read on its own it looks like an answer to "where was this?", and it isn't:
+ * "Client office" says the agent picked that option in the app, not which office
+ * or which town. Every caller therefore pairs it with the resolved GPS place and
+ * prefixes it, so the claim and the measurement can't be mistaken for each other.
+ */
+function meetingTag(m: Meeting): string {
   if (m.meeting_type === 'online') {
     return m.online_platform === 'zoom'
       ? 'Zoom'
@@ -99,19 +110,206 @@ function meetingWhere(m: Meeting): string {
 }
 
 /**
+ * The clock facts of one meeting, pre-formatted.
+ *
+ * `meeting_date` stays the headline timestamp because it is what every other
+ * surface shows — the Meetings table, the Excel export, the cutoff ledger — so a
+ * row here can be matched against the same row elsewhere. The start/end capture
+ * pair mobile added (live 2026-07-24) is a finer, separate fact and is reported
+ * as its own window rather than replacing the headline; it is also the only
+ * source of a real duration, which is why `duration` is null on the many rows
+ * that predate it.
+ */
+function meetingClock(m: Meeting) {
+  const at = new Date(m.meeting_date)
+  return {
+    date: format(at, 'MMM d, yyyy'),
+    time: format(at, 'h:mm a'),
+    dateTime: format(at, 'MMM d, yyyy · h:mm a'),
+    window:
+      m.start_captured_at && m.end_captured_at
+        ? `${format(new Date(m.start_captured_at), 'h:mm')} – ${format(new Date(m.end_captured_at), 'h:mm a')}`
+        : null,
+    duration: formatDurationMinutes(meetingDurationMinutes(m)),
+  }
+}
+
+/**
  * The address on the CLIENT RECORD — never where a meeting was captured.
  *
  * Named for what it is because the two were being confused: printed bare next to
- * a pin, it reads as a caption for that pin. Every caller labels it, and the
- * `office_address` field is checked first only because it is still the sole
- * address most rows have (the structured columns from migration 013 are largely
- * unfilled, even though they supersede it).
+ * a pin, it reads as a caption for that pin. Every caller labels it. Composition
+ * lives in `clientAddress` so this surface and the Clients page agree on what a
+ * client's address is, down to the fragment-plus-locality join.
  */
-function registeredAddress(client: Client): string {
+function officeAddressLine(client: Client): string {
+  return clientAddress(client).full ?? 'No address on file'
+}
+
+/**
+ * One labelled fact from the client record.
+ *
+ * Labelled because unlabelled it wasn't readable: the panel used to print
+ * "Raham · Purchasing", "09478243642" and "distributor" as three bare icon rows,
+ * where the first duplicated the company name with no hint it was a person, and
+ * the last was a raw enum under the same building icon as the address — so it
+ * read as a second address line. A missing value says so rather than showing an
+ * em-dash that could equally mean "none" or "not asked".
+ */
+function ClientFact({
+  icon: Icon,
+  label,
+  value,
+  hint,
+}: {
+  icon: LucideIcon
+  label: string
+  value: string | null
+  hint?: string | null
+}) {
   return (
-    client.office_address ||
-    [client.city, client.province].filter(Boolean).join(', ') ||
-    'No address on file'
+    <div className="flex items-start gap-2">
+      <Icon className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground" />
+      <div className="min-w-0">
+        <p className="text-[10px] text-muted-foreground/70">{label}</p>
+        <p className={`text-xs ${value ? 'text-foreground' : 'text-muted-foreground/60 italic'}`}>
+          {value || 'Not recorded'}
+        </p>
+        {hint && <p className="text-[11px] text-muted-foreground truncate">{hint}</p>}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * How many history rows resolve their GPS into a place name.
+ *
+ * A deliberate widening of the "only the selected pin gets geocoded" rule in
+ * useReverseGeocode, which exists because the VISITED LIST can run to hundreds
+ * of clients. One client's history is a handful of rows, and repeat visits to
+ * the same account land on the same coordinates, which the shared cache folds
+ * into a single request — so the real cost is usually one lookup, not ten. The
+ * cap is only here so a client with fifty logged visits can't queue fifty.
+ */
+const HISTORY_GEOCODE_LIMIT = 10
+
+/**
+ * One visit in the selected client's history.
+ *
+ * Its own component so each row can resolve its own coordinates — a hook can't
+ * be called in a loop. It answers three questions the old row left open: WHEN
+ * (the time, not just the date — a supervisor checking a day's coverage needs
+ * to know 9am from 6pm), HOW LONG (from mobile's start/end capture pair, and
+ * explicitly "not recorded" where that pair is missing rather than silently
+ * absent), and WHERE — the resolved GPS place, with the venue tag demoted to a
+ * labelled second line because "Client office" was the only location text on
+ * screen and reads as an address it isn't.
+ */
+function MeetingHistoryRow({
+  meeting: m,
+  onLocate,
+  resolvePlace,
+  pinned,
+}: {
+  meeting: Meeting
+  onLocate: (m: Meeting, place?: string | null) => void
+  /** False past HISTORY_GEOCODE_LIMIT — the row then shows raw coordinates. */
+  resolvePlace: boolean
+  /**
+   * This is the visit the map pin is standing on.
+   *
+   * Marked because the panel header no longer names the pinned coordinate — it
+   * describes the client. Without this the map could show a pin in one town
+   * while the only address on screen names another, with nothing joining them,
+   * which is precisely how the original "the map is broken" report happened.
+   */
+  pinned: boolean
+}) {
+  const plottable = isPlottableMeeting(m)
+  const clock = meetingClock(m)
+  const shouldResolve = plottable && resolvePlace
+  const place = useReverseGeocode(
+    shouldResolve ? m.gps_lat : null,
+    shouldResolve ? m.gps_lng : null
+  )
+
+  // Online meetings carry the AGENT's coordinates, not the client's premises
+  // (see isPlottableMeeting), so the place name is framed as where the agent
+  // dialled in from rather than where the meeting was.
+  const online = m.meeting_type === 'online'
+  const placeText = !plottable
+    ? 'No GPS captured'
+    : place.loading
+      ? 'Locating…'
+      : (shouldResolve ? place.label : formatCoords(m.gps_lat!, m.gps_lng!)) ?? '—'
+
+  return (
+    <button
+      type="button"
+      onClick={() => onLocate(m, shouldResolve ? place.label : null)}
+      disabled={!plottable}
+      className={`w-full text-left rounded-lg border p-2.5 transition-colors ${
+        pinned ? 'border-primary/40 bg-primary/5' : 'border-border'
+      } ${
+        plottable ? 'hover:bg-primary/5 hover:border-primary/40 cursor-pointer' : 'opacity-70 cursor-default'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">
+          {clock.date} <span className="text-muted-foreground font-normal">· {clock.time}</span>
+        </span>
+        <Badge variant="outline" className="text-[10px] px-1.5 h-4 shrink-0">
+          {OUTCOME_LABEL[m.outcome] ?? m.outcome}
+        </Badge>
+      </div>
+
+      {/* Duration, and what it was measured from. Stated as unrecorded rather
+          than omitted: a blank row can't be told apart from a short meeting,
+          and most rows predating 2026-07-24 have no capture pair at all. */}
+      <div className="flex items-center gap-1.5 mt-1 text-[11px] text-muted-foreground">
+        <Clock className="w-3 h-3 shrink-0" />
+        {clock.duration ? (
+          <>
+            {clock.window && <span className="truncate">{clock.window} ·</span>}
+            <span className="shrink-0 font-medium text-foreground">{clock.duration}</span>
+          </>
+        ) : (
+          <span className="text-muted-foreground/70">Duration not recorded</span>
+        )}
+      </div>
+
+      {/* Where, measured. The tag underneath is the agent's claim about the
+          venue — see meetingTag. */}
+      <div className="flex items-start gap-1.5 mt-1 text-[11px]">
+        {online ? (
+          <Video className="w-3 h-3 shrink-0 mt-0.5 text-muted-foreground" />
+        ) : (
+          <Navigation className="w-3 h-3 shrink-0 mt-0.5 text-muted-foreground" />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className={`truncate ${plottable ? 'text-foreground' : 'text-muted-foreground/70'}`}>
+            {online && plottable ? `Agent at ${placeText}` : placeText}
+          </p>
+          <p className="text-[10px] text-muted-foreground/70 truncate">Tagged {meetingTag(m)}</p>
+        </div>
+        {pinned ? (
+          <span className="shrink-0 flex items-center gap-1 text-[10px] font-medium text-primary">
+            <MapPinIcon className="w-3 h-3" />
+            On map
+          </span>
+        ) : plottable ? (
+          <MapPinIcon className="w-3 h-3 shrink-0 mt-0.5 text-primary" />
+        ) : (
+          <span className="shrink-0 text-[10px] text-muted-foreground">no pin</span>
+        )}
+      </div>
+
+      {(m.agent?.full_name || m.contact_person) && (
+        <p className="text-[11px] text-muted-foreground mt-1 truncate">
+          {[m.agent?.full_name, m.contact_person].filter(Boolean).join(' · ')}
+        </p>
+      )}
+    </button>
   )
 }
 
@@ -384,47 +582,112 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
     return acc
   }, [quota])
 
+  /**
+   * The meeting the selected client's pin is actually sitting on. Mirrors the
+   * lens split in `selectClient` — each list pins a different meeting, so the
+   * panel must describe the one the visible list chose.
+   */
+  const selectedPlotMeeting = useMemo(() => {
+    if (!selectedId) return null
+    const row =
+      listMode === 'quota'
+        ? quota.find(r => r.client.id === selectedId)
+        : visited.find(v => v.client.id === selectedId)
+    return row?.plotMeeting ?? null
+  }, [selectedId, listMode, quota, visited])
+
+  /**
+   * Where the pin IS, in words. Resolved from the captured GPS rather than from
+   * the client record, because those are two different facts and the panel used
+   * to show only the second one under a map-pin icon: a meeting recorded in
+   * Pampanga captioned "122, Hagonoy Bulacan", the client's registered address.
+   * A tester read that as the map plotting the wrong place. Both now appear,
+   * each labelled, with the GPS first — it is the evidence.
+   *
+   * Note this is honest about `location_type: 'client_office'` too. Mobile lets
+   * an agent tag a meeting as being at the client's office wherever they are
+   * standing, so that tag is a claim; this line is the measurement.
+   *
+   * Declared above `pins` because the pin popup shows it too: clicking a pin
+   * selects that client in the same event, so by the time its popup is open this
+   * is already resolving for exactly that meeting — the popup gets a real place
+   * name for free, without geocoding pins nobody opened.
+   */
+  const plotPlace = useReverseGeocode(selectedPlotMeeting?.gps_lat, selectedPlotMeeting?.gps_lng)
+
   const pins = useMemo<MapPin[]>(() => {
     // The quota lens keeps its pins, unlike the not-visited lens it replaced —
     // an over-worked account has visits this cutoff, so it has a location, and
     // seeing WHERE over-visiting clusters is most of the value. Clients with no
     // visit this cutoff simply have nothing to plot and stay list-only.
+    /**
+     * The popup lines describing the pinned visit.
+     *
+     * The pin used to be captioned "Client office · Aug 4" — a venue tag that
+     * reads as a place, a date with no time, and no statement of where the
+     * coordinates under the pin actually are. All three facts are now separate
+     * lines: when, where (resolved, for the open pin — see `plotPlace`), and
+     * what the agent tagged it as, prefixed so it can't be read as an address.
+     */
+    const visitMeta = (m: Meeting, active: boolean) => {
+      const clock = meetingClock(m)
+      return {
+        sublabel: [clock.dateTime, clock.duration].filter(Boolean).join(' · '),
+        meta: [
+          active ? (plotPlace.loading ? 'Locating…' : plotPlace.label) : null,
+          `Tagged ${meetingTag(m)}`,
+        ],
+      }
+    }
+
     if (listMode === 'quota') {
       return quota
         .filter(r => r.plotMeeting)
-        .map(r => ({
-          id: r.client.id,
-          lat: r.plotMeeting!.gps_lat!,
-          lng: r.plotMeeting!.gps_lng!,
-          color: QUOTA_META[r.usage.state].color,
-          active: r.client.id === selectedId,
-          label: r.client.company_name,
-          sublabel:
+        .map(r => {
+          const active = r.client.id === selectedId
+          const usageLine =
             r.usage.state === 'exempt'
               ? `${r.usage.uncapped} uncapped ${r.usage.uncapped === 1 ? 'meeting' : 'meetings'}`
               : r.usage.overCap > 0
                 ? `${r.usage.used + r.usage.overCap} visits · ${r.usage.overCap} past the limit`
-                : `${r.usage.used} ${r.usage.used === 1 ? 'visit' : 'visits'} this period`,
-          avatarUrl: r.client.agent?.avatar_url,
-        }))
+                : `${r.usage.used} ${r.usage.used === 1 ? 'visit' : 'visits'} this period`
+          const visit = visitMeta(r.plotMeeting!, active)
+          return {
+            id: r.client.id,
+            lat: r.plotMeeting!.gps_lat!,
+            lng: r.plotMeeting!.gps_lng!,
+            color: QUOTA_META[r.usage.state].color,
+            active,
+            label: r.client.company_name,
+            // Usage leads here — it is what the lens is about — with the pinned
+            // visit's own when/where underneath, since that is the visit the pin
+            // is standing on and used to go unstated entirely.
+            sublabel: usageLine,
+            meta: [`Pinned at ${visit.sublabel}`, ...visit.meta],
+            avatarUrl: r.client.agent?.avatar_url,
+          }
+        })
     }
 
     return visited
       .filter(v => v.plotMeeting)
-      .map(v => ({
-        id: v.client.id,
-        lat: v.plotMeeting!.gps_lat!,
-        lng: v.plotMeeting!.gps_lng!,
-        color:
-          colorBy === 'outcome'
-            ? OUTCOME_META[v.plotMeeting!.outcome].color
-            : mapStatusMeta(v.client).color,
-        active: v.client.id === selectedId,
-        label: v.client.company_name,
-        sublabel: `${meetingWhere(v.plotMeeting!)} · ${format(new Date(v.plotMeeting!.meeting_date), 'MMM d')}`,
-        avatarUrl: v.client.agent?.avatar_url,
-      }))
-  }, [visited, quota, selectedId, colorBy, listMode])
+      .map(v => {
+        const active = v.client.id === selectedId
+        return {
+          id: v.client.id,
+          lat: v.plotMeeting!.gps_lat!,
+          lng: v.plotMeeting!.gps_lng!,
+          color:
+            colorBy === 'outcome'
+              ? OUTCOME_META[v.plotMeeting!.outcome].color
+              : mapStatusMeta(v.client).color,
+          active,
+          label: v.client.company_name,
+          ...visitMeta(v.plotMeeting!, active),
+          avatarUrl: v.client.agent?.avatar_url,
+        }
+      })
+  }, [visited, quota, selectedId, colorBy, listMode, plotPlace.loading, plotPlace.label])
 
   // Built from STATUS_KEYS, not a literal, so adding a lifecycle stage to
   // STATUS_META can't leave a legend row counting `undefined + 1` (NaN). A
@@ -459,40 +722,17 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
   const unlocatedCount = visited.length - mappedCount
 
   const selected = clients.find(c => c.id === selectedId) ?? null
+
+  /** Record fields the agent still owes, for the note in the panel. */
+  const infoGaps = selected ? clientInfoGaps(selected) : []
+
+  const selectedAddress = selected ? clientAddress(selected) : null
   // Keyed on selectedId (a string), not the client object — depending on the
   // object trips the React Compiler's mutation analysis (see git history).
   const selectedHistory = useMemo(
     () => (selectedId ? meetingsByClient.get(selectedId) ?? [] : []),
     [selectedId, meetingsByClient]
   )
-
-  /**
-   * The meeting the selected client's pin is actually sitting on. Mirrors the
-   * lens split in `selectClient` — each list pins a different meeting, so the
-   * panel must describe the one the visible list chose.
-   */
-  const selectedPlotMeeting = useMemo(() => {
-    if (!selectedId) return null
-    const row =
-      listMode === 'quota'
-        ? quota.find(r => r.client.id === selectedId)
-        : visited.find(v => v.client.id === selectedId)
-    return row?.plotMeeting ?? null
-  }, [selectedId, listMode, quota, visited])
-
-  /**
-   * Where the pin IS, in words. Resolved from the captured GPS rather than from
-   * the client record, because those are two different facts and the panel used
-   * to show only the second one under a map-pin icon: a meeting recorded in
-   * Pampanga captioned "122, Hagonoy Bulacan", the client's registered address.
-   * A tester read that as the map plotting the wrong place. Both now appear,
-   * each labelled, with the GPS first — it is the evidence.
-   *
-   * Note this is honest about `location_type: 'client_office'` too. Mobile lets
-   * an agent tag a meeting as being at the client's office wherever they are
-   * standing, so that tag is a claim; this line is the measurement.
-   */
-  const plotPlace = useReverseGeocode(selectedPlotMeeting?.gps_lat, selectedPlotMeeting?.gps_lng)
 
   function selectClient(id: string) {
     setSelectedId(id)
@@ -516,15 +756,24 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
 
   // Clicking a meeting in the history pins it and flies there. The marker mirrors
   // the status pins — status colour + the agent's face — rather than a bare dot.
-  function locateMeeting(m: Meeting) {
+  function locateMeeting(m: Meeting, place?: string | null) {
     if (!isPlottableMeeting(m)) return
     const client = clients.find(c => c.id === m.client_id)
+    const clock = meetingClock(m)
     focusNonce.current += 1
     setHighlight({
       lat: m.gps_lat!,
       lng: m.gps_lng!,
       kind: 'meeting',
-      label: `${format(new Date(m.meeting_date), 'MMM d, yyyy')} · ${meetingWhere(m)}`,
+      label: clock.dateTime,
+      // `place` comes from the history row that was clicked — it resolved this
+      // coordinate for its own line already, so the popup costs no extra lookup.
+      meta: [
+        clock.window ? `${clock.window}${clock.duration ? ` · ${clock.duration}` : ''}` : null,
+        place,
+        `Tagged ${meetingTag(m)}`,
+        m.agent?.full_name ?? client?.agent?.full_name ?? null,
+      ],
       color: client ? mapStatusMeta(client).color : undefined,
       avatarUrl: m.agent?.avatar_url ?? client?.agent?.avatar_url ?? null,
     })
@@ -744,10 +993,10 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                           </span>
                         </div>
                         {/* Prefixed because this is the account's address, not
-                            the pin's. See registeredAddress. */}
+                            the pin's. See officeAddressLine. */}
                         <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">
-                          <span className="text-muted-foreground/60">Registered: </span>
-                          {registeredAddress(client)}
+                          <span className="text-muted-foreground/60">Office: </span>
+                          {officeAddressLine(client)}
                         </p>
                         <div className="flex items-center gap-1.5 mt-1 pl-4">
                           {client.agent && (
@@ -855,10 +1104,10 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                           </span>
                         </div>
                         {/* Prefixed because this is the account's address, not
-                            the pin's. See registeredAddress. */}
+                            the pin's. See officeAddressLine. */}
                         <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">
-                          <span className="text-muted-foreground/60">Registered: </span>
-                          {registeredAddress(client)}
+                          <span className="text-muted-foreground/60">Office: </span>
+                          {officeAddressLine(client)}
                         </p>
                         <div className="flex items-center gap-1.5 mt-1 pl-4">
                           {client.agent && (
@@ -1107,28 +1356,53 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                   </Badge>
                   <h2 className="text-base font-semibold text-foreground leading-tight truncate">{selected.company_name}</h2>
 
-                  {/* Where the pin is — captured GPS, resolved to a place name. */}
-                  {selectedPlotMeeting && (
-                    <div className="flex items-start gap-1.5 mt-1.5">
-                      <MapPinIcon className="w-3.5 h-3.5 text-primary shrink-0 mt-0.5" />
-                      <div className="min-w-0">
-                        <p className="text-xs text-foreground">
-                          {plotPlace.loading ? 'Locating…' : plotPlace.label}
-                        </p>
-                        <p className="text-[10px] text-muted-foreground">
-                          Meeting GPS · {format(new Date(selectedPlotMeeting.meeting_date), 'MMM d, yyyy')}
-                        </p>
-                      </div>
-                    </div>
-                  )}
+                  {/* ONE location, and it is the client's own address.
+                      Deliberately no coordinates in this header.
+                      ---------------------------------------------------------
+                      It used to carry three location lines — the pinned visit's
+                      GPS, the address, and the client's office pin — which read
+                      as three places for one client. Two of them were routinely
+                      the same coordinate printed twice: an office pin sourced
+                      from a Client Office meeting IS that meeting's start GPS
+                      (verified on live rows — identical to 7 decimals, same
+                      timestamp), and 9 of the 11 pinned clients got theirs that
+                      way.
 
-                  {/* The address on the client record. A different fact from the
-                      line above, and deliberately second — see `plotPlace`. */}
+                      So the header answers "who is this client and where are
+                      they on paper", and every captured coordinate moved to the
+                      visit that produced it, down in Meeting History. The pin
+                      currently on the map is identified there too (see the
+                      "Shown on map" marker), which is what keeps a caption in
+                      one town and a pin in another from reading as a bug.
+
+                      The office pin is not shown on this page at all — a
+                      deliberate trade, agreed 2026-08-04. It is a property of
+                      the client record, not of anything this map plots, and it
+                      lives on the Clients page detail dialog with its own map
+                      and its provenance. */}
                   <div className="flex items-start gap-1.5 mt-1.5">
                     <Building2 className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
                     <div className="min-w-0">
-                      <p className="text-xs text-muted-foreground">{registeredAddress(selected)}</p>
-                      <p className="text-[10px] text-muted-foreground/70">Registered address</p>
+                      <p className="text-xs text-muted-foreground">{officeAddressLine(selected)}</p>
+                      {/* Says which kind of address it is. A row can have a city
+                          from sync while its `office_address` — the field the
+                          agent is actually held to — is still empty, and
+                          captioning that "Office address on file" contradicts
+                          the outstanding-work note further down the panel. Most
+                          rows are in exactly that state: 39 of 67 have a city
+                          and no street. */}
+                      <p className="text-[10px] text-muted-foreground/70">
+                        {selectedAddress?.line
+                          ? 'Office address on file'
+                          : selectedAddress?.locality
+                            ? `${selected.province ? 'City and province' : 'City'} on record — no street address yet`
+                            : 'Office address'}
+                      </p>
+                      {selectedAddress?.landmark && (
+                        <p className="text-[10px] text-muted-foreground/70">
+                          Landmark: {selectedAddress.landmark}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1158,20 +1432,50 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                   </div>
                 )}
 
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <User className="w-3.5 h-3.5 shrink-0" />
-                    {selected.contact_person || '—'}
-                    {selected.contact_position ? ` · ${selected.contact_position}` : ''}
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Phone className="w-3.5 h-3.5 shrink-0" />
-                    {selected.contact_number || '—'}
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Building2 className="w-3.5 h-3.5 shrink-0" />
-                    {selected.sales_channel.replace('_', ' ')}
-                  </div>
+                {/* The client record itself. Scoped to the fields the product
+                    actually judges a record on — see lib/client-info.ts — with
+                    the stage left to the badge in the header rather than
+                    repeated here. */}
+                <div className="space-y-2.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80">
+                    Client Information
+                  </p>
+                  <ClientFact
+                    icon={User}
+                    label="Contact person"
+                    value={selected.contact_person}
+                    // The decision-maker's role, which is the point of capturing
+                    // it — mobile's field is labelled "purchasing/CEO/owner".
+                    hint={selected.contact_position}
+                  />
+                  <ClientFact icon={Phone} label="Contact number" value={selected.contact_number} />
+                  <ClientFact
+                    icon={Tag}
+                    label="Sales channel"
+                    // Through the shared map, so the panel says "End-User" like
+                    // every other surface rather than the raw "end_user".
+                    value={CHANNEL_LABEL[selected.sales_channel] ?? selected.sales_channel}
+                  />
+
+                  {/* Why a record looks thin. A field-created client is saved
+                      with a name and filled in later (the two-phase create in
+                      migration 013), and without this an admin reads the gaps as
+                      the page failing rather than as work outstanding. The
+                      deadline is the 1-month data-quality rule. */}
+                  {infoGaps.length > 0 && (
+                    <div className="flex items-start gap-2 p-2 rounded-lg border border-border bg-muted/30">
+                      <Info className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        Still to be completed by the agent:{' '}
+                        <span className="text-foreground">
+                          {infoGaps.map(gap => gap.label.toLowerCase()).join(', ')}
+                        </span>
+                        {selected.details_deadline_at && !selected.details_completed_at && (
+                          <> · due {format(new Date(selected.details_deadline_at), 'MMM d, yyyy')}</>
+                        )}
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="pt-3 border-t border-border">
@@ -1211,49 +1515,20 @@ export function SalesMapView({ headerAction }: SalesMapViewProps) {
                     {selectedHistory.length === 0 && (
                       <p className="text-xs text-muted-foreground">No meetings logged yet.</p>
                     )}
-                    {selectedHistory.map(m => {
-                      const plottable = isPlottableMeeting(m)
-                      const duration = meetingDurationMinutes(m)
-                      return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          onClick={() => locateMeeting(m)}
-                          disabled={!plottable}
-                          className={`w-full text-left rounded-lg border border-border p-2.5 transition-colors ${
-                            plottable ? 'hover:bg-primary/5 hover:border-primary/40 cursor-pointer' : 'opacity-70 cursor-default'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium text-foreground">
-                              {format(new Date(m.meeting_date), 'MMM d, yyyy')}
-                            </span>
-                            <Badge variant="outline" className="text-[10px] px-1.5 h-4">
-                              {OUTCOME_LABEL[m.outcome] ?? m.outcome}
-                            </Badge>
-                          </div>
-                          <div className="flex items-center gap-1.5 mt-1 text-[11px] text-muted-foreground">
-                            {m.meeting_type === 'online' ? (
-                              <Video className="w-3 h-3 shrink-0" />
-                            ) : (
-                              <Navigation className="w-3 h-3 shrink-0" />
-                            )}
-                            <span className="truncate">{meetingWhere(m)}</span>
-                            {duration != null && <span className="shrink-0">· {duration}m</span>}
-                            {plottable ? (
-                              <MapPinIcon className="w-3 h-3 ml-auto shrink-0 text-primary" />
-                            ) : (
-                              <span className="ml-auto shrink-0 text-[10px]">no location</span>
-                            )}
-                          </div>
-                          {(m.agent?.full_name || m.contact_person) && (
-                            <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
-                              {[m.agent?.full_name, m.contact_person].filter(Boolean).join(' · ')}
-                            </p>
-                          )}
-                        </button>
-                      )
-                    })}
+                    {selectedHistory.map((m, i) => (
+                      <MeetingHistoryRow
+                        key={m.id}
+                        meeting={m}
+                        onLocate={locateMeeting}
+                        resolvePlace={i < HISTORY_GEOCODE_LIMIT}
+                        pinned={m.id === selectedPlotMeeting?.id}
+                      />
+                    ))}
+                    {selectedHistory.length > HISTORY_GEOCODE_LIMIT && (
+                      <p className="text-[10px] text-muted-foreground pt-1">
+                        Older visits show coordinates instead of a place name.
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>

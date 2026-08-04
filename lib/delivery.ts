@@ -372,6 +372,8 @@ function deliveryStop(po: PurchaseOrder, sequence: number): TripStop {
     lat: po.gps_lat,
     lng: po.gps_lng,
     at: po.time_out,
+    startedAt: po.time_in,
+    durationMinutes: dwell,
     tone: po.status === 'delivered' ? 'done' : po.status === 'failed' ? 'problem' : 'open',
     statusLabel: PO_STATUS_LABEL[po.status],
     amountLabel: po.cod_amount != null ? peso(po.cod_amount) : null,

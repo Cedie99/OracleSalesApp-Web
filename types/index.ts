@@ -25,6 +25,11 @@ export type AdminScope = 'all' | 'sales' | 'collection' | 'delivery'
 export type CustomerType = 'existing' | 'new' | 'in_progress' | 'prospect'
 export type SalesChannel = 'distributor' | 'dealer' | 'end_user' | 'private_label'
 export type ClientStatus = 'active' | 'lost' | 'deleted'
+/**
+ * How a client's permanent office pin came to be set — the CHECK constraint in
+ * migration 052. See `Client.office_lat`.
+ */
+export type OfficePinSource = 'manual' | 'client_office_meeting'
 export type MeetingType = 'f2f' | 'online'
 export type OnlinePlatform = 'zoom' | 'googlemeet'
 export type LocationType = 'client_office' | 'other'
@@ -458,19 +463,27 @@ export interface Client {
   contact_number: string
   office_address: string
   /**
-   * ⚠️ NOT IN THE DATABASE YET. The live `clients` table has no coordinate
-   * columns — verified against the deployed schema on 2026-07-24. The mobile
-   * app does not capture a location when a client is created; adding that pin
-   * is a planned change, and these fields are the shape it will fill.
+   * The client's PERMANENT office pin — where the office/store actually is.
    *
-   * Until then anything reading from Supabase sees them undefined, so the Maps
-   * page renders with no pins by design. Do NOT substitute meeting GPS
-   * (`Meeting.gps_lat/gps_lng`) — that records where the agent stood during a
-   * visit, which is not the client's address, and plotting it would assert a
-   * location the data cannot support.
+   * Live since migration 052 (mobile Batch 4; contract:
+   * Office-Location-Spec-2026-07-29.md in the vault). Written two ways only: an
+   * agent explicitly setting it from Client Detail, or a meeting the agent
+   * tagged as being at the Client Office, whose start GPS is then allowed to
+   * stand in. Both are recorded in `office_pin_source`.
+   *
+   * Never derive this from anything else. Meeting GPS (`Meeting.gps_lat/lng`)
+   * is where the AGENT stood during a visit — for an online meeting, nowhere
+   * near the client — and the spec forbids inferring the pin from it, from an
+   * address string, or from a geocode. A client with no pin simply has none.
+   *
+   * Most rows are still null: the columns are additive with no backfill.
    */
-  office_lat?: number
-  office_lng?: number
+  office_lat?: number | null
+  office_lng?: number | null
+  /** How the pin was set — see `office_lat`. Null when there is no pin. */
+  office_pin_source?: OfficePinSource | null
+  /** Last write to the pin specifically, distinct from `updated_at`. */
+  office_pin_updated_at?: string | null
   customer_type: CustomerType
   sales_channel: SalesChannel
   assigned_agent_id: string
