@@ -1,6 +1,6 @@
 import type { Client, ClientStatus, CustomerType, Meeting, MeetingOutcome } from '@/types'
 import { CUSTOMER_TYPE_LABEL } from '@/lib/status-styles'
-import type { QuotaState } from '@/lib/cutoff'
+import type { AttentionKind } from '@/lib/attention'
 
 /**
  * The map's status vocabulary is deliberately one narrower than CustomerType:
@@ -72,24 +72,26 @@ export const OUTCOME_META: Record<MeetingOutcome, { label: string; color: string
 }
 
 /**
- * Colours for the "visit quota" lens — how heavily an account has been worked
- * this cutoff, rather than what it is or how the visit went. A third palette
- * for the same reason OUTCOME_META is a second one: only ever shown alone.
+ * Colours for the "needs attention" lens — what is wrong with an account,
+ * rather than what it is or how the visit went. A third palette for the same
+ * reason OUTCOME_META is a second one: only ever shown alone.
  *
- * There is no "approaching the limit" colour, deliberately. The cap is a
- * CEILING, not a target: a client at 2 of 2 is in exactly as good a state as
- * one at 0 of 2, and nobody is in trouble for not having visited an account.
- * An amber "At limit" band said the opposite — that filling the allowance was
- * a thing to chase, and that stopping just short deserved a warning colour.
+ * A severity ramp rather than a set of categories, ordered to match
+ * ATTENTION_RANK: red for the deadline you can still beat, orange for the rule
+ * already broken, amber for the prompt with no consequence attached.
  *
- * 'exempt' borrows the prospect purple, because in practice that IS the
- * prospect bucket — uncapped is a property of the lifecycle stage, not a quota
- * outcome.
+ * Note the amber is legitimate here in a way it was NOT on the visit-quota lens
+ * this replaced. That lens deliberately had no "approaching the limit" band,
+ * because the cap is a CEILING and a client at 2 of 2 is in exactly as good a
+ * state as one at 0 of 2 — an amber warning there would have said that filling
+ * the allowance was a thing to chase. These two clocks are the opposite kind of
+ * thing: real deadlines, running down, that somebody is meant to act before.
+ * Warning early is the whole point.
  */
-export const QUOTA_META: Record<QuotaState, { label: string; color: string }> = {
-  within: { label: 'Within limit', color: '#34d399' },
-  over: { label: 'Over limit', color: '#f87171' },
-  exempt: { label: 'Uncapped', color: '#c084fc' },
+export const ATTENTION_META: Record<AttentionKind, { label: string; color: string }> = {
+  expiring: { label: 'Expiring', color: '#f87171' },
+  over_limit: { label: 'Over limit', color: '#fb923c' },
+  window_lapsed: { label: 'No meeting yet', color: '#fbbf24' },
 }
 
 /**
