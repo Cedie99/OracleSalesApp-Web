@@ -17,7 +17,7 @@ import {
   Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
   MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
   Monitor, Smartphone, Truck, CircleHelp, ImagePlus, Trash2, KeyRound,
-  ArrowUp, ArrowDown, ArrowUpDown,
+  ArrowUp, ArrowDown, ArrowUpDown, LineChart,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -42,6 +42,9 @@ import { PLATFORM_TONE, ROLE_TONE, TONE_CLASS, TONE_TEXT, roleTone } from '@/lib
 const ROLE_ICON: Record<UserRole, React.ElementType> = {
   superadmin: ShieldEllipsis,
   admin: ShieldCheck,
+  // Not a shield: an executive administers nothing. The chart says what the
+  // account is actually for — reading the numbers everyone else produces.
+  executive: LineChart,
   sales_manager: Briefcase,
   sales_specialist: User,
   rsr: Store,
@@ -69,6 +72,7 @@ const PLATFORM_META = {
 const ROLE_DESCRIPTION: Record<UserRole, string> = {
   superadmin: 'Full system access — the only role that can create or edit admin accounts.',
   admin: 'Operational access to the modules its category covers — user management is view-only.',
+  executive: 'Read-only oversight of every team in the mobile app — dashboards, reports, and maps. Records and approves nothing.',
   sales_manager: 'Oversees a team of sales specialists or RSRs, approves client changes, and views all team sales.',
   sales_specialist: 'Front-line sales agent that logs meetings, clients, and clock records.',
   rsr: 'Route Sales Representative — visits stores daily and logs field activity.',
@@ -116,7 +120,7 @@ interface SortState {
  * Collector and bury Super Admin in the middle.
  */
 const ROLE_ORDER: UserRole[] = [
-  'superadmin', 'admin', 'sales_manager', 'sales_specialist', 'rsr', 'collector', 'delivery',
+  'superadmin', 'admin', 'executive', 'sales_manager', 'sales_specialist', 'rsr', 'collector', 'delivery',
 ]
 
 /**
@@ -378,6 +382,7 @@ export default function UsersPage() {
     total: users.length,
     superadmin: users.filter(u => u.role === 'superadmin').length,
     admin: users.filter(u => u.role === 'admin').length,
+    executive: users.filter(u => u.role === 'executive').length,
     sales_manager: users.filter(u => u.role === 'sales_manager').length,
     sales_specialist: users.filter(u => u.role === 'sales_specialist').length,
     rsr: users.filter(u => u.role === 'rsr').length,
@@ -521,11 +526,14 @@ export default function UsersPage() {
         )}
 
         {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+        {/* Nine tiles, so the breakpoints step 2 → 3 → 9 rather than 2 → 4 → 8:
+            every row divides evenly and no tile is orphaned on a row of its own. */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-9 gap-3">
           {([
             { label: 'Total Users', value: counts.total, icon: Users, color: 'text-foreground' },
             { label: 'Super Admins', value: counts.superadmin, icon: ShieldEllipsis, color: 'text-primary' },
             { label: 'Admins', value: counts.admin, icon: ShieldCheck, color: 'text-primary' },
+            { label: 'Executives', value: counts.executive, icon: LineChart, color: TONE_TEXT[ROLE_TONE.executive] },
             { label: 'Sales Managers', value: counts.sales_manager, icon: Briefcase, color: TONE_TEXT[ROLE_TONE.sales_manager] },
             { label: 'Sales Specialists', value: counts.sales_specialist, icon: User, color: TONE_TEXT[ROLE_TONE.sales_specialist] },
             { label: 'RSR', value: counts.rsr, icon: Store, color: TONE_TEXT[ROLE_TONE.rsr] },
@@ -570,6 +578,7 @@ export default function UsersPage() {
                   {ADMIN_SCOPE_LABEL[scope]}
                 </SelectItem>
               ))}
+              <SelectItem value="executive">Executive</SelectItem>
               <SelectItem value="sales_manager">Sales Manager</SelectItem>
               <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
               <SelectItem value="rsr">RSR</SelectItem>
@@ -1045,6 +1054,9 @@ function UserForm({
           <SelectContent>
             {canCreateAdmins && <SelectItem value="superadmin">Super Admin</SelectItem>}
             {canCreateAdmins && <SelectItem value="admin">Admin</SelectItem>}
+            {/* Ungated, unlike the two above: an executive is a mobile account
+                with no administrative power, so it isn't an admin to mint. */}
+            <SelectItem value="executive">Executive</SelectItem>
             <SelectItem value="sales_manager">Sales Manager</SelectItem>
             <SelectItem value="sales_specialist">Sales Specialist</SelectItem>
             <SelectItem value="rsr">RSR</SelectItem>

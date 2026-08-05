@@ -14,6 +14,8 @@ import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useClockRecords } from '@/lib/hooks/use-clock-records'
 import { useTeams } from '@/lib/hooks/use-teams'
+import { useProfiles } from '@/lib/hooks/use-profiles'
+import { teamsWithManagers } from '@/lib/teams'
 import { roleLabel } from '@/lib/permissions'
 import type { ClockRecord, ClockType, Profile } from '@/types'
 import { Search, Clock, MapPin, Calendar, Loader2 } from 'lucide-react'
@@ -82,6 +84,11 @@ export default function ClockRecordsPage() {
 
   const { records, loading, error } = useClockRecords()
   const { teams } = useTeams()
+  // Only to name each team's manager in the agent picker — the rows themselves
+  // come from the records, which already carry their agent.
+  const { profiles } = useProfiles()
+
+  const teamOptions = useMemo(() => teamsWithManagers(teams, profiles), [teams, profiles])
 
   // Built from the records rather than from every profile: this page can only
   // filter to someone who has actually clocked in, and offering the rest would
@@ -155,7 +162,7 @@ export default function ClockRecordsPage() {
             value={agentFilter}
             onChange={setAgentFilter}
             allLabel="All Agents"
-            teams={teams}
+            teams={teamOptions}
             aria-label="Agent"
           />
           <DateRangeFilter filter={dateFilter} />

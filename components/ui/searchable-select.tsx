@@ -21,6 +21,13 @@ import { Check, ChevronDown, X, Search } from 'lucide-react'
 export interface PickerOption {
   value: string
   label: string
+  /**
+   * A short qualifier shown to the right of the label, e.g. "Manager". Kept out
+   * of `label` on purpose: the label is what the typed query matches against
+   * and what the closed input echoes back, and neither should gain a word the
+   * person didn't type and wouldn't say.
+   */
+  hint?: string
 }
 
 export interface PickerGroup {
@@ -32,6 +39,8 @@ export interface PickerGroup {
   id: string
   /** Rendered as the section heading. Empty string renders no heading. */
   value: string
+  /** Secondary text beside the heading, e.g. the team's manager. */
+  caption?: string
   items: PickerOption[]
 }
 
@@ -123,8 +132,16 @@ export function SearchableSelect({
                       entry is its own group so it can sit above the teams
                       without pretending to belong to one. */}
                   {group.value !== '' && (
-                    <Combobox.GroupLabel className="px-2 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground select-none">
-                      {group.value}
+                    <Combobox.GroupLabel className="flex items-baseline gap-1.5 px-2 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground select-none">
+                      <span className="shrink-0">{group.value}</span>
+                      {/* Dropped to sentence case: it is a person's name sitting
+                          in a slot otherwise full of shouted labels, and reads
+                          as one only if it stops shouting. */}
+                      {group.caption && (
+                        <span className="truncate font-normal normal-case tracking-normal text-muted-foreground/70">
+                          {group.caption}
+                        </span>
+                      )}
                     </Combobox.GroupLabel>
                   )}
                   <Combobox.Collection>
@@ -132,12 +149,17 @@ export function SearchableSelect({
                       <Combobox.Item
                         key={item.value}
                         value={item}
-                        className="grid cursor-default grid-cols-[1rem_1fr] items-center gap-2 rounded-lg px-2 py-1.5 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground"
+                        className="grid cursor-default grid-cols-[1rem_1fr_auto] items-center gap-2 rounded-lg px-2 py-1.5 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground"
                       >
                         <Combobox.ItemIndicator className="col-start-1 flex items-center justify-center">
                           <Check className="w-3.5 h-3.5" />
                         </Combobox.ItemIndicator>
                         <span className="col-start-2 truncate">{item.label}</span>
+                        {item.hint && (
+                          <span className="col-start-3 shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-muted-foreground">
+                            {item.hint}
+                          </span>
+                        )}
                       </Combobox.Item>
                     )}
                   </Combobox.Collection>

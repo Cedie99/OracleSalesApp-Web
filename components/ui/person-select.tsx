@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { SearchableSelect, type PickerOption } from '@/components/ui/searchable-select'
+import { SearchableSelect, type PickerGroup, type PickerOption } from '@/components/ui/searchable-select'
 
 /**
  * The staff picker used by every "filter by person" control in the app.
@@ -28,6 +28,14 @@ export interface PersonOption {
 export interface PersonTeamOption {
   id: string
   name: string
+  /**
+   * Who runs the team. Named beside the heading so the list answers "whose
+   * people are these" without an admin having to hold the org chart in their
+   * head, and — when the manager is themselves one of the options — used to
+   * pin them above their own team. Build these with `teamsWithManagers`.
+   */
+  managerId?: string
+  managerName?: string
 }
 
 interface PersonSelectProps {
@@ -98,12 +106,29 @@ export function PersonSelect({
     // One section per team, in the order the teams were given, plus a trailing
     // section for staff with no team — dropped silently they would be
     // unreachable through the picker entirely.
-    const sections = (teams ?? [])
-      .map(t => ({
-        id: t.id,
-        value: t.name,
-        items: inScope.filter(o => o.teamId === t.id).map(o => ({ value: o.id, label: o.name })),
-      }))
+    const sections: PickerGroup[] = (teams ?? [])
+      .map(t => {
+        const members = inScope.filter(o => o.teamId === t.id)
+        // The manager heads their own section instead of taking their turn in
+        // name order. Not every page offers them as an option at all — most
+        // build the list from people who have field data — which is exactly why
+        // the heading carries their name whether or not a row does.
+        const ordered = t.managerId
+          ? [...members].sort(
+              (a, b) => Number(b.id === t.managerId) - Number(a.id === t.managerId)
+            )
+          : members
+        return {
+          id: t.id,
+          value: t.name,
+          caption: t.managerName,
+          items: ordered.map(o => ({
+            value: o.id,
+            label: o.name,
+            hint: o.id === t.managerId ? 'Manager' : undefined,
+          })),
+        }
+      })
       .filter(s => s.items.length > 0)
 
     const orphans = inScope.filter(o => !o.teamId)

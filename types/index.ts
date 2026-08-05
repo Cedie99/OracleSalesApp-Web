@@ -1,4 +1,19 @@
-export type UserRole = 'superadmin' | 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector' | 'delivery'
+/**
+ * Every value `profiles.role` may hold, matching the CHECK constraint as of
+ * migration 027.
+ *
+ * `executive` is mobile-only and read-only end-to-end — it creates, edits, and
+ * approves nothing, it just reads dashboards, reports, and maps across every
+ * team. Web knows about it purely so a superadmin can issue and find the
+ * account; there are no executive screens on this side.
+ *
+ * Adding a value here is not optional bookkeeping. This union feeds several
+ * exhaustive Records (ROLE_LABEL, ROLE_TONE, ROLE_ICON, ROLE_DESCRIPTION), and
+ * a role the database allows but this list omits reaches the UI as `undefined`
+ * lookups — which is exactly how a live executive account hard-crashed the
+ * Users page on 2026-07-24, before those lookups grew fallbacks.
+ */
+export type UserRole = 'superadmin' | 'admin' | 'executive' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector' | 'delivery'
 
 /**
  * Which business function an admin covers (migration 024). Only meaningful for
@@ -577,6 +592,40 @@ export interface Meeting {
   end_captured_at?: string | null
   end_gps_lat?: number | null
   end_gps_lng?: number | null
+}
+
+// --- Tag-along / companion requests (migrations 019-020, ADR-030) -----------
+//
+// An agent picks companions when creating a client or recording a meeting; the
+// invitee accepts or declines from their phone. Web only ever reads these.
+//
+// The two invitee kinds are NOT interchangeable and must never be totalled
+// together. A `manager` invitee is a validation gate: while the request is
+// pending the meeting reserves no cutoff slot (it sits at `pending_validity` in
+// the attribution ledger), and a decline excludes it permanently. A `teammate`
+// invitee is shadowing or coaching — it gates nothing at all.
+
+export type TagAlongContext = 'client_creation' | 'meeting'
+export type TagAlongInviteeKind = 'manager' | 'teammate'
+export type TagAlongStatus = 'pending' | 'accepted' | 'declined' | 'cancelled'
+
+export interface TagAlongRequest {
+  id: string
+  context: TagAlongContext
+  requester_id: string
+  invitee_id: string
+  invitee_kind: TagAlongInviteeKind
+  related_client_id: string | null
+  /** Non-null whenever `context` is 'meeting' — enforced by migration 020. */
+  related_meeting_id: string | null
+  status: TagAlongStatus
+  created_at: string
+  responded_at: string | null
+  updated_at: string
+  /** Resolved server-side; the FK targets `profiles.id`, not an auth uid. */
+  requester_name?: string | null
+  invitee_name?: string | null
+  invitee_role?: UserRole | null
 }
 
 export interface ClockRecord {

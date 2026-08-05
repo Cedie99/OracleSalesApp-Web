@@ -20,6 +20,7 @@ import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
+import { useTagAlongs } from '@/lib/hooks/use-tag-alongs'
 import { createClient as createSupabaseClient } from '@/lib/supabase/client'
 import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
 import {
@@ -77,6 +78,7 @@ export default function ClientsPage() {
   // Meetings drive the progress ring (see lib/client-progress.ts), so the page
   // needs them even though it never lists a meeting.
   const { meetings } = useMeetings()
+  const { byInvitee: tagAlongsByInviteeId } = useTagAlongs()
   const { byRole } = useProfiles()
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
   const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
@@ -160,20 +162,48 @@ export default function ClientsPage() {
     return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
   }, [filtered, managers])
 
+  /**
+   * Clients each person was actually invited along to, from the tag-along
+   * ledger — both contexts, since a companion can be picked when the client is
+   * created as well as per meeting. Read straight off `related_client_id`; no
+   * detour through meetings, which would miss the client-creation rows entirely.
+   */
+  const tagAlongClientIds = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const [inviteeId, requests] of tagAlongsByInviteeId) {
+      const ids = new Set(
+        requests
+          .filter(r => r.related_client_id && (r.status === 'accepted' || r.status === 'pending'))
+          .map(r => r.related_client_id as string)
+      )
+      if (ids.size > 0) map.set(inviteeId, ids)
+    }
+    return map
+  }, [tagAlongsByInviteeId])
+
   // Level 0: one bucket per real manager, plus "Unassigned" only if it has anyone in it.
   const managerBuckets = useMemo(() => {
     const buckets = managers.map(m => {
       const managerGroups = groups.filter(g => g.managerKey === m.id)
       const clientCount = managerGroups.reduce((sum, g) => sum + g.clients.length, 0)
-      // The manager's own footprint — clients they personally met with, solo
-      // (a meeting's agent_id is them) or tagging along on an agent's visit
-      // (a meeting's recorded_by is them) — distinct from clientCount, which
-      // is the whole team's total.
+      // Two figures, not one. `recorded_by` means the manager filled in the
+      // meeting form — it had been standing in for "tagged along", which it is
+      // not: a manager invited along on an agent's visit records nothing and
+      // counted as zero. Real tag-alongs now come from the ledger.
       const ownClientIds = new Set(
         meetings.filter(mt => mt.agent_id === m.id || mt.recorded_by === m.id).map(mt => mt.client_id)
       )
       const ownClientCount = filtered.filter(c => ownClientIds.has(c.id)).length
-      return { key: m.id, label: m.full_name, agentCount: managerGroups.length, clientCount, ownClientCount }
+      const invited = tagAlongClientIds.get(m.id)
+      const tagAlongCount = invited ? filtered.filter(c => invited.has(c.id)).length : 0
+      return {
+        key: m.id,
+        label: m.full_name,
+        agentCount: managerGroups.length,
+        clientCount,
+        ownClientCount,
+        tagAlongCount,
+      }
     })
     const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
     if (unassignedGroups.length > 0) {
@@ -183,10 +213,11 @@ export default function ClientsPage() {
         agentCount: unassignedGroups.length,
         clientCount: unassignedGroups.reduce((sum, g) => sum + g.clients.length, 0),
         ownClientCount: 0,
+        tagAlongCount: 0,
       })
     }
     return buckets
-  }, [managers, groups, meetings, filtered])
+  }, [managers, groups, meetings, filtered, tagAlongClientIds])
 
   // The selected agent's clients (drill-down screen, unchanged regardless of
   // which team's dropdown is open).
@@ -203,8 +234,9 @@ export default function ClientsPage() {
     const ownClientIds = new Set(
       meetings.filter(mt => mt.agent_id === selectedManagerKey || mt.recorded_by === selectedManagerKey).map(mt => mt.client_id)
     )
-    return filtered.filter(c => ownClientIds.has(c.id))
-  }, [selectedManagerKey, meetings, filtered])
+    const invited = tagAlongClientIds.get(selectedManagerKey)
+    return filtered.filter(c => ownClientIds.has(c.id) || invited?.has(c.id))
+  }, [selectedManagerKey, meetings, filtered, tagAlongClientIds])
   const activeClients = selectedGroup?.clients ?? (selectedManagerBucket ? managerClients : null)
 
   const { pageItems: pageClients, page: clientPage, pageCount: clientPageCount, from: clientFrom, to: clientTo, total: clientTotal, setPage: setClientPage } = usePagination(
@@ -422,7 +454,7 @@ export default function ClientsPage() {
               Managers
             </p>
             <div className="space-y-3">
-              {managerBuckets.map(({ key, label, agentCount, clientCount, ownClientCount }) => {
+              {managerBuckets.map(({ key, label, agentCount, clientCount, ownClientCount, tagAlongCount }) => {
                 const isOpen = expandedManagerKey === key
                 const bucketGroups = groups.filter(g => g.managerKey === key)
                 return (
@@ -468,7 +500,7 @@ export default function ClientsPage() {
                                 <div className="min-w-0">
                                   <p className="text-sm font-semibold text-foreground truncate">{label}</p>
                                   <p className="text-xs text-muted-foreground">
-                                    Tag-along: {ownClientCount} record{ownClientCount === 1 ? '' : 's'}
+                                    {ownClientCount} recorded · {tagAlongCount} tagged along
                                   </p>
                                 </div>
                               </div>
@@ -532,7 +564,7 @@ export default function ClientsPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                    {selectedGroup ? 'Agent' : 'Manager · Tag-along records'}
+                    {selectedGroup ? 'Agent' : 'Manager · Recorded and tagged along'}
                   </p>
                   <p className="text-base font-semibold text-foreground truncate">
                     {selectedGroup?.agentName ?? selectedManagerBucket?.label}

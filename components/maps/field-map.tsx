@@ -56,6 +56,27 @@ function createPinIcon(
   })
 }
 
+/**
+ * Where a meeting was CLOSED, as a small hollow ring.
+ *
+ * Deliberately not a second teardrop pin: a pin is one located record, and the
+ * end fix is not a record of its own — it is the far end of one meeting. A ring
+ * reads as a mark on the same thing rather than another thing, which is what
+ * stops "one meeting" from looking like "two meetings" on the map.
+ *
+ * Small on purpose too. The pair is usually metres apart (the agent stayed put),
+ * so at any useful zoom this sits under the start pin's tip and has to peek out
+ * from behind it rather than swallow it.
+ */
+function createEndFixIcon(color: string) {
+  return L.divIcon({
+    className: '',
+    html: `<div style="width:16px;height:16px;border-radius:9999px;background:#fff;border:4px solid ${color};box-sizing:border-box;box-shadow:0 1px 3px rgba(0,0,0,0.45);"></div>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  })
+}
+
 // A soft pulsing ring used to call out a one-off location the user asked to see:
 // the pin of a stop they clicked in the history, or a raw lat/lng search.
 function createHighlightIcon(kind: 'meeting' | 'search') {
@@ -77,13 +98,31 @@ function FlyTo({ focus }: { focus: FocusTarget | null }) {
   const map = useMap()
   useEffect(() => {
     if (!focus) return
+    const finite = (p: { lat: number; lng: number }) =>
+      Number.isFinite(p.lat) && Number.isFinite(p.lng)
+
     // Last line of defence, not a data check: Leaflet THROWS on a non-finite
     // pair ("Invalid LatLng object: (NaN, NaN)"), and because this runs in an
     // effect the throw escapes to the error boundary and blanks the entire
     // page — losing the map, the list and the panel over one bad number.
     // Callers already gate on isPlottableMeeting/parseLatLng, so reaching this
     // means bad data upstream; staying put is the recoverable answer.
-    if (!Number.isFinite(focus.lat) || !Number.isFinite(focus.lng)) return
+    if (!finite(focus)) return
+
+    // Several points to show at once (a meeting's start and end fixes): frame
+    // them instead of flying to one, or the other falls off screen the moment
+    // the two are far enough apart to be worth looking at. maxZoom keeps the
+    // usual case — a pair metres apart, where the bounds are nearly a point —
+    // from zooming to the tile ceiling.
+    const fit = (focus.fitTo ?? []).filter(finite)
+    if (fit.length > 1) {
+      map.flyToBounds(L.latLngBounds(fit.map(p => [p.lat, p.lng] as [number, number])), {
+        padding: [80, 80],
+        maxZoom: focus.zoom ?? 16,
+        duration: 0.6,
+      })
+      return
+    }
     map.flyTo([focus.lat, focus.lng], focus.zoom ?? 15, { duration: 0.6 })
   }, [focus, map])
   return null
@@ -163,6 +202,12 @@ export interface FocusTarget {
   lat: number
   lng: number
   zoom?: number
+  /**
+   * Points that must all be in frame. When two or more are given the camera
+   * fits them and `zoom` becomes the CEILING rather than the target; `lat`/`lng`
+   * stay the fallback for one point or none.
+   */
+  fitTo?: { lat: number; lng: number }[]
   /** Bumped by callers to re-trigger a fly-to even when coordinates repeat. */
   nonce: number
 }
@@ -177,6 +222,23 @@ export interface HighlightMarker {
   /** For kind 'meeting': status colour + agent face so it matches the status pins. */
   color?: string
   avatarUrl?: string | null
+  /**
+   * Where the meeting was closed, when mobile captured a second fix.
+   *
+   * The marker above is the START — the fix every other surface in the app plots
+   * and the one the pin stands on. This is drawn as a ring joined to it by a
+   * line, so the two read as one meeting seen from both ends. That comparison is
+   * the whole reason the end fix exists (ADR-019 dropped the start photo because
+   * the admin validates a meeting by looking at start against end here).
+   *
+   * Absent on most meetings — the capture pair postdates them.
+   */
+  end?: {
+    lat: number
+    lng: number
+    label?: string
+    meta?: (string | null | undefined)[]
+  }
 }
 
 /**
@@ -339,6 +401,43 @@ export default function FieldMap({
           </Popup>
         </Marker>
       ))}
+      {/* The start-to-end connector, under both markers. Dotted and thin so it
+          reads as "these two dots are one meeting" rather than as a route — a
+          trip line (above, dashed and heavier) means a worker's ordered run,
+          and this is emphatically not that. */}
+      {highlight?.end && (
+        <Polyline
+          positions={[
+            [highlight.lat, highlight.lng],
+            [highlight.end.lat, highlight.end.lng],
+          ]}
+          pathOptions={{
+            color: highlight.color ?? '#0ea5e9',
+            weight: 2,
+            opacity: 0.9,
+            dashArray: '2 6',
+            lineCap: 'round',
+          }}
+        />
+      )}
+      {highlight?.end && (
+        <Marker
+          position={[highlight.end.lat, highlight.end.lng]}
+          icon={createEndFixIcon(highlight.color ?? '#0ea5e9')}
+          // Under the start pin: when the two fixes are metres apart they land on
+          // top of each other, and the pin carrying the agent's face is the one
+          // that should win.
+          zIndexOffset={1900}
+        >
+          <Popup>
+            <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+              <strong>{highlight.end.label ?? 'Meeting ended here'}</strong>
+              <PopupMeta meta={highlight.end.meta} />
+              <PopupMapsLink lat={highlight.end.lat} lng={highlight.end.lng} />
+            </div>
+          </Popup>
+        </Marker>
+      )}
       {highlight && (
         <Marker
           position={[highlight.lat, highlight.lng]}

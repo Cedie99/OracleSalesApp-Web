@@ -11,12 +11,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { PersonSelect } from '@/components/ui/person-select'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useClients } from '@/lib/hooks/use-clients'
-import { useMeetings, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
+import { useMeetings, meetingDurationMinutes, meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
 import { useTeams } from '@/lib/hooks/use-teams'
+import { useProfiles } from '@/lib/hooks/use-profiles'
+import { teamsWithManagers } from '@/lib/teams'
 import {
   getMapStatus,
   isAvailableForReassignment,
   isInProgress,
+  hasEndFix,
   isPlottableMeeting,
   mapStatusMeta,
   parseLatLng,
@@ -42,17 +45,20 @@ import {
   type AttentionKind,
 } from '@/lib/attention'
 import { useCutoffAttributions, useCutoffPeriods } from '@/lib/hooks/use-cutoff'
+import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
+import { companionSummary, pendingManagerRequests } from '@/lib/tag-along'
+import { CompanionLine, CompanionList } from '@/components/tag-along-indicator'
 import { formatCoords, useReverseGeocode } from '@/lib/hooks/use-reverse-geocode'
-import { formatDurationMinutes } from '@/lib/utils'
+import { formatDistanceMeters, formatDurationMinutes } from '@/lib/utils'
 import type { MapPin, FocusTarget, HighlightMarker } from '@/components/maps/field-map'
-import type { Client, Meeting, MeetingOutcome } from '@/types'
+import type { Client, Meeting, MeetingOutcome, TagAlongRequest } from '@/types'
 import {
   Search, Building2, Phone, User, History, ShieldCheck, MapPin as MapPinIcon, Layers,
   LockOpen, ChevronDown, ChevronLeft, ChevronRight, CalendarDays, Check, Info, PanelLeftClose,
-  PanelLeftOpen, X, Crosshair, Video, Navigation, Clock, Tag,
+  PanelLeftOpen, X, Crosshair, Video, Navigation, Clock, Tag, Users,
   type LucideIcon,
 } from 'lucide-react'
-import { CHANNEL_LABEL } from '@/lib/status-styles'
+import { CHANNEL_LABEL, OUTCOME_LABEL_SHORT, OUTCOME_TONE, TONE_CLASS } from '@/lib/status-styles'
 import { clientAddress, clientInfoGaps } from '@/lib/client-info'
 import { format } from 'date-fns'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
@@ -66,13 +72,6 @@ const FieldMap = dynamic(() => import('@/components/maps/field-map'), {
     </div>
   ),
 })
-
-const OUTCOME_LABEL: Record<string, string> = {
-  successful: 'Successful',
-  follow_up: 'Follow-up',
-  no_decision: 'No Decision',
-  lost_opportunity: 'Lost',
-}
 
 const STATUS_KEYS = Object.keys(STATUS_META) as MapStatus[]
 const OUTCOME_KEYS = Object.keys(OUTCOME_META) as MeetingOutcome[]
@@ -136,6 +135,12 @@ function meetingClock(m: Meeting) {
         ? `${format(new Date(m.start_captured_at), 'h:mm')} – ${format(new Date(m.end_captured_at), 'h:mm a')}`
         : null,
     duration: formatDurationMinutes(meetingDurationMinutes(m)),
+    /**
+     * How far apart the two GPS fixes are, once both exist. Null covers both
+     * "no end fix" and "no start fix", which is why callers phrase its absence
+     * as unrecorded rather than as a zero-metre match.
+     */
+    drift: formatDistanceMeters(meetingGpsDriftMeters(m)),
   }
 }
 
@@ -212,11 +217,17 @@ const HISTORY_GEOCODE_LIMIT = 10
  */
 function MeetingHistoryRow({
   meeting: m,
+  companions,
   onLocate,
   resolvePlace,
   pinned,
 }: {
   meeting: Meeting
+  /**
+   * This visit's tag-along requests. Passed in rather than looked up here so the
+   * whole history costs one fetch instead of one per row.
+   */
+  companions: TagAlongRequest[]
   onLocate: (m: Meeting, place?: string | null) => void
   /** False past HISTORY_GEOCODE_LIMIT — the row then shows raw coordinates. */
   resolvePlace: boolean
@@ -232,6 +243,8 @@ function MeetingHistoryRow({
 }) {
   const plottable = isPlottableMeeting(m)
   const clock = meetingClock(m)
+  // Cancelled requests were withdrawn before anyone answered, so nobody came.
+  const liveCompanions = companions.filter(r => r.status !== 'cancelled')
   const shouldResolve = plottable && resolvePlace
   const place = useReverseGeocode(
     shouldResolve ? m.gps_lat : null,
@@ -263,9 +276,26 @@ function MeetingHistoryRow({
         <span className="text-xs font-medium text-foreground">
           {clock.date} <span className="text-muted-foreground font-normal">· {clock.time}</span>
         </span>
-        <Badge variant="outline" className="text-[10px] px-1.5 h-4 shrink-0">
-          {OUTCOME_LABEL[m.outcome] ?? m.outcome}
-        </Badge>
+        <span className="flex items-center gap-1 shrink-0">
+          {/* Says the visit had a companion before the row is opened or read —
+              on this panel the outcome badge is the only thing scanned, so a
+              tag-along stated further down would be missed. The names and each
+              answer sit on the line below. */}
+          {liveCompanions.length > 0 && (
+            <Badge variant="outline" className="text-[10px] px-1.5 h-4 shrink-0 text-muted-foreground">
+              <Users className="w-2.5 h-2.5" />
+              Tagged along
+            </Badge>
+          )}
+          {/* Tone comes from the app-wide badge vocabulary, not from the map's
+              own OUTCOME_META palette: this is the same pill an admin just read
+              on Meetings and in the client dialog, and a "Lost Opportunity" that
+              is red there and grey here is a third thing to learn. The map's
+              hexes stay where they belong — on the pins and the legend. */}
+          <Badge variant="tone" className={`text-[10px] px-1.5 h-4 shrink-0 ${TONE_CLASS[OUTCOME_TONE[m.outcome]]}`}>
+            {OUTCOME_LABEL_SHORT[m.outcome] ?? m.outcome}
+          </Badge>
+        </span>
       </div>
 
       {/* Duration, and what it was measured from. Stated as unrecorded rather
@@ -296,6 +326,15 @@ function MeetingHistoryRow({
             {online && plottable ? `Agent at ${placeText}` : placeText}
           </p>
           <p className="text-[10px] text-muted-foreground/70 truncate">Tagged {meetingTag(m)}</p>
+          {/* Flags the rows worth opening: only these draw a second marker, and
+              the number says up front whether the agent moved. No counterpart
+              line when there is no end fix — the duration line above already
+              reports that same absence, and saying it twice reads as two faults. */}
+          {clock.drift && (
+            <p className="text-[10px] text-muted-foreground/70 truncate">
+              Start → end · <span className="text-foreground font-medium">{clock.drift}</span>
+            </p>
+          )}
         </div>
         {pinned ? (
           <span className="shrink-0 flex items-center gap-1 text-[10px] font-medium text-primary">
@@ -313,6 +352,14 @@ function MeetingHistoryRow({
         <p className="text-[11px] text-muted-foreground mt-1 truncate">
           {[m.agent?.full_name, m.contact_person].filter(Boolean).join(' · ')}
         </p>
+      )}
+
+      {/* Who joined, in what capacity, and whether they answered — directly
+          under the agent, since the two together are the full attendance. */}
+      {liveCompanions.length > 0 && (
+        <div className="mt-1.5 pt-1.5 border-t border-border/60">
+          <CompanionList requests={liveCompanions} />
+        </div>
       )}
     </button>
   )
@@ -398,6 +445,9 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   const { clients } = useClients()
   const { meetings } = useMeetings()
   const { teams } = useTeams()
+  // Only to name each team's manager in the agent picker — the pins themselves
+  // come from clients, which already carry their agent.
+  const { profiles } = useProfiles()
   // Cutoff boundaries and the visit cap are admin-configured, never hardcoded
   // (team decision, 2026-08-02). `period` is null when no cutoff has been set,
   // and that must disable the lens rather than fall back to a guessed
@@ -433,6 +483,54 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     () => (period ? clientQuotaUsage(attributions, period) : new Map<string, ClientQuotaUsage>()),
     [attributions, period]
   )
+
+  /**
+   * Who each client's unanswered manager tag-alongs are waiting on.
+   *
+   * The ledger knows a client has pending meetings; only this table knows whose
+   * answer they are pending. That name is the whole value of the badge — an
+   * admin looking at "2 pending" can do nothing with it, and an admin looking at
+   * "awaiting Ramon" can go and ask Ramon. Pending manager-kind only: a teammate
+   * who never replied is holding nothing up.
+   */
+  const {
+    byClient: tagAlongsByClientId,
+    byMeeting: tagAlongsByMeetingId,
+    byInvitee: tagAlongsByInviteeId,
+  } = useTagAlongs()
+
+  /**
+   * Accounts each person was invited along to, whoever owns them.
+   *
+   * The agent filter below is written against `clients.assigned_agent_id`, which
+   * is ownership — and a tag-along is by definition someone working an account
+   * that is not theirs. Without this the manager who joined twenty of their
+   * agents' visits maps as though they never left the office.
+   */
+  const tagAlongClientIds = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const [inviteeId, requests] of tagAlongsByInviteeId) {
+      const ids = new Set(
+        requests
+          .filter(r => r.related_client_id && (r.status === 'accepted' || r.status === 'pending'))
+          .map(r => r.related_client_id as string)
+      )
+      if (ids.size > 0) map.set(inviteeId, ids)
+    }
+    return map
+  }, [tagAlongsByInviteeId])
+  const pendingManagersByClient = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const [clientId, requests] of tagAlongsByClientId) {
+      const names = Array.from(
+        new Set(
+          pendingManagerRequests(requests).map(r => r.invitee_name ?? 'someone')
+        )
+      )
+      if (names.length > 0) map.set(clientId, names)
+    }
+    return map
+  }, [tagAlongsByClientId])
 
   // Which meetings the server attributed to this period, per client — the pin
   // is placed at one of these rather than at "a meeting whose date falls in
@@ -522,6 +620,9 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     [agentOptions.hasUnassigned]
   )
 
+  // Same reason as agentExtras: this reaches the combobox as part of `items`.
+  const teamOptions = useMemo(() => teamsWithManagers(teams, profiles), [teams, profiles])
+
   // The single agent the list is scoped to, if any — shown once as a header
   // instead of repeated on every row below (see the per-row agent block).
   const selectedAgent = useMemo(() => {
@@ -564,6 +665,13 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
       inRange: Meeting[]
       plotMeeting: Meeting | null
       lastVisit: string | null
+      /**
+       * In this list because the scoped agent tagged along, not because they own
+       * it. Marked so the row can say so — an account someone joined once is a
+       * different fact from an account they are responsible for, and the list
+       * gives no other clue which is which.
+       */
+      viaTagAlong: boolean
     }[] = []
     const attentionRows: AttentionRow[] = []
 
@@ -575,12 +683,27 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     // every client in the database with nothing actionable in it.
     const isAgentScoped = agentFilter !== 'all' && agentFilter !== 'unassigned'
 
+    /**
+     * Accounts the scoped agent tagged along on. Admitted below alongside the
+     * ones they own, so "show me where this person worked" means what it says —
+     * the Meetings page counts a manager's tag-alongs, and a map that omitted
+     * them would disagree with it about the same person's fortnight.
+     */
+    const scopedTagAlongs = isAgentScoped ? tagAlongClientIds.get(agentFilter) : undefined
+
     for (const client of clients) {
       // Client-level filters apply to both buckets.
       if (teamFilter !== 'all' && client.agent?.team_id !== teamFilter) continue
       if (statusFilter !== 'all' && getMapStatus(client) !== statusFilter) continue
       if (agentFilter === 'unassigned' && client.agent) continue
-      if (agentFilter !== 'all' && agentFilter !== 'unassigned' && client.agent?.id !== agentFilter) continue
+      if (
+        agentFilter !== 'all' &&
+        agentFilter !== 'unassigned' &&
+        client.agent?.id !== agentFilter &&
+        !scopedTagAlongs?.has(client.id)
+      ) {
+        continue
+      }
       if (
         q &&
         !client.company_name.toLowerCase().includes(q) &&
@@ -628,7 +751,13 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
 
       // Pin sits at the most recent plottable f2f visit in range.
       const plotMeeting = inRange.find(isPlottableMeeting) ?? null
-      vis.push({ client, inRange, plotMeeting, lastVisit: inRange[0]?.meeting_date ?? null })
+      vis.push({
+        client,
+        inRange,
+        plotMeeting,
+        lastVisit: inRange[0]?.meeting_date ?? null,
+        viaTagAlong: isAgentScoped && client.agent?.id !== agentFilter,
+      })
     }
 
     // Visited-most-recently first, same as before; a client with no visit at
@@ -645,6 +774,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   }, [
     clients, meetingsByClient, teamFilter, statusFilter, agentFilter, typeFilter,
     range, search, coord, period, usageByClient, attributedMeetingIds, now,
+    tagAlongClientIds,
   ])
 
   /**
@@ -710,11 +840,17 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
      */
     const visitMeta = (m: Meeting, active: boolean) => {
       const clock = meetingClock(m)
+      // Who else was on this visit. A property of the pinned meeting, not of the
+      // account, which is why it belongs in the popup rather than in the pin's
+      // colour — the pin already carries lifecycle or outcome, and a companion
+      // changes neither of those.
+      const companions = companionSummary(tagAlongsFor(tagAlongsByMeetingId, m.id))
       return {
         sublabel: [clock.dateTime, clock.duration].filter(Boolean).join(' · '),
         meta: [
           active ? (plotPlace.loading ? 'Locating…' : plotPlace.label) : null,
           `Tagged ${meetingTag(m)}`,
+          companions ? `With ${companions}` : null,
         ],
       }
     }
@@ -767,7 +903,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
           avatarUrl: v.client.agent?.avatar_url,
         }
       })
-  }, [visited, attention, selectedId, colorBy, listMode, plotPlace.loading, plotPlace.label])
+  }, [visited, attention, selectedId, colorBy, listMode, plotPlace.loading, plotPlace.label, tagAlongsByMeetingId])
 
   // Built from STATUS_KEYS, not a literal, so adding a lifecycle stage to
   // STATUS_META can't leave a legend row counting `undefined + 1` (NaN). A
@@ -852,12 +988,17 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     if (!isPlottableMeeting(m)) return
     const client = clients.find(c => c.id === m.client_id)
     const clock = meetingClock(m)
+    const ended = hasEndFix(m)
     focusNonce.current += 1
     setHighlight({
       lat: m.gps_lat!,
       lng: m.gps_lng!,
       kind: 'meeting',
-      label: clock.dateTime,
+      // Named as the START only once there is an end fix to tell it apart from.
+      // On the ~78% of meetings with no second fix there is nothing to compare,
+      // and "Started here" would imply a missing counterpart that was never
+      // captured rather than simply not shown.
+      label: ended ? `Started · ${clock.dateTime}` : clock.dateTime,
       // `place` comes from the history row that was clicked — it resolved this
       // coordinate for its own line already, so the popup costs no extra lookup.
       meta: [
@@ -868,8 +1009,37 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
       ],
       color: client ? mapStatusMeta(client).color : undefined,
       avatarUrl: m.agent?.avatar_url ?? client?.agent?.avatar_url ?? null,
+      end: ended
+        ? {
+            lat: m.end_gps_lat!,
+            lng: m.end_gps_lng!,
+            label: m.end_captured_at
+              ? `Ended · ${format(new Date(m.end_captured_at), 'MMM d, yyyy · h:mm a')}`
+              : 'Meeting ended here',
+            // The gap is stated, not judged. Nobody has set a distance that
+            // makes a meeting suspect, and a threshold invented here would read
+            // as policy — the admin compares, this just measures.
+            meta: [
+              clock.drift ? `${clock.drift} from where it started` : null,
+              formatCoords(m.end_gps_lat!, m.end_gps_lng!),
+            ],
+          }
+        : undefined,
     })
-    setFocus({ lat: m.gps_lat!, lng: m.gps_lng!, zoom: 16, nonce: focusNonce.current })
+    setFocus({
+      lat: m.gps_lat!,
+      lng: m.gps_lng!,
+      // Both fixes in frame when there are two. zoom is the ceiling in that
+      // case, so the usual metres-apart pair doesn't slam into max zoom.
+      fitTo: ended
+        ? [
+            { lat: m.gps_lat!, lng: m.gps_lng! },
+            { lat: m.end_gps_lat!, lng: m.end_gps_lng! },
+          ]
+        : undefined,
+      zoom: 16,
+      nonce: focusNonce.current,
+    })
   }
 
   return (
@@ -950,7 +1120,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
           allLabel="All agents"
           // The list is already narrowed by the team filter beside it, so team
           // headings only earn their space while that filter is off.
-          teams={teamFilter === 'all' ? teams : undefined}
+          teams={teamFilter === 'all' ? teamOptions : undefined}
           extras={agentExtras}
           aria-label="Agent"
           // Wider than the plain selects beside it: this one shows the chosen
@@ -1099,7 +1269,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
             <div className="flex-1 overflow-y-auto divide-y divide-border min-h-0">
               {listMode === 'visited' ? (
                 <>
-                  {visited.map(({ client, inRange, plotMeeting, lastVisit }) => {
+                  {visited.map(({ client, inRange, plotMeeting, lastVisit, viaTagAlong }) => {
                     const status = mapStatusMeta(client)
                     const active = client.id === selectedId
                     return (
@@ -1125,8 +1295,11 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                           {officeAddressLine(client)}
                         </p>
                         <div className="flex items-center gap-1.5 mt-1 pl-4">
-                          {/* Redundant once the agent is the list's own header. */}
-                          {!selectedAgent && client.agent && (
+                          {/* Redundant once the agent is the list's own header —
+                              except on a tagged-along row, where the owner is
+                              someone other than the agent in that header and is
+                              the one fact the row would otherwise hide. */}
+                          {(!selectedAgent || viaTagAlong) && client.agent && (
                             <Avatar className="size-4 after:border-0">
                               {client.agent.avatar_url && <AvatarImage src={client.agent.avatar_url} alt="" />}
                               <AvatarFallback className="text-[8px] bg-primary/20 text-primary">
@@ -1134,12 +1307,21 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                               </AvatarFallback>
                             </Avatar>
                           )}
-                          {!selectedAgent && (
+                          {(!selectedAgent || viaTagAlong) && (
                             <p className="text-[11px] text-muted-foreground truncate">
                               {client.agent?.full_name ?? 'Unassigned'}
                             </p>
                           )}
                           <span className="ml-auto flex items-center gap-1 shrink-0">
+                            {/* This account is someone else's; the scoped agent
+                                joined a visit on it. Said plainly, because the
+                                list is otherwise a roster and would read as
+                                ownership. */}
+                            {viaTagAlong && (
+                              <Badge variant="outline" className="text-[9px] px-1 h-3.5 text-muted-foreground">
+                                Tagged along
+                              </Badge>
+                            )}
                             <Badge variant="outline" className="text-[9px] px-1 h-3.5">
                               {inRange.length} {inRange.length === 1 ? 'visit' : 'visits'}
                             </Badge>
@@ -1150,6 +1332,14 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                             )}
                           </span>
                         </div>
+                        {/* Companions on the pinned visit, in the row itself so
+                            they are readable while scanning the list rather than
+                            only after opening the pin. */}
+                        {plotMeeting && (
+                          <div className="mt-0.5 pl-4">
+                            <CompanionLine requests={tagAlongsFor(tagAlongsByMeetingId, plotMeeting.id)} />
+                          </div>
+                        )}
                       </button>
                     )
                   })}
@@ -1266,12 +1456,27 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                           )}
                           {/* A pending tag-along reserves no slot, so an
                               over-limit count can still move. Flagged so it
-                              isn't read as settled. */}
-                          {usage && usage.pending > 0 && (
-                            <Badge variant="outline" className="text-[9px] px-1 h-3.5 shrink-0 text-muted-foreground">
-                              {usage.pending} pending
-                            </Badge>
-                          )}
+                              isn't read as settled — and named, where the
+                              ledger's count can be matched to the person whose
+                              answer everything is waiting on. */}
+                          {usage && usage.pending > 0 && (() => {
+                            const waitingOn = pendingManagersByClient.get(client.id) ?? []
+                            return (
+                              <Badge
+                                variant="outline"
+                                className="text-[9px] px-1 h-3.5 shrink-0 text-muted-foreground"
+                                title={
+                                  waitingOn.length > 0
+                                    ? `${usage.pending} meeting${usage.pending === 1 ? '' : 's'} awaiting confirmation from ${waitingOn.join(', ')}`
+                                    : `${usage.pending} meeting${usage.pending === 1 ? '' : 's'} awaiting manager confirmation`
+                                }
+                              >
+                                {waitingOn.length === 1
+                                  ? `Awaiting ${waitingOn[0]}`
+                                  : `${usage.pending} pending`}
+                              </Badge>
+                            )
+                          })()}
                           {!plotMeeting && (
                             <Badge variant="outline" className="text-[9px] px-1 h-3.5 shrink-0 text-muted-foreground">
                               No pin
@@ -1730,6 +1935,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                       <MeetingHistoryRow
                         key={m.id}
                         meeting={m}
+                        companions={tagAlongsFor(tagAlongsByMeetingId, m.id)}
                         onLocate={locateMeeting}
                         resolvePlace={i < HISTORY_GEOCODE_LIMIT}
                         pinned={m.id === selectedPlotMeeting?.id}
