@@ -594,6 +594,40 @@ export interface Meeting {
   end_gps_lng?: number | null
 }
 
+// --- Tag-along / companion requests (migrations 019-020, ADR-030) -----------
+//
+// An agent picks companions when creating a client or recording a meeting; the
+// invitee accepts or declines from their phone. Web only ever reads these.
+//
+// The two invitee kinds are NOT interchangeable and must never be totalled
+// together. A `manager` invitee is a validation gate: while the request is
+// pending the meeting reserves no cutoff slot (it sits at `pending_validity` in
+// the attribution ledger), and a decline excludes it permanently. A `teammate`
+// invitee is shadowing or coaching — it gates nothing at all.
+
+export type TagAlongContext = 'client_creation' | 'meeting'
+export type TagAlongInviteeKind = 'manager' | 'teammate'
+export type TagAlongStatus = 'pending' | 'accepted' | 'declined' | 'cancelled'
+
+export interface TagAlongRequest {
+  id: string
+  context: TagAlongContext
+  requester_id: string
+  invitee_id: string
+  invitee_kind: TagAlongInviteeKind
+  related_client_id: string | null
+  /** Non-null whenever `context` is 'meeting' — enforced by migration 020. */
+  related_meeting_id: string | null
+  status: TagAlongStatus
+  created_at: string
+  responded_at: string | null
+  updated_at: string
+  /** Resolved server-side; the FK targets `profiles.id`, not an auth uid. */
+  requester_name?: string | null
+  invitee_name?: string | null
+  invitee_role?: UserRole | null
+}
+
 export interface ClockRecord {
   id: string
   agent_id: string
