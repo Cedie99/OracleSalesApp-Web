@@ -13,6 +13,7 @@ import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { useTeams } from '@/lib/hooks/use-teams'
+import { teamsWithManagers } from '@/lib/teams'
 import { useEditRequests } from '@/lib/hooks/use-edit-requests'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -88,7 +89,10 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
     () => scopedAgents.map(a => ({ id: a.id, name: a.full_name, teamId: a.team_id })),
     [scopedAgents]
   )
-  const teamOptions = useMemo(() => teams.map(t => ({ id: t.id, name: t.name })), [teams])
+  const teamOptions = useMemo(
+    () => teamsWithManagers(teams.map(t => ({ id: t.id, name: t.name })), profiles),
+    [teams, profiles]
+  )
 
   // All meetings within the current team scope (not affected by the Agent
   // Performance table's own agent/date filters below) — drives the metric

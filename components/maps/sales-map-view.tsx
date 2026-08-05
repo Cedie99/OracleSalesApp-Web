@@ -13,6 +13,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useMeetings, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
 import { useTeams } from '@/lib/hooks/use-teams'
+import { useProfiles } from '@/lib/hooks/use-profiles'
+import { teamsWithManagers } from '@/lib/teams'
 import {
   getMapStatus,
   isAvailableForReassignment,
@@ -398,6 +400,9 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   const { clients } = useClients()
   const { meetings } = useMeetings()
   const { teams } = useTeams()
+  // Only to name each team's manager in the agent picker — the pins themselves
+  // come from clients, which already carry their agent.
+  const { profiles } = useProfiles()
   // Cutoff boundaries and the visit cap are admin-configured, never hardcoded
   // (team decision, 2026-08-02). `period` is null when no cutoff has been set,
   // and that must disable the lens rather than fall back to a guessed
@@ -521,6 +526,9 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     () => (agentOptions.hasUnassigned ? [{ value: 'unassigned', label: 'Unassigned' }] : []),
     [agentOptions.hasUnassigned]
   )
+
+  // Same reason as agentExtras: this reaches the combobox as part of `items`.
+  const teamOptions = useMemo(() => teamsWithManagers(teams, profiles), [teams, profiles])
 
   // The single agent the list is scoped to, if any — shown once as a header
   // instead of repeated on every row below (see the per-row agent block).
@@ -950,7 +958,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
           allLabel="All agents"
           // The list is already narrowed by the team filter beside it, so team
           // headings only earn their space while that filter is off.
-          teams={teamFilter === 'all' ? teams : undefined}
+          teams={teamFilter === 'all' ? teamOptions : undefined}
           extras={agentExtras}
           aria-label="Agent"
           // Wider than the plain selects beside it: this one shows the chosen

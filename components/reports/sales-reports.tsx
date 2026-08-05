@@ -7,6 +7,7 @@ import { useClients } from '@/lib/hooks/use-clients'
 import { useClockRecords } from '@/lib/hooks/use-clock-records'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { useTeams } from '@/lib/hooks/use-teams'
+import { teamsWithManagers } from '@/lib/teams'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { ReportFilters, ReportGrid, downloadSheet, type ReportDefinition } from '@/components/reports/report-grid'
 import { CutoffQuotaReport } from '@/components/reports/cutoff-quota-report'
@@ -29,7 +30,7 @@ export function SalesReports() {
   const { meetings, loading: meetingsLoading, error: meetingsError } = useMeetings()
   const { clients, loading: clientsLoading, error: clientsError } = useClients()
   const { records: clockRecords, error: clockError } = useClockRecords()
-  const { byRole } = useProfiles()
+  const { profiles, byRole } = useProfiles()
   const { teams } = useTeams()
 
   // Memoised because these arrays reach Combobox.Root as `items` via
@@ -43,7 +44,10 @@ export function SalesReports() {
     () => agents.map(a => ({ id: a.id, name: a.full_name, teamId: a.team_id })),
     [agents]
   )
-  const teamOptions = useMemo(() => teams.map(t => ({ id: t.id, name: t.name })), [teams])
+  const teamOptions = useMemo(
+    () => teamsWithManagers(teams.map(t => ({ id: t.id, name: t.name })), profiles),
+    [teams, profiles]
+  )
 
   const loading = meetingsLoading || clientsLoading
   const loadError = meetingsError || clientsError || clockError

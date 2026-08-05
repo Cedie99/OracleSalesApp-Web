@@ -44,3 +44,23 @@ export function managerForTeam(teamId: string | null | undefined, managers: Prof
   if (!teamId) return undefined
   return managers.find(m => m.team_id === teamId && m.is_active !== false)
 }
+
+/**
+ * Teams tagged with who runs them, shaped for a <PersonSelect>.
+ *
+ * Resolved from `profiles` and not from `teams.manager_id`: that column exists
+ * (001_initial) but no migration ever writes to it, so reading it would report
+ * every team as unmanaged. Takes the full profile list rather than a
+ * pre-filtered manager list so callers don't each have to remember that a
+ * team's manager is "the active sales_manager sharing its team_id".
+ */
+export function teamsWithManagers<T extends { id: string; name: string }>(
+  teams: T[],
+  profiles: Profile[]
+): (T & { managerId?: string; managerName?: string })[] {
+  const managers = profiles.filter(p => p.role === 'sales_manager')
+  return teams.map(team => {
+    const manager = managerForTeam(team.id, managers)
+    return { ...team, managerId: manager?.id, managerName: manager?.full_name }
+  })
+}
