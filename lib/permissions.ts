@@ -152,6 +152,9 @@ export function visibleModules(
 export const ROLE_LABEL: Record<UserRole, string> = {
   superadmin: 'Super Admin',
   admin: 'Admin',
+  // 'executive' is the canonical spelling on both sides — mobile routes on it
+  // and the DB constraint stores it. Don't rename it to Director/Owner here.
+  executive: 'Executive',
   sales_manager: 'Sales Manager',
   sales_specialist: 'Sales Specialist',
   rsr: 'RSR',
@@ -169,6 +172,11 @@ export const ROLE_LABEL: Record<UserRole, string> = {
  * `ROLE_ICON[role]` resolved to undefined and React rejects an undefined
  * element type. An unfamiliar role must render as an obvious "we don't know
  * this one" pill so it prompts a schema sync, never a white screen.
+ *
+ * `executive` itself is a known role now (migration 027, added to UserRole), so
+ * these fallbacks currently catch nothing. Keep them anyway: the condition that
+ * produced that incident — two repos, one role column, one of them shipping
+ * first — has not changed, and the next role will arrive the same way.
  *
  * Use this (and `roleTone`) for any role that originates from a query. Index
  * ROLE_LABEL directly only for roles this app itself chose.

@@ -172,12 +172,16 @@ export const APPROVAL_LABEL: Record<ApprovalStatus, string> = {
 export const ROLE_TONE: Record<UserRole, BadgeTone> = {
   superadmin: 'brand',
   admin: 'brand',
+  // Executive shares navy with sales_manager, and collector shares neutral with
+  // delivery: five usable tones cover eight roles, so pairs that are the same
+  // kind of thing share one. Executive and sales_manager both read other
+  // people's work rather than logging their own; collector and delivery are both
+  // mobile operations support. The label and icon distinguish each pair, so the
+  // colour doesn't need to.
+  executive: 'navy',
   sales_manager: 'navy',
   sales_specialist: 'amber',
   rsr: 'purple',
-  // Collector and delivery deliberately share a tone: five usable tones cover
-  // seven roles, and these two are the same kind of thing (mobile operations
-  // support). The label and icon distinguish them, so the colour doesn't need to.
   collector: 'neutral',
   delivery: 'neutral',
 }

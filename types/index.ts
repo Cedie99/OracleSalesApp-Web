@@ -1,4 +1,19 @@
-export type UserRole = 'superadmin' | 'admin' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector' | 'delivery'
+/**
+ * Every value `profiles.role` may hold, matching the CHECK constraint as of
+ * migration 027.
+ *
+ * `executive` is mobile-only and read-only end-to-end — it creates, edits, and
+ * approves nothing, it just reads dashboards, reports, and maps across every
+ * team. Web knows about it purely so a superadmin can issue and find the
+ * account; there are no executive screens on this side.
+ *
+ * Adding a value here is not optional bookkeeping. This union feeds several
+ * exhaustive Records (ROLE_LABEL, ROLE_TONE, ROLE_ICON, ROLE_DESCRIPTION), and
+ * a role the database allows but this list omits reaches the UI as `undefined`
+ * lookups — which is exactly how a live executive account hard-crashed the
+ * Users page on 2026-07-24, before those lookups grew fallbacks.
+ */
+export type UserRole = 'superadmin' | 'admin' | 'executive' | 'sales_manager' | 'sales_specialist' | 'rsr' | 'collector' | 'delivery'
 
 /**
  * Which business function an admin covers (migration 024). Only meaningful for
