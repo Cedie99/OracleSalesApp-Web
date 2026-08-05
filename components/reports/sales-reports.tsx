@@ -2,10 +2,12 @@
 
 import { useMemo, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { useMeetings, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
+import { useMeetings, meetingDurationMinutes, meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useClockRecords } from '@/lib/hooks/use-clock-records'
 import { useProfiles } from '@/lib/hooks/use-profiles'
+import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
+import { MANAGER_GATE_LABEL, companionParticipants, companionSummary, managerGate } from '@/lib/tag-along'
 import { useTeams } from '@/lib/hooks/use-teams'
 import { teamsWithManagers } from '@/lib/teams'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
@@ -30,6 +32,11 @@ export function SalesReports() {
   const { meetings, loading: meetingsLoading, error: meetingsError } = useMeetings()
   const { clients, loading: clientsLoading, error: clientsError } = useClients()
   const { records: clockRecords, error: clockError } = useClockRecords()
+  const {
+    byMeeting: tagAlongsByMeetingId,
+    byClient: tagAlongsByClientId,
+    byInvitee: tagAlongsByInviteeId,
+  } = useTagAlongs()
   const { profiles, byRole } = useProfiles()
   const { teams } = useTeams()
 
@@ -66,23 +73,47 @@ export function SalesReports() {
   const inTeam = (agentId: string | null | undefined) =>
     teamAgentIds == null || (agentId != null && teamAgentIds.has(agentId))
 
+  /**
+   * The meetings and accounts the filtered agent reached by tagging along.
+   *
+   * A manager's tag-alongs are part of their own coverage, not a separate
+   * category — joining an agent's visit is how a manager works an account.
+   * Filtering these reports by ownership alone understated every manager's
+   * fortnight, and disagreed with the Meetings page about the same person.
+   *
+   * Declined and cancelled are left out: nobody attended those.
+   */
+  const taggedAlong = useMemo(() => {
+    const empty = { meetingIds: null as Set<string> | null, clientIds: null as Set<string> | null }
+    if (agentFilter === 'all') return empty
+    const requests = (tagAlongsByInviteeId.get(agentFilter) ?? []).filter(
+      r => r.status === 'accepted' || r.status === 'pending'
+    )
+    return {
+      meetingIds: new Set(requests.map(r => r.related_meeting_id).filter(Boolean) as string[]),
+      clientIds: new Set(requests.map(r => r.related_client_id).filter(Boolean) as string[]),
+    }
+  }, [tagAlongsByInviteeId, agentFilter])
+
   const filteredMeetings = useMemo(
     () =>
       meetings
-        .filter(m => agentFilter === 'all' || m.agent_id === agentFilter)
-        .filter(m => inTeam(m.agent_id))
+        .filter(m => agentFilter === 'all' || m.agent_id === agentFilter || taggedAlong.meetingIds?.has(m.id))
+        // A tagged-along meeting belongs to the agent who logged it, so the team
+        // test stays on `agent_id` — the row is still that team's work.
+        .filter(m => inTeam(m.agent_id) || taggedAlong.meetingIds?.has(m.id))
         .filter(m => inRange(m.meeting_date)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [meetings, agentFilter, teamAgentIds, inRange]
+    [meetings, agentFilter, teamAgentIds, inRange, taggedAlong]
   )
   const filteredClients = useMemo(
     () =>
       clients
-        .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter)
-        .filter(c => inTeam(c.assigned_agent_id))
+        .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter || taggedAlong.clientIds?.has(c.id))
+        .filter(c => inTeam(c.assigned_agent_id) || taggedAlong.clientIds?.has(c.id))
         .filter(c => inRange(c.created_at)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [clients, agentFilter, teamAgentIds, inRange]
+    [clients, agentFilter, teamAgentIds, inRange, taggedAlong]
   )
   const filteredClock = useMemo(
     () =>
@@ -97,7 +128,7 @@ export function SalesReports() {
   const reports: ReportDefinition[] = [
     {
       title: 'Meetings Report',
-      description: 'All client meetings with agenda, outcome, GPS, and photo flags',
+      description: 'All client meetings with agenda, outcome, start/end GPS, companions, and photo flags',
       icon: CalendarCheck,
       count: filteredMeetings.length,
       countLabel: 'meetings',
@@ -113,6 +144,12 @@ export function SalesReports() {
             // than 0 when either end is missing — an unrecorded duration is not
             // a zero-length meeting, and most historical rows predate the feature.
             const duration = meetingDurationMinutes(m)
+            // Companions belong in this file specifically. It is where an admin
+            // reviews a whole cutoff at once, and without these columns a
+            // meeting held out of the quota by an unanswered manager tag-along
+            // is indistinguishable from one that counted.
+            const companions = tagAlongsFor(tagAlongsByMeetingId, m.id)
+            const gate = managerGate(companions)
             return {
               'Date': format(new Date(m.meeting_date), 'MMM d, yyyy h:mm a'),
               'Client': m.client?.company_name ?? '',
@@ -126,7 +163,22 @@ export function SalesReports() {
               'Outcome': OUTCOME_LABEL[m.outcome] ?? m.outcome,
               'Duration (mins)': duration ?? '',
               'Remarks': m.remarks ?? '',
-              'GPS': m.gps_lat != null ? `${m.gps_lat}, ${m.gps_lng}` : '',
+              // Both fixes and the gap between them, in adjacent columns: the
+              // export is where an admin checks a cutoff's worth of meetings at
+              // once, and start-vs-end is the comparison ADR-019 traded the
+              // start photo for. Blank, never 0, when the pair is incomplete.
+              'Start GPS': m.gps_lat != null ? `${m.gps_lat}, ${m.gps_lng}` : '',
+              'End GPS': m.end_gps_lat != null ? `${m.end_gps_lat}, ${m.end_gps_lng}` : '',
+              'Start-End Gap (m)': meetingGpsDriftMeters(m) ?? '',
+              // Three columns rather than one, because a spreadsheet gets
+              // sorted and filtered. The flag is what you filter on, the
+              // participants are what you read, and the confirmation is the
+              // only one with a consequence attached.
+              'Tagged Along': companions.some(r => r.status !== 'cancelled') ? 'Yes' : 'No',
+              'Companions': companionSummary(companions),
+              // Blank when no manager was invited — the ordinary case, and not
+              // the same fact as an approval that is missing.
+              'Manager Confirmation': gate === 'none' ? '' : MANAGER_GATE_LABEL[gate],
               'Photo': m.photo_url ? 'Yes' : 'No',
             }
           }),
@@ -136,7 +188,7 @@ export function SalesReports() {
     },
     {
       title: 'Clients Report',
-      description: 'Full client list with type, channel, agent assignment, and status',
+      description: 'Full client list with type, channel, agent assignment, tag-alongs, and status',
       icon: Users,
       count: filteredClients.length,
       countLabel: 'clients',
@@ -163,6 +215,11 @@ export function SalesReports() {
             'Customer Type': CUSTOMER_TYPE_LABEL[c.customer_type] ?? c.customer_type,
             'Sales Channel': c.sales_channel.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()),
             'Assigned Agent': c.agent?.full_name ?? '',
+            // This sheet lists accounts the filtered agent tagged along on as
+            // well as the ones assigned to them, so `Assigned Agent` alone no
+            // longer explains why a row is here. Everyone who joined a visit on
+            // the account, deduplicated across its whole meeting history.
+            'Tag-Along Participants': companionParticipants(tagAlongsFor(tagAlongsByClientId, c.id)),
             'Status': c.status.charAt(0).toUpperCase() + c.status.slice(1),
             'Created': format(new Date(c.created_at), 'MMM d, yyyy'),
           })),

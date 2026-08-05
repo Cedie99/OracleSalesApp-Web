@@ -15,16 +15,20 @@ import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
-import { useMeetings } from '@/lib/hooks/use-meetings'
+import { useMeetings, meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
+import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
+import { CompanionLine, CompanionList, ManagerGateIcon } from '@/components/tag-along-indicator'
+import { MANAGER_GATE_LABEL, MANAGER_GATE_TONE, managerGate } from '@/lib/tag-along'
 import type { Meeting, MeetingOutcome } from '@/types'
 import {
-  Search, CalendarCheck, MapPin, Map as MapIcon, Camera, Video, Navigation, Users, CheckCircle2, Loader2,
+  Search, CalendarCheck, MapPin, MapPinCheck, Map as MapIcon, Camera, Video, Navigation, Users, CheckCircle2, Loader2,
   Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown, ArrowLeft, User, ExternalLink,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
 import { managerForTeam } from '@/lib/teams'
+import { formatDistanceMeters } from '@/lib/utils'
 
 type TypeFilter = 'all' | 'f2f' | 'online'
 
@@ -48,6 +52,21 @@ const DEFAULT_SORT_DIR: Record<SortKey, SortState['dir']> = {
 /** Severity order for the Outcome column — not alphabetical, so sorting groups worst-to-best (or reverse). */
 const OUTCOME_ORDER: MeetingOutcome[] = ['successful', 'follow_up', 'no_decision', 'lost_opportunity']
 
+/**
+ * Google Maps for a meeting's captured position(s). With both fixes it opens a
+ * two-point view, so the admin sees the start-to-end gap on a map rather than
+ * having to picture it from two coordinate pairs; with only the start fix it
+ * drops a single pin.
+ */
+function mapsHref(m: Meeting): string {
+  const start = `${m.gps_lat},${m.gps_lng}`
+  if (m.end_gps_lat == null || m.end_gps_lng == null) {
+    return `https://www.google.com/maps?q=${start}`
+  }
+  const end = `${m.end_gps_lat},${m.end_gps_lng}`
+  return `https://www.google.com/maps/dir/?api=1&origin=${start}&destination=${end}&travelmode=walking`
+}
+
 export default function MeetingsPage() {
   const router = useRouter()
   const [search, setSearch] = useState('')
@@ -60,6 +79,9 @@ export default function MeetingsPage() {
   const [selectedManagerKey, setSelectedManagerKey] = useState<string | null>(null)
   const { meetings, loading, error } = useMeetings()
   const { byRole } = useProfiles()
+  // Companions load alongside meetings rather than per-row: the panel and the
+  // table both need them, and a lookup per meeting would be a request per row.
+  const { byMeeting: tagAlongsByMeetingId, byInvitee: tagAlongsByInviteeId } = useTagAlongs()
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
 
   // The actual managers, so the top of the hierarchy lists real people instead
@@ -111,16 +133,47 @@ export default function MeetingsPage() {
     return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
   }, [filtered, managers])
 
+  /**
+   * Which meetings each person was genuinely invited along on, from the
+   * tag-along ledger.
+   *
+   * Accepted and pending both count — the manager was asked either way, and a
+   * pending invite is precisely the one worth seeing. Declined and cancelled do
+   * not: nobody attended those.
+   */
+  const tagAlongMeetingIds = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const [inviteeId, requests] of tagAlongsByInviteeId) {
+      const ids = new Set(
+        requests
+          .filter(r => r.related_meeting_id && (r.status === 'accepted' || r.status === 'pending'))
+          .map(r => r.related_meeting_id as string)
+      )
+      if (ids.size > 0) map.set(inviteeId, ids)
+    }
+    return map
+  }, [tagAlongsByInviteeId])
+
   const managerBuckets = useMemo(() => {
     const buckets = managers.map(m => {
       const managerGroups = groups.filter(g => g.managerKey === m.id)
       const meetingCount = managerGroups.reduce((sum, g) => sum + g.meetings.length, 0)
-      // The manager's own footprint — meetings they personally recorded solo
-      // (agent_id is them) or tagged along on with one of their agents
-      // (recorded_by is them) — distinct from meetingCount, which is the
-      // whole team's total.
+      // Two separate figures, because they were one number for a while and that
+      // number was wrong. `recorded_by` means the manager filled in the form; it
+      // was standing in for "tagged along", which it is not — a manager invited
+      // along on twenty agent visits records none of them, and read as zero.
+      // Real tag-alongs come from the ledger; this stays what it always was.
       const ownMeetingCount = filtered.filter(mt => mt.agent_id === m.id || mt.recorded_by === m.id).length
-      return { key: m.id, label: m.full_name, agentCount: managerGroups.length, meetingCount, ownMeetingCount }
+      const invited = tagAlongMeetingIds.get(m.id)
+      const tagAlongCount = invited ? filtered.filter(mt => invited.has(mt.id)).length : 0
+      return {
+        key: m.id,
+        label: m.full_name,
+        agentCount: managerGroups.length,
+        meetingCount,
+        ownMeetingCount,
+        tagAlongCount,
+      }
     })
     const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
     if (unassignedGroups.length > 0) {
@@ -130,10 +183,11 @@ export default function MeetingsPage() {
         agentCount: unassignedGroups.length,
         meetingCount: unassignedGroups.reduce((sum, g) => sum + g.meetings.length, 0),
         ownMeetingCount: 0,
+        tagAlongCount: 0,
       })
     }
     return buckets
-  }, [managers, groups, filtered])
+  }, [managers, groups, filtered, tagAlongMeetingIds])
 
   const selectedGroup = selectedAgentId ? groups.find(g => g.agentId === selectedAgentId) ?? null : null
 
@@ -145,10 +199,17 @@ export default function MeetingsPage() {
     ? managerBuckets.find(b => b.key === selectedManagerKey) ?? null
     : null
   const managerMeetings = useMemo(
-    () => (selectedManagerKey
-      ? filtered.filter(mt => mt.agent_id === selectedManagerKey || mt.recorded_by === selectedManagerKey)
-      : []),
-    [selectedManagerKey, filtered],
+    () => {
+      if (!selectedManagerKey) return []
+      const invited = tagAlongMeetingIds.get(selectedManagerKey)
+      return filtered.filter(
+        mt =>
+          mt.agent_id === selectedManagerKey ||
+          mt.recorded_by === selectedManagerKey ||
+          invited?.has(mt.id),
+      )
+    },
+    [selectedManagerKey, filtered, tagAlongMeetingIds],
   )
   const activeMeetings = selectedGroup?.meetings ?? (selectedManagerBucket ? managerMeetings : null)
 
@@ -291,7 +352,7 @@ export default function MeetingsPage() {
               Managers
             </p>
             <div className="space-y-3">
-              {managerBuckets.map(({ key, label, agentCount, meetingCount, ownMeetingCount }) => {
+              {managerBuckets.map(({ key, label, agentCount, meetingCount, ownMeetingCount, tagAlongCount }) => {
                 const isOpen = expandedManagerKey === key
                 const bucketGroups = groups.filter(g => g.managerKey === key)
                 return (
@@ -336,8 +397,12 @@ export default function MeetingsPage() {
                                 </div>
                                 <div className="min-w-0">
                                   <p className="text-sm font-semibold text-foreground truncate">{label}</p>
+                                  {/* Recorded and tagged along are counted apart
+                                      on purpose — they answer different
+                                      questions, and one manager can be busy on
+                                      one and absent on the other. */}
                                   <p className="text-xs text-muted-foreground">
-                                    Tag-along: {ownMeetingCount} record{ownMeetingCount === 1 ? '' : 's'}
+                                    {ownMeetingCount} recorded · {tagAlongCount} tagged along
                                   </p>
                                 </div>
                               </div>
@@ -403,7 +468,7 @@ export default function MeetingsPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                    {selectedGroup ? 'Agent' : 'Manager · Tag-along records'}
+                    {selectedGroup ? 'Agent' : 'Manager · Recorded and tagged along'}
                   </p>
                   <p className="text-base font-semibold text-foreground truncate">
                     {selectedGroup?.agentName ?? selectedManagerBucket?.label}
@@ -454,6 +519,11 @@ export default function MeetingsPage() {
                           {m.recorder && (
                             <p className="text-xs text-muted-foreground">+ {m.recorder.full_name}</p>
                           )}
+                          {/* Who else was there. Sits under the agent because
+                              that is where the reader is already asking "whose
+                              meeting is this" — not a column of its own, which
+                              would be empty on most rows. */}
+                          <CompanionLine requests={tagAlongsFor(tagAlongsByMeetingId, m.id)} />
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
@@ -484,9 +554,33 @@ export default function MeetingsPage() {
                           </Badge>
                         </td>
                         <td className="px-4 py-3">
+                          {/* Two different pins, because "has GPS" stopped being
+                              one fact once mobile started capturing a closing
+                              fix: a meeting with both can be validated by
+                              comparing them, one with only a start cannot. The
+                              titles carry the distinction for anyone who doesn't
+                              read it off the icon. */}
                           <div className="flex gap-1.5">
-                            {m.gps_lat && <MapPin className="w-3.5 h-3.5 text-primary" />}
+                            {m.gps_lat &&
+                              (m.end_gps_lat != null ? (
+                                <MapPinCheck
+                                  className="w-3.5 h-3.5 text-primary"
+                                  aria-label="Start and end GPS captured"
+                                >
+                                  <title>Start and end GPS captured</title>
+                                </MapPinCheck>
+                              ) : (
+                                <MapPin
+                                  className="w-3.5 h-3.5 text-muted-foreground"
+                                  aria-label="Start GPS only"
+                                >
+                                  <title>Start GPS only — no closing fix</title>
+                                </MapPin>
+                              ))}
                             {m.photo_url && <Camera className="w-3.5 h-3.5 text-primary" />}
+                            {/* Only ever shown when a manager gate exists —
+                                see ManagerGateIcon. */}
+                            <ManagerGateIcon requests={tagAlongsFor(tagAlongsByMeetingId, m.id)} />
                           </div>
                         </td>
                       </tr>
@@ -558,7 +652,7 @@ export default function MeetingsPage() {
                 </div>
                 {selected.gps_lat ? (
                   <a
-                    href={`https://www.google.com/maps?q=${selected.gps_lat},${selected.gps_lng}`}
+                    href={mapsHref(selected)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="group block rounded-xl bg-muted/40 p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)] transition-colors hover:bg-muted/70"
@@ -575,7 +669,27 @@ export default function MeetingsPage() {
                     <p className="text-foreground font-semibold group-hover:text-primary transition-colors">
                       {selected.location_type === 'client_office' ? 'Client Office' : selected.location_name}
                     </p>
-                    <p className="text-xs text-muted-foreground mt-0.5">{selected.gps_lat.toFixed(4)}, {selected.gps_lng?.toFixed(4)}</p>
+                    {/* Both fixes, side by side, because comparing them IS the
+                        validation — see meetingGpsDriftMeters. The gap is stated
+                        as a plain number with no verdict attached: no one has
+                        defined how far is too far, and a threshold invented here
+                        would read as policy. */}
+                    <p className="text-xs text-muted-foreground mt-1">
+                      <span className="text-muted-foreground/70">Start</span>{' '}
+                      {selected.gps_lat.toFixed(4)}, {selected.gps_lng?.toFixed(4)}
+                    </p>
+                    {selected.end_gps_lat != null && selected.end_gps_lng != null ? (
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        <span className="text-muted-foreground/70">End</span>{' '}
+                        {selected.end_gps_lat.toFixed(4)}, {selected.end_gps_lng.toFixed(4)}
+                        {(() => {
+                          const drift = formatDistanceMeters(meetingGpsDriftMeters(selected))
+                          return drift && <span className="text-foreground font-medium"> · {drift} apart</span>
+                        })()}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground/70 mt-0.5">End GPS not recorded</p>
+                    )}
                   </a>
                 ) : (
                   <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
@@ -614,11 +728,53 @@ export default function MeetingsPage() {
                 </div>
               </div>
 
+              {/* Companions. Shown only when there were any: a "nobody tagged
+                  along" panel on the overwhelming majority of meetings would be
+                  noise, and the ledger has no row to explain either way. */}
+              {(() => {
+                const companions = tagAlongsFor(tagAlongsByMeetingId, selected.id)
+                if (companions.length === 0) return null
+                const gate = managerGate(companions)
+                return (
+                  <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
+                    <div className="flex items-center justify-between gap-2 mb-2.5">
+                      <p className="text-xs text-muted-foreground font-medium">Tagged along</p>
+                      {gate !== 'none' && (
+                        <Badge variant="tone" className={TONE_CLASS[MANAGER_GATE_TONE[gate]]}>
+                          {MANAGER_GATE_LABEL[gate]}
+                        </Badge>
+                      )}
+                    </div>
+                    <CompanionList requests={companions} />
+                    {/* Says what the state costs, because neither consequence is
+                        inferable from the word. Both are quota facts the admin
+                        would otherwise only meet later in the cutoff report. */}
+                    {gate === 'pending' && (
+                      <p className="text-[11px] text-muted-foreground mt-2.5 leading-relaxed">
+                        Until the manager answers, this meeting reserves no slot against the
+                        client&apos;s cutoff limit and counts toward no one&apos;s target.
+                      </p>
+                    )}
+                    {gate === 'declined' && (
+                      <p className="text-[11px] text-muted-foreground mt-2.5 leading-relaxed">
+                        A declined tag-along excludes this meeting from the cutoff permanently.
+                        The record stays; it will never count.
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
+
               <div className="flex items-center justify-between gap-2.5 pt-3 border-t border-border">
                 <div className="flex gap-2.5">
+                  {/* Names which fixes are on file rather than a flat "GPS
+                      captured" — a meeting with only a start fix can't be
+                      validated the way ADR-019 assumes, and the chip is where
+                      that shows before the admin goes looking for the pair. */}
                   {selected.gps_lat && (
                     <div className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground bg-muted/40 rounded-full px-3 py-1.5">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" /> GPS captured
+                      <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" />
+                      {selected.end_gps_lat != null ? 'Start & end GPS' : 'Start GPS only'}
                     </div>
                   )}
                   {selected.photo_url && (

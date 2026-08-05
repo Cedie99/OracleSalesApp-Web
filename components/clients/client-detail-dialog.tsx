@@ -8,8 +8,12 @@ import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CircularProgress } from '@/components/ui/circular-progress'
 import { getClientProgress } from '@/lib/client-progress'
+import { meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
+import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
+import { CompanionLine, ManagerGateIcon } from '@/components/tag-along-indicator'
+import { formatDistanceMeters } from '@/lib/utils'
 import { clientAddress, hasOfficePin, officePinSourceLabel } from '@/lib/client-info'
-import type { Client, Meeting, MeetingOutcome } from '@/types'
+import type { Client, Meeting, MeetingOutcome, TagAlongRequest } from '@/types'
 import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, X as XIcon } from 'lucide-react'
 import { format } from 'date-fns'
 import {
@@ -31,8 +35,12 @@ const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
   ),
 })
 
-function MeetingRow({ meeting }: { meeting: Meeting }) {
+function MeetingRow({ meeting, companions }: { meeting: Meeting; companions: TagAlongRequest[] }) {
   const submittedBy = meeting.recorder?.full_name ?? meeting.agent?.full_name ?? 'Unknown'
+  // How far the agent was from where they opened the meeting when they closed
+  // it. Only the ~20% of meetings carrying both fixes have one; the rest say
+  // nothing rather than claim a match they can't support.
+  const drift = formatDistanceMeters(meetingGpsDriftMeters(meeting))
   return (
     <div className="flex items-center justify-between gap-2 text-xs bg-muted/40 rounded-md px-3 py-2">
       <div className="min-w-0">
@@ -44,10 +52,27 @@ function MeetingRow({ meeting }: { meeting: Meeting }) {
           <User className="w-3 h-3 shrink-0" />
           <span className="truncate">{submittedBy}</span>
         </div>
+        {drift && (
+          <div className="flex items-center gap-1.5 mt-1 pl-[18px] text-muted-foreground">
+            <Navigation className="w-3 h-3 shrink-0" />
+            <span className="truncate">
+              Start → end · <span className="text-foreground font-medium">{drift}</span>
+            </span>
+          </div>
+        )}
+        {/* Who else attended. On this list "who was there" is already the
+            question the row above answers, so companions belong beside it
+            rather than in a section of their own. */}
+        <div className="mt-1 pl-[18px]">
+          <CompanionLine requests={companions} />
+        </div>
       </div>
-      <Badge variant="tone" className={`shrink-0 ${TONE_CLASS[OUTCOME_TONE[meeting.outcome]]}`}>
-        {OUTCOME_LABEL[meeting.outcome]}
-      </Badge>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <ManagerGateIcon requests={companions} />
+        <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[meeting.outcome]]}>
+          {OUTCOME_LABEL[meeting.outcome]}
+        </Badge>
+      </div>
     </div>
   )
 }
@@ -73,6 +98,7 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
   const [showAllMeetings, setShowAllMeetings] = useState(false)
   const [showAllPhotos, setShowAllPhotos] = useState(false)
   const [outcomeFilter, setOutcomeFilter] = useState<MeetingOutcome | 'all'>('all')
+  const { byMeeting: tagAlongsByMeetingId } = useTagAlongs()
 
   function handleOpenChange(open: boolean) {
     if (!open) { setShowAllMeetings(false); setShowAllPhotos(false) }
@@ -278,7 +304,11 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                         </div>
                         <div className="space-y-2">
                           {clientMeetings.slice(0, MEETING_HISTORY_LIMIT).map(m => (
-                            <MeetingRow key={m.id} meeting={m} />
+                            <MeetingRow
+                              key={m.id}
+                              meeting={m}
+                              companions={tagAlongsFor(tagAlongsByMeetingId, m.id)}
+                            />
                           ))}
                           {clientMeetings.length === 0 && (
                             <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border p-3.5">
@@ -337,7 +367,13 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                   </Select>
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-2">
-                  {filteredMeetings.map(m => <MeetingRow key={m.id} meeting={m} />)}
+                  {filteredMeetings.map(m => (
+                    <MeetingRow
+                      key={m.id}
+                      meeting={m}
+                      companions={tagAlongsFor(tagAlongsByMeetingId, m.id)}
+                    />
+                  ))}
                   {filteredMeetings.length === 0 && (
                     <p className="text-xs text-muted-foreground text-center py-6">No meetings match this filter</p>
                   )}
