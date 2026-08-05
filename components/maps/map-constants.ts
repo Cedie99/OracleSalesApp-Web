@@ -171,6 +171,20 @@ export function isPlottableMeeting(m: Meeting): boolean {
 }
 
 /**
+ * Whether this meeting also carries the fix taken when the agent CLOSED it, so
+ * the map can show both ends of it.
+ *
+ * Separate from `isPlottableMeeting` rather than folded into it, because a
+ * missing end fix must never cost a meeting its pin: only 20 of 91 rows have one
+ * (checked 2026-08-05), since the capture pair postdates most of them and mobile
+ * writes it only on the flow that has an end step. The start fix alone is still
+ * a located meeting.
+ */
+export function hasEndFix(m: Meeting): boolean {
+  return m.end_gps_lat != null && m.end_gps_lng != null
+}
+
+/**
  * Parse a Google-Maps-style coordinate entry ("14.5547, 121.0244") from the
  * search box. Returns null for anything that isn't a bare "lat, lng" pair inside
  * the valid ranges, so ordinary name/address searches fall through untouched.

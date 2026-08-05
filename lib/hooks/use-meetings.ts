@@ -46,6 +46,40 @@ export function meetingDurationMinutes(meeting: Meeting): number | null {
   return ms > 0 ? Math.round(ms / 60000) : null
 }
 
+/**
+ * Straight-line metres between where the agent opened the meeting and where
+ * they closed it.
+ *
+ * This number is the reason the end fix is captured at all. ADR-019 dropped the
+ * photo from the start step precisely because an admin validates a meeting by
+ * comparing start against end GPS here on the web — a pair of fixes a few metres
+ * apart is someone who sat through a meeting, a pair kilometres apart is someone
+ * who opened it at one client and closed it at another.
+ *
+ * Null when either fix is missing, which is most historical rows: mobile only
+ * started sending end_gps_* partway through, and B-011 lost a batch of early
+ * ones to a missing column. Callers must render that as "not recorded" — a null
+ * shown as "0 m" would read as a confirmed match, the strongest possible claim,
+ * from the weakest possible evidence.
+ */
+export function meetingGpsDriftMeters(meeting: Meeting): number | null {
+  const { gps_lat, gps_lng, end_gps_lat, end_gps_lng } = meeting
+  if (gps_lat == null || gps_lng == null || end_gps_lat == null || end_gps_lng == null) {
+    return null
+  }
+
+  // Haversine. Great-circle rather than a flat-earth approximation is not really
+  // needed at these distances, but it costs nothing and has no failure mode.
+  const R = 6_371_000
+  const toRad = (deg: number) => (deg * Math.PI) / 180
+  const dLat = toRad(end_gps_lat - gps_lat)
+  const dLng = toRad(end_gps_lng - gps_lng)
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(gps_lat)) * Math.cos(toRad(end_gps_lat)) * Math.sin(dLng / 2) ** 2
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)))
+}
+
 interface UseMeetingsResult {
   meetings: Meeting[]
   loading: boolean
