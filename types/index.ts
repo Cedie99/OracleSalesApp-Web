@@ -105,6 +105,15 @@ export type RemittanceDestination = 'office' | 'bayad_center' | 'bank_deposit'
 
 export type CollectionVisitStatus = 'collected' | 'rescheduled' | 'pending'
 
+/**
+ * How far an "additional" store's urgent notice has reached the field — the
+ * admin's Delivered/Viewed/Pending board (migrations 068/069). Derived from the
+ * two ack timestamps by `additionalAckState`, never stored. 'pending' = sent but
+ * not yet on any phone; 'delivered' = reached a phone; 'viewed' = a collector
+ * opened it.
+ */
+export type AdditionalAckState = 'pending' | 'delivered' | 'viewed'
+
 export type RemittanceStatus = 'submitted' | 'reconciled' | 'variance'
 
 export interface CollectionVisit {
@@ -209,6 +218,37 @@ export interface CollectionVisit {
   rescheduled_to: string | null
   visited_at: string | null
   created_at: string
+
+  // --- The "additional" store flag + delivery/seen acks (migration 068) -----
+  //
+  // ⚠️ These three are NOT yet in the `VISIT_COLUMNS` select in use-collection.ts,
+  // for the reason customer_signature_url documents: PostgREST rejects the whole
+  // select on one unknown column, so naming them before 068 deploys takes the
+  // Collection page down. `normalizeVisit` defaults all three, so the type can
+  // carry them ahead of the read. Add them to the select as the first step after
+  // 068 merges.
+
+  /**
+   * True when the admin added this store to an already-live day list AND chose
+   * to notify the collectors ("Mark as additional" in the Add Store dialog).
+   * Drives the mobile "Additional" badge + float-to-top and the BusyBee SMS.
+   * Deliberately admin-set, never inferred from the date. Written server-side
+   * (see app/(admin)/collection/actions.ts) because the SMS key is server-only.
+   */
+  is_additional: boolean
+  /**
+   * When an additional row first synced down to a collector's phone — the admin
+   * board's "Delivered ✓". Written once by mobile (migration 069 opens the write
+   * path), before the store is claimed. Null on non-additional rows.
+   */
+  additional_received_at: string | null
+  /**
+   * When a collector opened the visit screen for an additional store — the admin
+   * board's "Viewed". Written once by mobile. Null until seen, or on
+   * non-additional rows.
+   */
+  additional_seen_at: string | null
+
   client?: Client
   collector?: Profile
 }

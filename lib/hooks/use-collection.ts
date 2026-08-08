@@ -36,6 +36,23 @@ const VISIT_COLUMNS = `
   collector:profiles!collector_id ( ${PROFILE_JOIN} )
 `
 
+// The three migration-068 columns, selected ON TOP of VISIT_COLUMNS. Kept apart
+// so the fetch below can FALL BACK to VISIT_COLUMNS alone during the window
+// between this code deploying and 068 being applied: PostgREST rejects the whole
+// select on one unknown column (the customer_signature_url lesson above), so
+// naming them unconditionally would take the page down until the migration
+// caught up. `normalizeVisit` defaults all three, so the fallback simply shows
+// no additional state; once 068 is live the primary select succeeds and the
+// Delivered/Viewed board lights up with no redeploy. This removes any
+// app/migration deploy-ordering coupling.
+const ADDITIONAL_COLUMNS = `is_additional, additional_received_at, additional_seen_at`
+
+/** True when a select failed only because 068's columns aren't there yet. */
+function isMissingAdditionalColumn(error: { message?: string } | null): boolean {
+  return !!error?.message
+    && /is_additional|additional_received_at|additional_seen_at/.test(error.message)
+}
+
 const REMITTANCE_COLUMNS = `
   id, collector_id, destination, amount_remitted, amount_collected, status,
   receiver_name, signed_proof_url, receiver_signature_url, visit_ids,
@@ -69,6 +86,11 @@ function normalizeVisit(row: Record<string, unknown>): CollectionVisit {
     // Not selected until 061 deploys (see VISIT_COLUMNS), so default it rather
     // than let the type claim a field the row doesn't carry.
     customer_signature_url: (row.customer_signature_url as string | null) ?? null,
+    // Likewise not selected until migration 068 deploys — default all three so
+    // the type stays honest until the read is added. See the note in types.
+    is_additional: (row.is_additional as boolean | undefined) ?? false,
+    additional_received_at: (row.additional_received_at as string | null) ?? null,
+    additional_seen_at: (row.additional_seen_at as string | null) ?? null,
     amount_due: num(row.amount_due) ?? 0,
     amount_collected: num(row.amount_collected),
     gps_lat: num(row.gps_lat),
@@ -131,16 +153,32 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   // State is only touched after the await — see the note in use-clients.ts.
   const load = useCallback(async () => {
     const supabase = createClient()
-    const { data, error: queryError } = await supabase
+    const primary = await supabase
       .from('collection_visits')
-      .select(VISIT_COLUMNS)
+      .select(`${VISIT_COLUMNS}, ${ADDITIONAL_COLUMNS}`)
       .order('scheduled_for', { ascending: false })
+
+    // The two selects infer different row shapes, so hold the rows at the shape
+    // normalizeVisit already accepts rather than let the union fight itself.
+    let rows = primary.data as Record<string, unknown>[] | null
+    let queryError = primary.error
+
+    // Pre-068 fallback: retry without the additional columns rather than fail
+    // the whole page. See ADDITIONAL_COLUMNS.
+    if (queryError && isMissingAdditionalColumn(queryError)) {
+      const fallback = await supabase
+        .from('collection_visits')
+        .select(VISIT_COLUMNS)
+        .order('scheduled_for', { ascending: false })
+      rows = fallback.data as Record<string, unknown>[] | null
+      queryError = fallback.error
+    }
 
     if (queryError) {
       setError(queryError.message)
     } else {
       setError('')
-      setVisits((data ?? []).map(row => normalizeVisit(row as Record<string, unknown>)))
+      setVisits((rows ?? []).map(row => normalizeVisit(row)))
     }
     setLoading(false)
   }, [])

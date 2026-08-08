@@ -18,6 +18,23 @@ export function canManageUsers(role: UserRole | null | undefined): boolean {
 }
 
 /**
+ * True when this admin may run the Collection module's write actions — putting
+ * stores on a list, releasing claims, and marking a store "additional". That is
+ * the unrestricted admin ('all'), a Collection Admin, or a superadmin. A
+ * Sales/Delivery admin can't reach the Collection page (see SCOPE_ROUTES), so
+ * this mainly guards the server side, where the route is callable directly.
+ */
+export function canManageCollection(
+  role: UserRole | null | undefined,
+  scope: AdminScope | null | undefined
+): boolean {
+  if (role === 'superadmin') return true
+  if (role !== 'admin') return false
+  const effective = adminScope(role, scope)
+  return effective === 'all' || effective === 'collection'
+}
+
+/**
  * Shortest password a superadmin may issue, on both create and reset. Lives
  * here rather than beside the actions because a 'use server' module can only
  * export async functions, and the form validates against the same number.

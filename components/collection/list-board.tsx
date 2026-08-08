@@ -9,6 +9,7 @@ import {
   ClaimLine, ReleaseClaimButton, StaleClaimBadge, claimRowClass,
 } from '@/components/claim-indicator'
 import { StatusDot } from '@/components/status-dot'
+import { AdditionalBadge } from '@/components/collection/additional-badge'
 import { boardWorkerIds } from '@/lib/board-numbering'
 import { dayProgress, hasMissingProof, type CollectionDay } from '@/lib/collection'
 import { peso } from '@/lib/money'
@@ -287,10 +288,13 @@ function StoreRow({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5">
+        <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
           <Badge variant="tone" className={`text-[10px] ${TONE_CLASS[VISIT_STATUS_TONE[store.status]]}`}>
             {VISIT_STATUS_LABEL[store.status]}
           </Badge>
+          {/* An urgent add stands out from the rest of the day's list, and shows
+              whether its notice has reached the field yet. */}
+          <AdditionalBadge visit={store} />
           {store.collector && (
             <span className="text-[11px] text-muted-foreground truncate">
               {store.collector.full_name}

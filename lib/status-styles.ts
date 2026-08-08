@@ -13,6 +13,7 @@
  * a colour here, change it there too — that pairing is the whole point.
  */
 import type {
+  AdditionalAckState,
   ApprovalStatus,
   ClientStatus,
   ClockType,
@@ -279,6 +280,26 @@ export const VISIT_STATUS_TONE: Record<CollectionVisitStatus, BadgeTone> = {
 export const VISIT_STATUS_LABEL: Record<CollectionVisitStatus, string> = {
   collected: 'Collected',
   rescheduled: 'Rescheduled',
+  pending: 'Pending',
+}
+
+/**
+ * The "additional store" notice, tracked as it reaches the field (migrations
+ * 068/069). Same done/now/deferred scale as VISIT_STATUS_TONE: viewed = brand
+ * (it landed and a collector opened it), delivered = navy (on a phone, not yet
+ * opened), pending = amber (still trying to reach a phone — the one an admin may
+ * have to chase by calling). The "Additional" tag itself renders purple, a tone
+ * no collection status uses, so an urgent add stands out from the day's list.
+ */
+export const ADDITIONAL_ACK_TONE: Record<AdditionalAckState, BadgeTone> = {
+  viewed: 'brand',
+  delivered: 'navy',
+  pending: 'amber',
+}
+
+export const ADDITIONAL_ACK_LABEL: Record<AdditionalAckState, string> = {
+  viewed: 'Viewed',
+  delivered: 'Delivered',
   pending: 'Pending',
 }
 

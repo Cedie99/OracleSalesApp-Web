@@ -8,7 +8,7 @@
  * gets there collects it, and their name lands on the record at that moment.
  * Everything below either builds a day's list or reports on one.
  */
-import type { CollectionVisit, PaymentMethod, Remittance } from '@/types'
+import type { AdditionalAckState, CollectionVisit, PaymentMethod, Remittance } from '@/types'
 import { numberStopsByWorker, type WorkerStopNumber } from '@/lib/board-numbering'
 import { peso } from '@/lib/money'
 import { paymentMethodLabel } from '@/lib/status-styles'
@@ -103,6 +103,23 @@ export function visitProofs(visit: CollectionVisit): ProofState[] {
 export function hasMissingProof(visit: CollectionVisit): boolean {
   return visit.status === 'collected'
     && visitProofs(visit).some(p => p.required && !p.url)
+}
+
+/**
+ * Where an additional store's urgent notice has got to (migrations 068/069).
+ * Null for a normal store, so a caller can treat null as "not additional, render
+ * nothing". `seen` is checked before `received` so a row that somehow carries
+ * only the stronger signal still reads as viewed.
+ *
+ * The values only ever leave 'pending' once mobile stamps the ack columns via
+ * the migration-069 RPCs; until then every additional store reads 'pending',
+ * which is exactly right — nothing has confirmed it reached a phone.
+ */
+export function additionalAckState(visit: CollectionVisit): AdditionalAckState | null {
+  if (!visit.is_additional) return null
+  if (visit.additional_seen_at) return 'viewed'
+  if (visit.additional_received_at) return 'delivered'
+  return 'pending'
 }
 
 /** A collector who worked at least one store on a given day's list. */

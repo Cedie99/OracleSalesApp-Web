@@ -7,14 +7,15 @@ import { PendingNote } from '@/components/pending-note'
 import {
   PhotoLightbox, ProofTile, captionFor, type LightboxPhoto,
 } from '@/components/photo-lightbox'
-import { visitProofs } from '@/lib/collection'
+import { additionalAckState, visitProofs } from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
 import {
+  ADDITIONAL_ACK_LABEL, ADDITIONAL_ACK_TONE,
   PAYMENT_METHOD_TONE, TONE_CLASS, TONE_TEXT, paymentMethodLabel,
   VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
 import type { CollectionVisit } from '@/types'
-import { AlertTriangle, Camera, Clock, MapPin, UserCog } from 'lucide-react'
+import { AlertTriangle, Camera, Clock, MapPin, UserCog, Zap } from 'lucide-react'
 import { format } from 'date-fns'
 
 interface VisitDetailDialogProps {
@@ -55,6 +56,7 @@ function VisitDetail({
   onOpenPhoto: (photo: LightboxPhoto) => void
 }) {
   const proofs = visitProofs(visit)
+  const ack = additionalAckState(visit)
   // Only captures this payment method actually asked for. Counter and
   // delivery-receipt payments take no separate receipt photo (mobile,
   // 2026-08-01), so counting every empty slot would send the admin chasing a
@@ -84,6 +86,42 @@ function VisitDetail({
             </Badge>
           )}
         </div>
+
+        {/* Additional-store notice: whether the urgent add reached the field.
+            Only shown for a store the admin marked additional (migrations
+            068/069). Delivered/Viewed only leave "Not yet" once mobile stamps
+            the ack columns via its RPCs. */}
+        {ack && (
+          <div className="rounded-xl border border-[var(--badge-purple-fg)]/30 bg-[var(--badge-purple-bg)]/40 p-3 space-y-1.5 text-xs">
+            <p className="font-medium text-foreground flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5" /> Additional store
+              <Badge variant="tone" className={`ml-auto ${TONE_CLASS[ADDITIONAL_ACK_TONE[ack]]}`}>
+                {ADDITIONAL_ACK_LABEL[ack]}
+              </Badge>
+            </p>
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              Added to an already-published list and pushed to the collectors. The
+              two timestamps say whether the notice reached a phone and was opened —
+              if it stays Pending, no phone has it yet and a call may be faster.
+            </p>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Delivered to a phone</span>
+              <span className="font-medium">
+                {visit.additional_received_at
+                  ? format(new Date(visit.additional_received_at), 'MMM d, h:mm a')
+                  : 'Not yet'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Opened by a collector</span>
+              <span className="font-medium">
+                {visit.additional_seen_at
+                  ? format(new Date(visit.additional_seen_at), 'MMM d, h:mm a')
+                  : 'Not yet'}
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Published by the office */}
         <div className="rounded-xl bg-muted/50 p-3 space-y-1.5 text-xs">
