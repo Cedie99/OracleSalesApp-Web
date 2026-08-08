@@ -1,5 +1,5 @@
 -- ============================================================================
--- 068 - Reconcile cutoff attribution after delayed meeting-photo uploads.
+-- 071 - Reconcile cutoff attribution after delayed meeting-photo uploads.
 --
 -- Mobile writes the meeting first and uploads photo evidence asynchronously.
 -- Migration 059 therefore classified a qualifying meeting with a temporarily
