@@ -39,17 +39,21 @@ export const SLOT_CONSUMING: CutoffAttribution[] = ['counted']
 export const TARGET_CONTRIBUTING: CutoffAttribution[] = ['counted', 'excluded_uncapped']
 
 /**
- * Today as 'YYYY-MM-DD' in the VIEWER's timezone, comparable against the
+ * Today as 'YYYY-MM-DD' in the business timezone, comparable against the
  * starts_on/ends_on DATE columns as plain strings.
  *
- * Local rather than UTC because a cutoff boundary is a local-midnight event: at
- * 08:00 Manila on the 16th, UTC still says the 15th, which would show yesterday's
- * period as the live one for the first eight hours of every cutoff.
+ * Cutoff boundaries are Manila-local, not browser- or server-local. This keeps
+ * the Admin view aligned with the database attribution and mobile quota card.
  */
-function localIso(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-    d.getDate()
-  ).padStart(2, '0')}`
+function manilaIso(d: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d)
+  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)?.value
+  return `${value('year')}-${value('month')}-${value('day')}`
 }
 
 /**
@@ -64,7 +68,7 @@ export function activePeriod(
   periods: CutoffPeriod[],
   today: Date = new Date()
 ): CutoffPeriod | null {
-  const day = localIso(today)
+  const day = manilaIso(today)
   return (
     periods
       .filter(p => p.status === 'active' && p.starts_on <= day && day <= p.ends_on)
@@ -88,7 +92,7 @@ export function reviewablePeriods(
   periods: CutoffPeriod[],
   today: Date = new Date()
 ): CutoffPeriod[] {
-  const day = localIso(today)
+  const day = manilaIso(today)
   return periods
     .filter(p => p.status !== 'draft' && p.starts_on <= day)
     .sort((a, b) => b.starts_on.localeCompare(a.starts_on))
@@ -106,7 +110,7 @@ export type PeriodPhase = 'ended' | 'current' | 'upcoming'
  * would show a year of "active" rows with no clue which one is running.
  */
 export function periodPhase(period: CutoffPeriod, today: Date = new Date()): PeriodPhase {
-  const day = localIso(today)
+  const day = manilaIso(today)
   if (day < period.starts_on) return 'upcoming'
   if (day > period.ends_on) return 'ended'
   return 'current'
