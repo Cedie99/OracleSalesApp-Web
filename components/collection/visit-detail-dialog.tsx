@@ -5,9 +5,9 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { PendingNote } from '@/components/pending-note'
 import {
-  PhotoLightbox, ProofTile, captionFor, type LightboxPhoto,
+  PhotoLightbox, ProofTile, RemittanceProofThumb, captionFor, type LightboxPhoto,
 } from '@/components/photo-lightbox'
-import { additionalAckState, visitProofs } from '@/lib/collection'
+import { additionalAckState, remainingBalance, visitProofs } from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
 import {
   ADDITIONAL_ACK_LABEL, ADDITIONAL_ACK_TONE,
@@ -15,7 +15,7 @@ import {
   VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
 import type { CollectionVisit } from '@/types'
-import { AlertTriangle, Camera, Clock, MapPin, UserCog, Zap } from 'lucide-react'
+import { AlertTriangle, Banknote, Camera, Clock, MapPin, UserCog, Zap } from 'lucide-react'
 import { format } from 'date-fns'
 
 interface VisitDetailDialogProps {
@@ -154,11 +154,20 @@ function VisitDetail({
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-muted-foreground">Amount received</span>
+            <span className="text-muted-foreground">
+              {visit.status === 'partial' ? 'Collected so far' : 'Amount received'}
+            </span>
             <span className="tabular-nums font-medium">
               {visit.amount_collected === null ? '—' : peso(visit.amount_collected)}
             </span>
           </div>
+          {/* The reason a partial store stays on the list: it still owes this. */}
+          {visit.status === 'partial' && (
+            <div className="flex justify-between font-semibold">
+              <span className={TONE_TEXT.amber}>Balance still owed</span>
+              <span className={`tabular-nums ${TONE_TEXT.amber}`}>{peso(remainingBalance(visit))}</span>
+            </div>
+          )}
           {shortfall !== 0 && (
             <>
               <div className={`flex justify-between font-semibold ${TONE_TEXT.red}`}>
@@ -172,6 +181,59 @@ function VisitDetail({
             </>
           )}
         </div>
+
+        {/* Installment history — one row per handover, each with its own proof
+            (migration 070). Only present on a store paid in parts; a single-visit
+            store carries no payment rows and this is skipped. This is where the
+            admin verifies each partial's capture, since the top-level proof grid
+            only shows the latest one. */}
+        {visit.payments && visit.payments.length > 0 && (
+          <div className="rounded-xl bg-muted/50 p-3 space-y-2 text-xs">
+            <p className="font-medium text-foreground flex items-center gap-1.5">
+              <Banknote className="w-3.5 h-3.5" /> Payments ({visit.payments.length})
+            </p>
+            <div className="space-y-2.5">
+              {visit.payments.map(p => (
+                <div
+                  key={p.id}
+                  className="border-t border-border/60 pt-2 first:border-t-0 first:pt-0 space-y-1.5"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="tabular-nums font-medium text-foreground">{peso(p.amount)}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {format(new Date(p.paid_at), 'MMM d, h:mm a')}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {paymentMethodLabel(p.payment_method)} · {p.collector?.full_name ?? '—'}
+                  </p>
+                  {(p.payment_photo_url || p.delivery_receipt_photo_url) && (
+                    <div className="flex gap-2">
+                      {p.payment_photo_url && (
+                        <RemittanceProofThumb
+                          url={p.payment_photo_url}
+                          label="Payment"
+                          caption={captionFor(p.collector?.full_name, p.paid_at)}
+                          icon={<Camera className="w-3 h-3" />}
+                          onOpen={onOpenPhoto}
+                        />
+                      )}
+                      {p.delivery_receipt_photo_url && (
+                        <RemittanceProofThumb
+                          url={p.delivery_receipt_photo_url}
+                          label="Receipt"
+                          caption={captionFor(p.collector?.full_name, p.paid_at)}
+                          icon={<Camera className="w-3 h-3" />}
+                          onOpen={onOpenPhoto}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Which captures are required depends on the payment method — see
             visitProofs. A capture that arrived but is no longer required (an

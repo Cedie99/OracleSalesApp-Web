@@ -11,7 +11,7 @@ import {
 import { StatusDot } from '@/components/status-dot'
 import { AdditionalBadge } from '@/components/collection/additional-badge'
 import { boardWorkerIds } from '@/lib/board-numbering'
-import { dayProgress, hasMissingProof, type CollectionDay } from '@/lib/collection'
+import { dayProgress, hasMissingProof, remainingBalance, type CollectionDay } from '@/lib/collection'
 import { peso } from '@/lib/money'
 import { workerColors } from '@/lib/trips'
 import { TONE_CLASS, TONE_TEXT, VISIT_STATUS_LABEL, VISIT_STATUS_TONE } from '@/lib/status-styles'
@@ -308,13 +308,20 @@ function StoreRow({
       </button>
 
       {/* Money right-aligned in its own column so the figures stack into
-          something scannable, which is the point of the full-width card. */}
+          something scannable, which is the point of the full-width card. A
+          partial shows what's in and, below it, the balance still owed. */}
       <span className="shrink-0 text-right tabular-nums">
         <span className="block text-sm font-medium text-foreground">
-          {store.status === 'collected' ? peso(store.amount_collected ?? 0) : peso(store.amount_due)}
+          {store.status === 'collected' || store.status === 'partial'
+            ? peso(store.amount_collected ?? 0)
+            : peso(store.amount_due)}
         </span>
-        <span className="block text-[11px] text-muted-foreground">
-          {store.status === 'collected' ? `of ${peso(store.amount_due)}` : 'due'}
+        <span className={`block text-[11px] ${store.status === 'partial' ? TONE_TEXT.amber : 'text-muted-foreground'}`}>
+          {store.status === 'collected'
+            ? `of ${peso(store.amount_due)}`
+            : store.status === 'partial'
+              ? `${peso(remainingBalance(store))} left`
+              : 'due'}
         </span>
       </span>
 

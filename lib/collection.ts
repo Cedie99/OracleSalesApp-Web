@@ -106,6 +106,16 @@ export function hasMissingProof(visit: CollectionVisit): boolean {
 }
 
 /**
+ * What a store still owes right now — its due minus everything collected so far
+ * (migration 070). Positive on a `partial` store (the balance the collector goes
+ * back for); zero once collected, or negative on the allowed overpayment. Read
+ * this on a partial visit to show "balance left".
+ */
+export function remainingBalance(visit: CollectionVisit): number {
+  return visit.amount_due - (visit.amount_collected ?? 0)
+}
+
+/**
  * Where an additional store's urgent notice has got to (migrations 068/069).
  * Null for a normal store, so a caller can treat null as "not additional, render
  * nothing". `seen` is checked before `received` so a row that somehow carries
@@ -188,7 +198,11 @@ export function buildDays(visits: CollectionVisit[]): CollectionDay[] {
   const days: CollectionDay[] = []
 
   for (const [id, stores] of byDay) {
-    const worked = stores.filter(s => s.status !== 'pending')
+    // A `partial` store is NOT closed out — it still owes a balance and stays on
+    // the list until paid off (migration 070) — so it counts as still-open here,
+    // alongside pending. Only collected/rescheduled are "worked".
+    const isOpen = (s: CollectionVisit) => s.status === 'pending' || s.status === 'partial'
+    const worked = stores.filter(s => !isOpen(s))
     days.push({
       id,
       day: new Date(id + 'T00:00:00'),
@@ -199,9 +213,13 @@ export function buildDays(visits: CollectionVisit[]): CollectionDay[] {
       pendingCount: stores.length - worked.length,
       totalDue: stores.reduce((sum, s) => sum + s.amount_due, 0),
       totalCollected: stores.reduce((sum, s) => sum + (s.amount_collected ?? 0), 0),
-      outstanding: stores
-        .filter(s => s.status === 'pending')
-        .reduce((sum, s) => sum + s.amount_due, 0),
+      // What the day still has to bring in: a pending store owes its whole due, a
+      // partial owes only the balance left on it.
+      outstanding: stores.reduce((sum, s) => {
+        if (s.status === 'pending') return sum + s.amount_due
+        if (s.status === 'partial') return sum + remainingBalance(s)
+        return sum
+      }, 0),
       contributors: buildContributors(stores),
       // Per day, never across days — a collector's count restarts each morning.
       numbers: numberStopsByWorker(stores, {
@@ -246,7 +264,10 @@ function buildContributors(stores: CollectionVisit[]): DayContributor[] {
 const STORE_ORDER: Record<CollectionVisit['status'], number> = {
   collected: 0,
   rescheduled: 1,
-  pending: 2,
+  // Still-open stores last, partial just above pending — it is closer to done
+  // (money is already in) and reads well sitting between worked and untouched.
+  partial: 2,
+  pending: 3,
 }
 
 /** Share of the day's stores that have been closed out, 0–100. */
@@ -312,6 +333,7 @@ const VISIT_STATUS_LABEL: Record<CollectionVisit['status'], string> = {
   collected: 'Collected',
   rescheduled: 'Rescheduled',
   pending: 'Pending',
+  partial: 'Partial',
 }
 
 function collectionStop(visit: CollectionVisit, sequence: number): TripStop {

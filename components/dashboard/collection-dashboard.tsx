@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { format, subDays, startOfDay } from 'date-fns'
 import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
-import { hasMissingProof, remittanceVariance } from '@/lib/collection'
+import { hasMissingProof, remainingBalance, remittanceVariance } from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
 import type { PaymentMethod } from '@/types'
 import {
@@ -62,12 +62,15 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
     const collected = visits.filter(v => v.status === 'collected')
     const rescheduled = visits.filter(v => v.status === 'rescheduled')
     const pending = visits.filter(v => v.status === 'pending')
+    const partial = visits.filter(v => v.status === 'partial')
 
     // Money handed over is tracked on the remittance, not on the visit — so a
-    // visit counts as "still held" until some remittance names it.
+    // visit counts as "still held" until some remittance names it. A partial
+    // store's running total is real money in hand too, so it counts here
+    // (migration 070).
     const remittedVisitIds = new Set(remittances.flatMap(r => r.visit_ids))
-    const stillHeld = collected
-      .filter(v => !remittedVisitIds.has(v.id))
+    const stillHeld = visits
+      .filter(v => (v.amount_collected ?? 0) > 0 && !remittedVisitIds.has(v.id))
       .reduce((sum, v) => sum + (v.amount_collected ?? 0), 0)
 
     return {
@@ -75,9 +78,13 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
       collectedCount: collected.length,
       rescheduledCount: rescheduled.length,
       pendingCount: pending.length,
+      partialCount: partial.length,
       totalDue: visits.reduce((sum, v) => sum + v.amount_due, 0),
-      totalCollected: collected.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0),
-      outstanding: pending.reduce((sum, v) => sum + v.amount_due, 0),
+      // Every collected AND partial store's real total — not just fully-paid ones.
+      totalCollected: visits.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0),
+      // A pending store owes its whole due; a partial owes only the balance left.
+      outstanding: pending.reduce((sum, v) => sum + v.amount_due, 0)
+        + partial.reduce((sum, v) => sum + remainingBalance(v), 0),
       stillHeld,
       missingProof: visits.filter(hasMissingProof).length,
     }
@@ -276,7 +283,7 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
 
               <div className="pt-3 border-t border-border space-y-2">
                 <p className="text-xs font-medium text-foreground">Store Status</p>
-                {(['collected', 'rescheduled', 'pending'] as const).map(status => {
+                {(['collected', 'partial', 'rescheduled', 'pending'] as const).map(status => {
                   const count = visits.filter(v => v.status === status).length
                   return (
                     <div key={status} className="flex items-center justify-between">
