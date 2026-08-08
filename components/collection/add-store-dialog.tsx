@@ -17,6 +17,14 @@ export interface AddStoreDraft {
   /** yyyy-MM-dd, straight off the date input. */
   scheduledFor: string
   amountDue: number
+  /**
+   * The admin deliberately marked this an "additional" store — one added to an
+   * already-live day list, urgent enough to badge on the collectors' phones and
+   * text them about. Never inferred from the date (see migration 068). Routes
+   * the publish through the server so the SMS can fire; a normal store stays on
+   * the client-side insert.
+   */
+  isAdditional: boolean
 }
 
 interface AddStoreDialogProps {
@@ -65,6 +73,7 @@ export function AddStoreDialog({
   const [clientId, setClientId] = useState<string | null>(null)
   const [scheduledFor, setScheduledFor] = useState(defaults?.scheduledFor ?? today)
   const [amountDue, setAmountDue] = useState('')
+  const [isAdditional, setIsAdditional] = useState(false)
   const [error, setError] = useState('')
 
   /** Stores already on that day's list — a store owes once per collection day. */
@@ -96,7 +105,7 @@ export function AddStoreDialog({
       return setError('That store is already on the list for this day.')
     }
 
-    onAdd({ clientId, scheduledFor, amountDue: Math.round(amount) })
+    onAdd({ clientId, scheduledFor, amountDue: Math.round(amount), isAdditional })
     onOpenChange(false)
   }
 
@@ -166,6 +175,34 @@ export function AddStoreDialog({
             </div>
           </div>
 
+          {/* The one deliberate escalation. Left unchecked, this is a normal
+              store published quietly to the day's list. Checked, it becomes an
+              "additional" store: badged and floated to the top on the
+              collectors' phones, and a text goes out. Kept a manual choice
+              precisely because it fires an SMS — never inferred from the date. */}
+          <label
+            htmlFor="add-additional"
+            className="flex items-start gap-2.5 rounded-lg border border-border p-3 cursor-pointer hover:bg-muted/30 transition-colors"
+          >
+            <input
+              id="add-additional"
+              type="checkbox"
+              checked={isAdditional}
+              onChange={e => setIsAdditional(e.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-primary cursor-pointer"
+            />
+            <span className="space-y-0.5">
+              <span className="block text-sm font-medium text-foreground">
+                Mark as additional — notify collectors
+              </span>
+              <span className="block text-[11px] leading-relaxed text-muted-foreground">
+                For a store the collectors need to know about now, after the day&apos;s
+                list is already out. Every active collector gets a text and the
+                store jumps to the top of their app. Leave off for a routine add.
+              </span>
+            </span>
+          </label>
+
           <p className="text-[11px] leading-relaxed text-muted-foreground">
             Whichever collector reaches this store takes it off the list — no one
             is assigned. They never see the amount due either; their app asks them
@@ -177,7 +214,7 @@ export function AddStoreDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleAdd}>Add to list</Button>
+          <Button onClick={handleAdd}>{isAdditional ? 'Add & notify' : 'Add to list'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

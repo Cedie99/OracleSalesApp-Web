@@ -19,6 +19,9 @@ import { useClients } from '@/lib/hooks/use-clients'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AddStoreDialog, type AddStoreDraft } from '@/components/collection/add-store-dialog'
+import { AdditionalBadge } from '@/components/collection/additional-badge'
+import { listAdditionalStore } from './actions'
+import { toast } from 'sonner'
 import { ListBoard } from '@/components/collection/list-board'
 import { VisitDetailDialog } from '@/components/collection/visit-detail-dialog'
 import { TripRuns } from '@/components/trip-runs'
@@ -88,6 +91,7 @@ export default function CollectionPage() {
 
   const {
     visits, loading: visitsLoading, error: visitsError, createVisit, removeVisit, cancelClaim,
+    refresh: refreshVisits,
   } = useCollectionVisits()
   const {
     remittances: allRemittances, error: remittancesError, setStatus: setRemittanceStatus,
@@ -341,6 +345,43 @@ export default function CollectionPage() {
         return
       }
 
+      // An "additional" store fires an SMS, so it can't go through the
+      // client-side insert (the BusyBee key is server-only). It routes through a
+      // server action that lists the row AND texts every active collector; the
+      // hook doesn't see that write, so reload after it lands.
+      if (draft.isAdditional) {
+        const result = await listAdditionalStore({
+          clientId: draft.clientId,
+          clientName: client.company_name,
+          area: client.city ?? null,
+          scheduledFor: draft.scheduledFor,
+          amountDue: draft.amountDue,
+          listedBy: profile?.id ?? null,
+        })
+        if (result.error) {
+          setActionError(result.error)
+          return
+        }
+        setActionError('')
+        await refreshVisits()
+
+        const { configured, recipients, sent, failed } = result.sms
+        if (!configured) {
+          toast.success('Store added as additional', {
+            description: 'SMS isn’t configured yet — the store is listed and badged, but no texts were sent.',
+          })
+        } else if (recipients === 0) {
+          toast.success('Store added as additional', {
+            description: 'No active collector had a textable number.',
+          })
+        } else {
+          toast.success(`Additional store added — ${sent}/${recipients} collectors notified`, {
+            description: failed > 0 ? `${failed} text${failed === 1 ? '' : 's'} could not be sent.` : undefined,
+          })
+        }
+        return
+      }
+
       // Everything the collector fills in is left to the database defaults —
       // the store belongs to nobody until someone actually works it.
       const message = await createVisit({
@@ -353,7 +394,7 @@ export default function CollectionPage() {
       })
       setActionError(message ?? '')
     },
-    [createVisit, clients, profile?.id]
+    [createVisit, clients, profile?.id, refreshVisits]
   )
 
   /** Only ever called for stores no collector has touched — see ListBoard. */
@@ -613,9 +654,12 @@ export default function CollectionPage() {
                           className="hover:bg-muted/20 cursor-pointer transition-colors"
                         >
                           <td className="px-4 py-3">
-                            <p className="font-medium text-foreground truncate max-w-[180px]">
-                              {v.client?.company_name}
-                            </p>
+                            <div className="flex items-center gap-1.5">
+                              <p className="font-medium text-foreground truncate max-w-[180px]">
+                                {v.client?.company_name}
+                              </p>
+                              <AdditionalBadge visit={v} showAck={false} />
+                            </div>
                             <p className="text-xs text-muted-foreground truncate max-w-[180px]">
                               {v.client?.office_address}
                             </p>

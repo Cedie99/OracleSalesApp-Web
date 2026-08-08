@@ -427,10 +427,15 @@ function claimFor(id: string) {
 // requires the signature but does not upload it yet (migration 061 created the
 // column; mobile's queuePhoto call is unwritten). Seeding one would show a
 // capture that cannot exist in the live database.
+// The three "additional" fields (migration 068) are omitted and defaulted at map
+// time too: the mock has no additional stores, and their ack timestamps only
+// exist once mobile stamps them (migration 069). Seeding them would show a
+// delivery/seen state the live database can't produce yet.
 const collectionVisitSeed: Omit<
   CollectionVisit,
   'client' | 'collector' | 'client_name' | 'area'
   | 'claimed_by' | 'claimed_at' | 'claimed_by_name' | 'customer_signature_url'
+  | 'is_additional' | 'additional_received_at' | 'additional_seen_at'
 >[] = [
   {
     id: 'cv-1', collector_id: 'col-1', client_id: 'client-1', status: 'collected',
@@ -566,6 +571,9 @@ export const mockCollectionVisits: CollectionVisit[] = collectionVisitSeed.map(v
     client_name: client?.company_name ?? null,
     area: client?.city ?? null,
     customer_signature_url: null,
+    is_additional: false,
+    additional_received_at: null,
+    additional_seen_at: null,
     ...claimFor(v.id),
     client,
     collector: staffById(v.collector_id),
