@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Client, CollectionVisit, Profile, Remittance, RemittanceStatus } from '@/types'
+import type {
+  Client, CollectionPayment, CollectionVisit, Profile, Remittance, RemittanceStatus,
+} from '@/types'
 
 /**
  * Live Collection data (migration 043).
@@ -53,6 +55,52 @@ function isMissingAdditionalColumn(error: { message?: string } | null): boolean 
     && /is_additional|additional_received_at|additional_seen_at/.test(error.message)
 }
 
+// The installments behind a partial store (migration 070). Fetched in one pass
+// and grouped onto their visits rather than joined into VISIT_COLUMNS, so the
+// query can be skipped entirely — and tolerate the table not existing yet —
+// during the window before 070 deploys. See loadPayments.
+const PAYMENT_COLUMNS = `
+  id, visit_id, collector_id, amount, payment_method, payment_photo_url,
+  delivery_receipt_photo_url, gps_lat, gps_lng, remarks, paid_at, created_at,
+  collector:profiles!collector_id ( ${PROFILE_JOIN} )
+`
+
+function normalizePayment(row: Record<string, unknown>): CollectionPayment {
+  return {
+    ...(row as unknown as CollectionPayment),
+    amount: num(row.amount) ?? 0,
+    gps_lat: num(row.gps_lat),
+    gps_lng: num(row.gps_lng),
+    collector: one<Profile>(row.collector),
+  }
+}
+
+/**
+ * Every installment, grouped by the visit it belongs to (newest first). One
+ * query, not one per visit. Tolerates the pre-070 window: if `collection_payments`
+ * doesn't exist yet the select errors and we return an empty map, so the page
+ * shows no installment history rather than falling over — the same
+ * deploy-order-proofing the additional columns use above.
+ */
+async function loadPayments(
+  supabase: ReturnType<typeof createClient>,
+): Promise<Map<string, CollectionPayment[]>> {
+  const byVisit = new Map<string, CollectionPayment[]>()
+  const { data, error } = await supabase
+    .from('collection_payments')
+    .select(PAYMENT_COLUMNS)
+    .order('paid_at', { ascending: false })
+
+  if (error || !data) return byVisit
+  for (const raw of data) {
+    const payment = normalizePayment(raw as Record<string, unknown>)
+    const list = byVisit.get(payment.visit_id)
+    if (list) list.push(payment)
+    else byVisit.set(payment.visit_id, [payment])
+  }
+  return byVisit
+}
+
 const REMITTANCE_COLUMNS = `
   id, collector_id, destination, amount_remitted, amount_collected, status,
   receiver_name, signed_proof_url, receiver_signature_url, visit_ids,
@@ -80,9 +128,16 @@ function one<T>(value: unknown): T | undefined {
   return (v as T | null) ?? undefined
 }
 
-function normalizeVisit(row: Record<string, unknown>): CollectionVisit {
+function normalizeVisit(
+  row: Record<string, unknown>,
+  paymentsByVisit?: Map<string, CollectionPayment[]>,
+): CollectionVisit {
   return {
     ...(row as unknown as CollectionVisit),
+    // Installments behind a partial store (migration 070). Empty until 070 is
+    // live — loadPayments yields an empty map on the missing table — which reads
+    // the same as a store paid in one visit: no history to show.
+    payments: paymentsByVisit?.get(row.id as string) ?? [],
     // Not selected until 061 deploys (see VISIT_COLUMNS), so default it rather
     // than let the type claim a field the row doesn't carry.
     customer_signature_url: (row.customer_signature_url as string | null) ?? null,
@@ -178,7 +233,8 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
       setError(queryError.message)
     } else {
       setError('')
-      setVisits((rows ?? []).map(row => normalizeVisit(row)))
+      const paymentsByVisit = await loadPayments(supabase)
+      setVisits((rows ?? []).map(row => normalizeVisit(row, paymentsByVisit)))
     }
     setLoading(false)
   }, [])

@@ -275,12 +275,19 @@ export const VISIT_STATUS_TONE: Record<CollectionVisitStatus, BadgeTone> = {
   collected: 'brand',
   rescheduled: 'navy',
   pending: 'amber',
+  // Purple, not amber, so a store mid-payment reads as its own state rather than
+  // blurring into the untouched pending pool — a partial has money in and a
+  // balance still out, which is neither "not started" nor "done". Purple already
+  // means "in progress" elsewhere in this app (a client's in_progress stage), so
+  // the vocabulary carries over. Migration 070.
+  partial: 'purple',
 }
 
 export const VISIT_STATUS_LABEL: Record<CollectionVisitStatus, string> = {
   collected: 'Collected',
   rescheduled: 'Rescheduled',
   pending: 'Pending',
+  partial: 'Partial',
 }
 
 /**

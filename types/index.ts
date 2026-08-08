@@ -103,7 +103,7 @@ export type PaymentMethod = 'cash' | 'check' | 'gcash' | 'counter' | 'delivery_r
 /** Where a collector hands off the money they're holding. */
 export type RemittanceDestination = 'office' | 'bayad_center' | 'bank_deposit'
 
-export type CollectionVisitStatus = 'collected' | 'rescheduled' | 'pending'
+export type CollectionVisitStatus = 'collected' | 'rescheduled' | 'pending' | 'partial'
 
 /**
  * How far an "additional" store's urgent notice has reached the field — the
@@ -179,9 +179,14 @@ export interface CollectionVisit {
    */
   claimed_by_name: string | null
   /**
-   * Exact amount typed by the collector to match the payment photo. Null when the
-   * visit was rescheduled or is still pending. This is the figure reconciled
-   * against remittance totals.
+   * How much has been collected against this store so far. Null when the visit
+   * was rescheduled or is still pending. This is the figure reconciled against
+   * remittance totals.
+   *
+   * For a `partial` store (migration 070) this is the RUNNING TOTAL of its
+   * `collection_payments` rows — the store owes `amount_due − amount_collected`
+   * still — and the trigger keeps it in step as each installment lands. On a
+   * store paid in one visit it is simply that one amount, as before.
    */
   amount_collected: number | null
   payment_method: PaymentMethod | null
@@ -250,6 +255,39 @@ export interface CollectionVisit {
   additional_seen_at: string | null
 
   client?: Client
+  collector?: Profile
+  /**
+   * The individual handovers behind `amount_collected`, newest first (migration
+   * 070). Present only on a store paid in installments; a store paid in one visit
+   * carries an empty array. Joined in by the collection hook, tolerating the
+   * pre-070 window where the table doesn't exist yet. Each row keeps its own
+   * proof, which is the whole reason partials need a child table.
+   */
+  payments?: CollectionPayment[]
+}
+
+/**
+ * One cash handover toward a collection visit (migration 070). A store that pays
+ * its balance down over several visits has one of these per payment; their sum is
+ * the visit's `amount_collected`, and the store stays `partial` until that sum
+ * reaches `amount_due`. Each carries its own proof so no installment overwrites
+ * another's photo — see PARTIAL_COLLECTION_CONTRACT.md.
+ */
+export interface CollectionPayment {
+  id: string
+  visit_id: string
+  /** Who handed the money in — always set, unlike the visit's collector_id. */
+  collector_id: string
+  amount: number
+  payment_method: PaymentMethod
+  payment_photo_url: string | null
+  delivery_receipt_photo_url: string | null
+  gps_lat: number | null
+  gps_lng: number | null
+  remarks: string | null
+  paid_at: string
+  created_at: string
+  /** The collector who made this payment, joined in for display. */
   collector?: Profile
 }
 

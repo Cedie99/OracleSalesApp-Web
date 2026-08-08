@@ -31,7 +31,8 @@ import {
 } from '@/components/needs-attention'
 import { isNotWorked, isStaleClaim, staleClaimCount } from '@/lib/claims'
 import {
-  buildDays, collectionTrips, hasMissingProof, remittanceVariance, type CollectionDay,
+  buildDays, collectionTrips, hasMissingProof, remainingBalance, remittanceVariance,
+  type CollectionDay,
 } from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
 import {
@@ -288,8 +289,10 @@ export default function CollectionPage() {
   const remittancesPage = usePagination(remittances, 9, collectorFilter)
 
   const stats = useMemo(() => {
-    const collectedVisits = filteredVisits.filter(v => v.status === 'collected')
-    const collected = collectedVisits.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0)
+    // All money actually in hand — a partial store's running total counts too, not
+    // just fully-collected ones (migration 070). Every non-open visit and every
+    // partial carries a real amount_collected; pending/rescheduled are null.
+    const collected = filteredVisits.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0)
 
     // Built from PAYMENT_METHODS rather than a hand-written literal: a literal
     // silently went stale when 'delivery_receipt' landed, and the miss showed up
@@ -298,8 +301,16 @@ export default function CollectionPage() {
     const byMethod = Object.fromEntries(
       PAYMENT_METHODS.map(m => [m, 0])
     ) as Record<PaymentMethod, number>
-    collectedVisits.forEach(v => {
-      if (v.payment_method && byMethod[v.payment_method] !== undefined) {
+    filteredVisits.forEach(v => {
+      // Prefer the per-installment rows: a partial (or a store paid off through
+      // installments) can span methods, so bucket each payment by its own method.
+      // Fall back to the visit level for a store paid in one visit, which has no
+      // payment rows.
+      if (v.payments && v.payments.length > 0) {
+        v.payments.forEach(p => {
+          if (byMethod[p.payment_method] !== undefined) byMethod[p.payment_method] += p.amount
+        })
+      } else if (v.status === 'collected' && v.payment_method && byMethod[v.payment_method] !== undefined) {
         byMethod[v.payment_method] += v.amount_collected ?? 0
       }
     })
@@ -313,11 +324,15 @@ export default function CollectionPage() {
       totalVariance: remittances.reduce((sum, r) => sum + remittanceVariance(r), 0),
       // Money the collector is still holding: collected but not yet handed over.
       unremitted: collected - remitted,
-      // Listed but not yet picked up — the outstanding exposure on the lists.
-      outstanding: filteredVisits
-        .filter(v => v.status === 'pending')
-        .reduce((sum, v) => sum + v.amount_due, 0),
+      // What the lists still have to bring in: a pending store's whole due plus a
+      // partial store's remaining balance.
+      outstanding: filteredVisits.reduce((sum, v) => {
+        if (v.status === 'pending') return sum + v.amount_due
+        if (v.status === 'partial') return sum + remainingBalance(v)
+        return sum
+      }, 0),
       pending: filteredVisits.filter(v => v.status === 'pending').length,
+      partial: filteredVisits.filter(v => v.status === 'partial').length,
       missingProof: filteredVisits.filter(hasMissingProof).length,
     }
   }, [filteredVisits, remittances])
@@ -491,6 +506,7 @@ export default function CollectionPage() {
               <p className="text-2xl font-semibold tabular-nums">{peso(stats.outstanding)}</p>
               <p className="text-[11px] text-muted-foreground mt-0.5">
                 {stats.pending} listed {stats.pending === 1 ? 'store' : 'stores'} not yet collected
+                {stats.partial > 0 && ` · ${stats.partial} partly paid`}
               </p>
             </CardContent>
           </Card>
