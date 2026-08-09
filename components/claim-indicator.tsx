@@ -21,25 +21,29 @@ import { AlertTriangle, LockOpen, Navigation } from 'lucide-react'
 type Holder = 'collector' | 'driver'
 
 /**
- * Row classes for a claimed stop: a coloured leading rule plus a wash, so the
- * lock is legible while scanning a list rather than only on the row being read.
- * Returns empty for an unclaimed row, which should look like nothing at all.
+ * Row classes for a claimed stop: a soft background wash, so the lock is legible
+ * while scanning a list rather than only on the row being read. Returns empty for
+ * an unclaimed row, which should look like nothing at all.
  *
- * The rule stays brand/red rather than taking the holder's personal colour: this
+ * The wash stays brand/red rather than taking the holder's personal colour: this
  * mark answers "is this locked, and is the lock stale", which is a property of
  * the row. WHO holds it is carried by the avatar and the numbered badge, which
- * are the per-person marks. Tinting the rule per person would make a stale claim
+ * are the per-person marks. Tinting the wash per person would make a stale claim
  * — the one thing on this board that needs an admin — stop looking urgent.
+ *
+ * There used to be a coloured leading rule down the row too; it was dropped for a
+ * cleaner list, since the wash plus the ClaimLine already carry both halves of
+ * the state (locked, and whether it's stale).
  */
 export function claimRowClass(row: Claimable, claimed: boolean): string {
   if (!claimed) return ''
-  // Rounded, not square. The tint and its leading rule sit inside a rounded
-  // list container, so square corners collided with the container's radius and
-  // left visible points at the top and bottom of the claimed block. Rounding
-  // makes a claimed row read as a highlighted pill within the list instead.
+  // Rounded, not square. The tint sits inside a rounded list container, so square
+  // corners collided with the container's radius and left visible points at the
+  // top and bottom of the claimed block. Rounding makes a claimed row read as a
+  // highlighted pill within the list instead.
   return isStaleClaim(row)
-    ? 'rounded-lg border-l-2 border-l-destructive bg-destructive/5'
-    : 'rounded-lg border-l-2 border-l-primary bg-primary/5'
+    ? 'rounded-lg bg-destructive/5'
+    : 'rounded-lg bg-primary/5'
 }
 
 /**
