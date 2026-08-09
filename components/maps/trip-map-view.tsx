@@ -504,26 +504,37 @@ export function TripMapView({
                                     >
                                       {stop.sequence}
                                     </span>
-                                    <span className="min-w-0 flex-1">
-                                      <span className="block text-xs font-medium text-foreground truncate">
-                                        {stop.label}
+                                    {/* Every fact carries its own label so a
+                                        glance answers "what is this?" — the store
+                                        name, the outcome, the money, and when it
+                                        was worked read as named fields rather than
+                                        a stack of bare values. */}
+                                    <span className="min-w-0 flex-1 space-y-1">
+                                      <span className="block truncate">
+                                        <span className="text-[10px] text-muted-foreground/70">Customer: </span>
+                                        <span className="text-xs font-medium text-foreground">{stop.label}</span>
                                       </span>
-                                      <span className="block text-[11px] text-muted-foreground truncate">
-                                        {stop.statusLabel}
-                                        {stop.amountLabel ? ` · ${stop.amountLabel}` : ''}
+                                      <span className="block text-[11px] truncate">
+                                        <span className="text-muted-foreground/70">Status: </span>
+                                        <span className="text-foreground">{stop.statusLabel}</span>
                                       </span>
-                                      {/* The clock facts on their own line — the
-                                          old row buried a bare "14:05" behind the
-                                          status and amount, where it truncated
-                                          away first on a long store name. */}
-                                      <span className="block text-[10px] text-muted-foreground/80 truncate">
-                                        {(() => {
-                                          const clock = stopClock(stop)
-                                          if (!clock) return 'Not yet worked'
-                                          return [clock.window ?? clock.time, clock.duration]
-                                            .filter(Boolean)
-                                            .join(' · ')
-                                        })()}
+                                      {stop.amountLabel && (
+                                        <span className="block text-[11px] truncate">
+                                          <span className="text-muted-foreground/70">Amount: </span>
+                                          <span className="text-foreground tabular-nums">{stop.amountLabel}</span>
+                                        </span>
+                                      )}
+                                      <span className="block text-[11px] truncate">
+                                        <span className="text-muted-foreground/70">Time: </span>
+                                        <span className="text-foreground">
+                                          {(() => {
+                                            const clock = stopClock(stop)
+                                            if (!clock) return 'Not yet worked'
+                                            return [clock.window ?? clock.time, clock.duration]
+                                              .filter(Boolean)
+                                              .join(' · ')
+                                          })()}
+                                        </span>
                                       </span>
                                     </span>
                                     <span className="flex flex-col items-end gap-0.5 shrink-0">
@@ -564,19 +575,26 @@ export function TripMapView({
               ) : (
                 <>
                   {visibleOpenStops.map(stop => (
-                    <div key={stop.id} className="px-4 py-3">
+                    <div key={stop.id} className="px-4 py-3 space-y-1">
                       <div className="flex items-center gap-2">
                         <span
                           className="w-2 h-2 rounded-full shrink-0"
                           style={{ background: TRIP_TONE_COLOR.open }}
                         />
-                        <p className="text-sm font-medium text-foreground truncate flex-1">{stop.label}</p>
+                        <span className="min-w-0 flex-1 truncate">
+                          <span className="text-[10px] text-muted-foreground/70">Customer: </span>
+                          <span className="text-sm font-medium text-foreground">{stop.label}</span>
+                        </span>
                         {stop.amountLabel && (
-                          <span className="text-[10px] text-muted-foreground shrink-0">{stop.amountLabel}</span>
+                          <span className="text-[10px] shrink-0 tabular-nums">
+                            <span className="text-muted-foreground/70">Due: </span>
+                            <span className="text-foreground">{stop.amountLabel}</span>
+                          </span>
                         )}
                       </div>
-                      <p className="text-xs text-muted-foreground mt-0.5 truncate pl-4">
-                        {stop.sublabel || 'No address on file'}
+                      <p className="text-xs mt-0.5 truncate pl-4">
+                        <span className="text-muted-foreground/70">Location: </span>
+                        <span className="text-muted-foreground">{stop.sublabel || 'No address on file'}</span>
                       </p>
                     </div>
                   ))}
@@ -767,6 +785,7 @@ export function TripMapView({
                   >
                     #{selectedStop.stop.sequence} · {selectedStop.stop.statusLabel}
                   </Badge>
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Customer</p>
                   <h2 className="text-base font-semibold text-foreground leading-tight truncate">
                     {selectedStop.stop.label}
                   </h2>

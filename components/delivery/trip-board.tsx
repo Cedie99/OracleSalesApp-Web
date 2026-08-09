@@ -84,7 +84,7 @@ export function TripBoard({
 
   return (
     // A grid, not full-width rows — see the twin note on ListBoard.
-    <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
+    <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-4 items-stretch">
       {lists.map(list => {
         const progress = tripProgress(list)
         const done = list.openCount === 0
@@ -92,8 +92,8 @@ export function TripBoard({
         const stuck = staleClaimCount(list.stops)
 
         return (
-          <Card key={list.id}>
-            <CardContent className="px-4 space-y-3">
+          <Card key={list.id} className="flex flex-col">
+            <CardContent className="px-4 space-y-3 flex flex-col flex-1">
               {/* When, where, and how far through */}
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -186,7 +186,11 @@ export function TripBoard({
                 </div>
               )}
 
-              <div className="divide-y divide-border rounded-xl border border-border">
+              {/* flex-1 so every card in a grid row settles to the same height,
+                  and max-h + scroll so a long run scrolls inside its own box
+                  rather than stretching the card past its neighbours. min-h-0 is
+                  what actually lets a flex child scroll instead of overflowing. */}
+              <div className="flex-1 min-h-0 max-h-80 overflow-y-auto divide-y divide-border rounded-xl border border-border">
                 {list.stops.map(stop => {
                   const number = list.numbers.get(stop.id)
                   return (
@@ -263,7 +267,7 @@ function StopRow({
 
   return (
     <div
-      className={`flex items-center gap-2 px-3 py-2 transition-all hover:bg-muted/20 ${claimRowClass(stop, claimed)} ${
+      className={`flex items-center gap-3 px-4 py-3.5 transition-all hover:bg-muted/20 ${claimRowClass(stop, claimed)} ${
         // Dimmed, never hidden — the row still counts toward the card's totals.
         dimmed ? 'opacity-35' : ''
       }`}
@@ -281,7 +285,7 @@ function StopRow({
 
       <button onClick={onOpen} className="flex-1 min-w-0 text-left">
         <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium text-foreground truncate">
+          <p className="text-sm font-semibold text-foreground truncate">
             {stop.client?.company_name}
           </p>
           <span className="text-[11px] text-muted-foreground shrink-0">{stop.po_number}</span>
@@ -291,8 +295,8 @@ function StopRow({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <Badge variant="tone" className={`text-[10px] ${TONE_CLASS[DELIVERY_STATUS_TONE[stop.status]]}`}>
+        <div className="flex flex-wrap items-center gap-2 mt-1.5">
+          <Badge variant="tone" className={`text-[11px] ${TONE_CLASS[DELIVERY_STATUS_TONE[stop.status]]}`}>
             {DELIVERY_STATUS_LABEL[stop.status]}
           </Badge>
           {stop.status === 'failed' && (

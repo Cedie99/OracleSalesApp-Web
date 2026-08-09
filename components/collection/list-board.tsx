@@ -94,7 +94,7 @@ export function ListBoard({
     // stretching it across a wide monitor spread DUE/COLLECTED/STILL OUT over a
     // metre of screen and marooned each row's money far from its name. Wide
     // screens want MORE content per row, not the same content spread thinner.
-    <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
+    <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-4 items-stretch">
       {days.map(day => {
         const progress = dayProgress(day)
         const done = day.pendingCount === 0
@@ -103,8 +103,8 @@ export function ListBoard({
         const stuck = staleClaimCount(day.stores)
 
         return (
-          <Card key={day.id}>
-            <CardContent className="px-4 space-y-3">
+          <Card key={day.id} className="flex flex-col">
+            <CardContent className="px-4 space-y-3 flex flex-col flex-1">
               {/* When, and how far through */}
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -187,7 +187,11 @@ export function ListBoard({
                 </div>
               )}
 
-              <div className="divide-y divide-border rounded-xl border border-border">
+              {/* flex-1 so every card in a grid row settles to the same height,
+                  and max-h + scroll so a long list scrolls inside its own box
+                  rather than stretching the card past its neighbours. min-h-0 is
+                  what actually lets a flex child scroll instead of overflowing. */}
+              <div className="flex-1 min-h-0 max-h-80 overflow-y-auto divide-y divide-border rounded-xl border border-border">
                 {day.stores.map(store => {
                   const number = day.numbers.get(store.id)
                   return (
@@ -264,7 +268,7 @@ function StoreRow({
 
   return (
     <div
-      className={`flex items-center gap-2 px-3 py-2 transition-all hover:bg-muted/20 ${claimRowClass(store, claimed)} ${
+      className={`flex items-center gap-3 px-4 py-3.5 transition-all hover:bg-muted/20 ${claimRowClass(store, claimed)} ${
         // Dimmed, never hidden — the row still counts toward the day's totals
         // above it, so removing it would make the card's own arithmetic lie.
         dimmed ? 'opacity-35' : ''
@@ -279,7 +283,7 @@ function StoreRow({
 
       <button onClick={onOpen} className="flex-1 min-w-0 text-left">
         <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium text-foreground truncate">
+          <p className="text-sm font-semibold text-foreground truncate">
             {store.client?.company_name}
           </p>
           {missingProof && (
@@ -288,8 +292,8 @@ function StoreRow({
             </span>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
-          <Badge variant="tone" className={`text-[10px] ${TONE_CLASS[VISIT_STATUS_TONE[store.status]]}`}>
+        <div className="flex flex-wrap items-center gap-2 mt-1.5">
+          <Badge variant="tone" className={`text-[11px] ${TONE_CLASS[VISIT_STATUS_TONE[store.status]]}`}>
             {VISIT_STATUS_LABEL[store.status]}
           </Badge>
           {/* An urgent add stands out from the rest of the day's list, and shows
@@ -311,7 +315,7 @@ function StoreRow({
           something scannable, which is the point of the full-width card. A
           partial shows what's in and, below it, the balance still owed. */}
       <span className="shrink-0 text-right tabular-nums">
-        <span className="block text-sm font-medium text-foreground">
+        <span className="block text-sm font-semibold text-foreground">
           {store.status === 'collected' || store.status === 'partial'
             ? peso(store.amount_collected ?? 0)
             : peso(store.amount_due)}
