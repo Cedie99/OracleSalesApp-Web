@@ -10,7 +10,9 @@ import {
 } from '@/components/claim-indicator'
 import { StatusDot } from '@/components/status-dot'
 import { boardWorkerIds } from '@/lib/board-numbering'
-import { TRIP_CAP, dwellMinutes, hasMissingProof, tripProgress, type TripList } from '@/lib/delivery'
+import {
+  TRIP_CAP, dwellMinutes, hasMissingProof, remainingCod, tripProgress, type TripList,
+} from '@/lib/delivery'
 import { peso } from '@/lib/money'
 import { workerColors } from '@/lib/trips'
 import { DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
@@ -303,7 +305,13 @@ function StopRow({
             <span className="text-[11px] text-muted-foreground whitespace-nowrap">backloaded</span>
           )}
           <span className="text-[11px] text-muted-foreground truncate">{stop.area}</span>
-          {stop.cod && (
+          {stop.cod && stop.status === 'partial' ? (
+            // A partial owes a balance the driver goes back for — surface what's
+            // left, in amber, rather than the running total (migration 073).
+            <span className={`text-[11px] tabular-nums whitespace-nowrap ${TONE_TEXT.amber}`}>
+              · COD {peso(remainingCod(stop))} left
+            </span>
+          ) : stop.cod && (
             <span className="text-[11px] text-muted-foreground tabular-nums whitespace-nowrap">
               · COD {peso(stop.cod_amount ?? stop.cod_due ?? 0)}
             </span>

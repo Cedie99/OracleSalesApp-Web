@@ -341,12 +341,17 @@ export const DELIVERY_STATUS_TONE: Record<DeliveryStatus, BadgeTone> = {
   delivered: 'brand',
   failed: 'red',
   pending: 'amber',
+  // Purple, like a collection `partial` (migration 073) — a PO that was handed
+  // over but whose COD is only part-paid reads as its own in-progress state, not
+  // as an untouched pending stop. See the note on VISIT_STATUS_TONE.partial.
+  partial: 'purple',
 }
 
 export const DELIVERY_STATUS_LABEL: Record<DeliveryStatus, string> = {
   delivered: 'Delivered',
   failed: 'Failed delivery',
   pending: 'Pending',
+  partial: 'Partial COD',
 }
 
 /**

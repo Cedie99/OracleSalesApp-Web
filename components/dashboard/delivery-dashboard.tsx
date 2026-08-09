@@ -283,7 +283,7 @@ export function DeliveryDashboard({ headerAction }: DeliveryDashboardProps) {
 
               <div className="pt-3 border-t border-border space-y-2">
                 <p className="text-xs font-medium text-foreground">Stop Status</p>
-                {(['delivered', 'failed', 'pending'] as const).map(status => {
+                {(['delivered', 'partial', 'failed', 'pending'] as const).map(status => {
                   const count = orders.filter(po => po.status === status).length
                   return (
                     <div key={status} className="flex items-center justify-between">

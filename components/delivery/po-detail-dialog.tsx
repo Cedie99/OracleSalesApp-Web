@@ -4,16 +4,16 @@ import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
-  PhotoLightbox, ProofTile, captionFor, type LightboxPhoto,
+  PhotoLightbox, ProofTile, RemittanceProofThumb, captionFor, type LightboxPhoto,
 } from '@/components/photo-lightbox'
-import { dwellMinutes, poProofs } from '@/lib/delivery'
+import { dwellMinutes, poProofs, remainingCod } from '@/lib/delivery'
 import { peso } from '@/lib/money'
 import {
   DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE, PAYMENT_METHOD_TONE, paymentMethodLabel,
   TONE_CLASS, TONE_TEXT,
 } from '@/lib/status-styles'
 import type { PurchaseOrder } from '@/types'
-import { AlertTriangle, Clock, MapPin, PackageX, Truck, UserCog } from 'lucide-react'
+import { AlertTriangle, Banknote, Camera, Clock, MapPin, PackageX, Truck, UserCog } from 'lucide-react'
 
 import { format } from 'date-fns'
 
@@ -141,13 +141,22 @@ function PoDetail({
           )}
           {po.cod && (
             <div className="flex justify-between">
-              <span className="text-muted-foreground">COD collected</span>
+              <span className="text-muted-foreground">
+                {po.status === 'partial' ? 'COD collected so far' : 'COD collected'}
+              </span>
               <span className="tabular-nums font-medium">
                 {po.cod_amount === null ? '—' : peso(po.cod_amount)}
               </span>
             </div>
           )}
-          {po.cod && po.cod_amount !== null && (
+          {/* The reason a partial PO stays on the trip list: it still owes this. */}
+          {po.status === 'partial' && (
+            <div className="flex justify-between font-semibold">
+              <span className={TONE_TEXT.amber}>COD balance still owed</span>
+              <span className={`tabular-nums ${TONE_TEXT.amber}`}>{peso(remainingCod(po))}</span>
+            </div>
+          )}
+          {po.cod && po.cod_amount !== null && po.status !== 'partial' && (
             <div className="flex justify-between">
               <span className="text-muted-foreground">COD remitted</span>
               <span className={`font-medium ${po.cod_remitted ? '' : TONE_TEXT.amber}`}>
@@ -164,6 +173,48 @@ function PoDetail({
             </span>
           </div>
         </div>
+
+        {/* COD installment history — one row per handover, each with its own proof
+            (migration 073). Only present on a PO whose COD was paid in parts; a
+            PO paid in one go carries no payment rows and this is skipped. This is
+            where the admin verifies each installment's capture, since the proof
+            grid below only shows the latest one. */}
+        {po.cod_payments && po.cod_payments.length > 0 && (
+          <div className="rounded-xl bg-muted/50 p-3 space-y-2 text-xs">
+            <p className="font-medium text-foreground flex items-center gap-1.5">
+              <Banknote className="w-3.5 h-3.5" /> COD payments ({po.cod_payments.length})
+            </p>
+            <div className="space-y-2.5">
+              {po.cod_payments.map(p => (
+                <div
+                  key={p.id}
+                  className="border-t border-border/60 pt-2 first:border-t-0 first:pt-0 space-y-1.5"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="tabular-nums font-medium text-foreground">{peso(p.amount)}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {format(new Date(p.paid_at), 'MMM d, h:mm a')}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {paymentMethodLabel(p.payment_method)} · {p.driver?.full_name ?? '—'}
+                  </p>
+                  {p.payment_photo_url && (
+                    <div className="flex gap-2">
+                      <RemittanceProofThumb
+                        url={p.payment_photo_url}
+                        label="COD payment"
+                        caption={captionFor(p.driver?.full_name, p.paid_at)}
+                        icon={<Camera className="w-3 h-3" />}
+                        onOpen={onOpenPhoto}
+                      />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {po.status === 'failed' && (
           <div className="rounded-xl bg-[var(--badge-red-bg)] p-3">
