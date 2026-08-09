@@ -28,9 +28,24 @@ import { groupByWorkerDay, tripColor, workerColors, type Trip, type TripStop } f
  */
 export const TRIP_CAP = 15
 
-/** Terminal outcomes — the stop is finished for that day either way. */
+/**
+ * Terminal outcomes — the stop is finished for that day either way. A `partial`
+ * PO is deliberately NOT closed (migration 073): the goods went out but the COD
+ * is only part-paid, so it stays open on the trip list, carrying the balance
+ * down, until it is fully paid and flips to `delivered`.
+ */
 export function isClosed(po: PurchaseOrder): boolean {
   return po.status === 'delivered' || po.status === 'failed'
+}
+
+/**
+ * What a COD stop still owes right now — its due minus everything collected so
+ * far (migration 073). Positive on a `partial` PO (the balance the next visit
+ * goes back for); zero once delivered, or negative on the allowed overpayment.
+ * The delivery twin of collection's `remainingBalance`.
+ */
+export function remainingCod(po: PurchaseOrder): number {
+  return (po.cod_due ?? 0) - (po.cod_amount ?? 0)
 }
 
 export interface ProofState {
@@ -61,7 +76,12 @@ export interface ProofState {
  * Stops nobody has reached have nothing captured yet, legitimately.
  */
 export function poProofs(po: PurchaseOrder): ProofState[] {
-  if (po.status === 'delivered') {
+  // A `partial` PO was handed over exactly like a delivered one (migration 073) —
+  // the goods went out, only the COD is still coming in — so it carries the same
+  // captures. The COD-payment slot shows the LATEST installment's photo, which
+  // the trigger denormalizes onto the PO; the full per-installment history lives
+  // in the detail dialog.
+  if (po.status === 'delivered' || po.status === 'partial') {
     const proofs: ProofState[] = [
       { label: 'Proof of delivery', url: po.proof_url, required: true },
     ]
@@ -193,8 +213,15 @@ export function buildTripLists(orders: PurchaseOrder[]): TripList[] {
       failedCount: stops.filter(po => po.status === 'failed').length,
       areas: [...new Set(stops.map(po => po.area))].sort(),
       codDue: stops.reduce((sum, po) => sum + (po.cod_due ?? 0), 0),
+      // Includes a partial PO's running total (migration 073).
       codCollected: stops.reduce((sum, po) => sum + (po.cod_amount ?? 0), 0),
-      codOutstanding: open.reduce((sum, po) => sum + (po.cod_due ?? 0), 0),
+      // What the day's COD still has to bring in: a pending stop owes its whole
+      // COD due, a partial owes only the balance left on it.
+      codOutstanding: stops.reduce((sum, po) => {
+        if (po.status === 'pending') return sum + (po.cod_due ?? 0)
+        if (po.status === 'partial') return sum + remainingCod(po)
+        return sum
+      }, 0),
       overCap: stops.length > TRIP_CAP,
       drivers: buildDrivers(stops),
       // Per day, never across days — a driver's count restarts each morning.
@@ -255,8 +282,11 @@ function buildDrivers(stops: PurchaseOrder[]): DayDriver[] {
  * ordering rather than as two runs.
  */
 function stopOrder(a: PurchaseOrder, b: PurchaseOrder): number {
+  // Delivered, then failed (the admin's decision pile), then partial (handed over,
+  // COD still owed), then whatever is still waiting — the same closed-before-open
+  // order the collection board uses.
   const rank = (po: PurchaseOrder) =>
-    po.status === 'delivered' ? 0 : po.status === 'failed' ? 1 : 2
+    po.status === 'delivered' ? 0 : po.status === 'failed' ? 1 : po.status === 'partial' ? 2 : 3
   const byRank = rank(a) - rank(b)
   if (byRank !== 0) return byRank
   if (a.sequence_no !== null && b.sequence_no !== null) {
@@ -343,6 +373,7 @@ const PO_STATUS_LABEL: Record<PurchaseOrder['status'], string> = {
   delivered: 'Delivered',
   failed: 'Failed — backloaded',
   pending: 'Waiting',
+  partial: 'Partial COD',
 }
 
 function deliveryStop(po: PurchaseOrder, sequence: number): TripStop {

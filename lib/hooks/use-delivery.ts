@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Client, CodRemittance, Profile, PurchaseOrder, RemittanceStatus } from '@/types'
+import type {
+  Client, CodPayment, CodRemittance, Profile, PurchaseOrder, RemittanceStatus,
+} from '@/types'
 
 /**
  * Live Delivery data (migration 044) — the Collection twin of use-collection.ts,
@@ -35,10 +37,56 @@ const COD_REMITTANCE_COLUMNS = `
   driver:profiles!driver_id ( ${PROFILE_JOIN} )
 `
 
+// The COD installments behind a partial PO (migration 073). Fetched in one pass
+// and grouped onto their POs rather than joined into PO_COLUMNS, so the query can
+// tolerate the table not existing yet — during the window before 073 deploys.
+// The delivery twin of use-collection.ts's PAYMENT_COLUMNS. See loadCodPayments.
+const COD_PAYMENT_COLUMNS = `
+  id, po_id, driver_id, amount, payment_method, payment_photo_url,
+  gps_lat, gps_lng, remarks, paid_at, created_at,
+  driver:profiles!driver_id ( ${PROFILE_JOIN} )
+`
+
 function num(value: unknown): number | null {
   if (value === null || value === undefined) return null
   const n = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+function normalizeCodPayment(row: Record<string, unknown>): CodPayment {
+  return {
+    ...(row as unknown as CodPayment),
+    amount: num(row.amount) ?? 0,
+    gps_lat: num(row.gps_lat),
+    gps_lng: num(row.gps_lng),
+    driver: one<Profile>(row.driver),
+  }
+}
+
+/**
+ * Every COD installment, grouped by the PO it belongs to (newest first). One
+ * query, not one per PO. Tolerates the pre-073 window: if `cod_payments` doesn't
+ * exist yet the select errors and we return an empty map, so the page shows no
+ * installment history rather than falling over — the same deploy-order-proofing
+ * use-collection.ts's loadPayments uses.
+ */
+async function loadCodPayments(
+  supabase: ReturnType<typeof createClient>,
+): Promise<Map<string, CodPayment[]>> {
+  const byPo = new Map<string, CodPayment[]>()
+  const { data, error } = await supabase
+    .from('cod_payments')
+    .select(COD_PAYMENT_COLUMNS)
+    .order('paid_at', { ascending: false })
+
+  if (error || !data) return byPo
+  for (const raw of data) {
+    const payment = normalizeCodPayment(raw as Record<string, unknown>)
+    const list = byPo.get(payment.po_id)
+    if (list) list.push(payment)
+    else byPo.set(payment.po_id, [payment])
+  }
+  return byPo
 }
 
 function one<T>(value: unknown): T | undefined {
@@ -46,7 +94,10 @@ function one<T>(value: unknown): T | undefined {
   return (v as T | null) ?? undefined
 }
 
-function normalizePo(row: Record<string, unknown>): PurchaseOrder {
+function normalizePo(
+  row: Record<string, unknown>,
+  paymentsByPo?: Map<string, CodPayment[]>,
+): PurchaseOrder {
   return {
     ...(row as unknown as PurchaseOrder),
     cod_due: num(row.cod_due),
@@ -56,6 +107,10 @@ function normalizePo(row: Record<string, unknown>): PurchaseOrder {
     gps_lng: num(row.gps_lng),
     client: one<Client>(row.client),
     driver: one<Profile>(row.driver),
+    // COD installments behind a partial PO (migration 073). Empty until 073 is
+    // live — loadCodPayments yields an empty map on the missing table — which
+    // reads the same as a PO paid in one go: no history to show.
+    cod_payments: paymentsByPo?.get(row.id as string) ?? [],
   }
 }
 
@@ -113,7 +168,8 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
       setError(queryError.message)
     } else {
       setError('')
-      setOrders((data ?? []).map(row => normalizePo(row as Record<string, unknown>)))
+      const paymentsByPo = await loadCodPayments(supabase)
+      setOrders((data ?? []).map(row => normalizePo(row as Record<string, unknown>, paymentsByPo)))
     }
     setLoading(false)
   }, [])

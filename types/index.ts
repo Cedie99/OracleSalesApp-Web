@@ -341,8 +341,14 @@ export interface CollectionPayment {
  * delivery IS a backload: nothing was accepted, so the goods ride back. They are
  * one outcome, not two, which is why `backload_photo_url` is a capture on a
  * failed row rather than a status of its own.
+ *
+ * `partial` (migration 073) is the delivery-COD twin of a collection `partial`: a
+ * PO that was handed over but whose COD was only part-paid stays open on the trip
+ * list, carrying the balance down, until the running total reaches `cod_due` and
+ * it flips to `delivered`. It is ALWAYS a handed-over COD row — the goods went out
+ * once; only the money is still coming in. See PARTIAL_COD_CONTRACT.md.
  */
-export type DeliveryStatus = 'pending' | 'delivered' | 'failed'
+export type DeliveryStatus = 'pending' | 'delivered' | 'failed' | 'partial'
 
 export interface PurchaseOrder {
   id: string
@@ -464,6 +470,12 @@ export interface PurchaseOrder {
   // amount. 'counter' is not offered here — that method belongs to a store
   // paying at its own counter, which has no meaning on a delivery.
 
+  /**
+   * COD taken at the stop. On a `partial` PO (migration 073) this is the RUNNING
+   * TOTAL of its `cod_payments` rows — the customer still owes
+   * `cod_due − cod_amount` — kept in step by the trigger as each installment
+   * lands. On a PO paid in one go it is simply that one amount, as before.
+   */
   cod_amount: number | null
   cod_method: PaymentMethod | null
   cod_photo_url: string | null
@@ -472,6 +484,42 @@ export interface PurchaseOrder {
 
   created_at: string
   client?: Client
+  driver?: Profile
+  /**
+   * The individual COD handovers behind `cod_amount`, newest first (migration
+   * 073). Present only on a PO whose COD was paid in installments; a PO paid in
+   * one go carries an empty array. Joined in by the delivery hook, tolerating the
+   * pre-073 window where the table doesn't exist yet. Each row keeps its own
+   * proof, which is the whole reason partials need a child table.
+   */
+  cod_payments?: CodPayment[]
+}
+
+/**
+ * One COD handover toward a purchase order (migration 073). A customer who pays
+ * the COD down over several visits has one of these per payment; their sum is the
+ * PO's `cod_amount`, and the PO stays `partial` until that sum reaches `cod_due`.
+ * Each carries its own proof so no installment overwrites another's photo — the
+ * delivery twin of `CollectionPayment`. See PARTIAL_COD_CONTRACT.md.
+ *
+ * Note this is COD-only: the handover fields (plate, proof-of-delivery, receiver,
+ * times, GPS) live on the PO and belong to the one delivery, not to any top-up.
+ */
+export interface CodPayment {
+  id: string
+  po_id: string
+  /** Who took the money in — always set, unlike the PO's driver_id. */
+  driver_id: string
+  amount: number
+  /** 'counter' is not offered on a delivery — see COD_METHODS. */
+  payment_method: PaymentMethod
+  payment_photo_url: string | null
+  gps_lat: number | null
+  gps_lng: number | null
+  remarks: string | null
+  paid_at: string
+  created_at: string
+  /** The driver who took this payment, joined in for display. */
   driver?: Profile
 }
 

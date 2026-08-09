@@ -29,7 +29,7 @@ import {
 import { isNotWorked, isStaleClaim, staleClaimCount } from '@/lib/claims'
 import {
   buildTripLists, codVariance, deliveryTrips, dwellMinutes, hasMissingProof, isHeldCod,
-  type TripList,
+  remainingCod, type TripList,
 } from '@/lib/delivery'
 import { peso, pesoDelta } from '@/lib/money'
 import {
@@ -288,7 +288,9 @@ export default function DeliveryPage() {
       if (po.cod_method) byMethod[po.cod_method] += po.cod_amount ?? 0
     })
 
-    const open = filteredOrders.filter(po => po.status === 'pending')
+    // Open on the list: still-waiting stops AND partials, which stay on the list
+    // until their COD is fully paid (migration 073).
+    const open = filteredOrders.filter(po => po.status === 'pending' || po.status === 'partial')
 
     return {
       collected,
@@ -298,8 +300,12 @@ export default function DeliveryPage() {
       // Money the driver is still holding: taken at a stop, not yet handed over.
       held: filteredOrders.filter(isHeldCod).reduce((sum, po) => sum + (po.cod_amount ?? 0), 0),
       open: open.length,
-      // COD riding on stops nobody has closed out — the outstanding exposure.
-      codOutstanding: open.reduce((sum, po) => sum + (po.cod_due ?? 0), 0),
+      // COD still to bring in: a pending stop owes its whole due, a partial only
+      // the balance left on it.
+      codOutstanding: open.reduce((sum, po) => {
+        if (po.status === 'partial') return sum + remainingCod(po)
+        return sum + (po.cod_due ?? 0)
+      }, 0),
       failed: filteredOrders.filter(po => po.status === 'failed').length,
       failedToday: filteredOrders.filter(
         po => po.status === 'failed' && po.time_out &&
@@ -502,7 +508,7 @@ export default function DeliveryPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Statuses</SelectItem>
-              {(['pending', 'delivered', 'failed'] as DeliveryStatus[]).map(s => (
+              {(['pending', 'partial', 'delivered', 'failed'] as DeliveryStatus[]).map(s => (
                 <SelectItem key={s} value={s}>{DELIVERY_STATUS_LABEL[s]}</SelectItem>
               ))}
             </SelectContent>
@@ -630,12 +636,16 @@ export default function DeliveryPage() {
                                 <span className="font-medium">
                                   {po.cod_amount === null ? peso(po.cod_due ?? 0) : peso(po.cod_amount)}
                                 </span>
-                                <span className="block text-[11px] text-muted-foreground">
-                                  {po.cod_amount === null
-                                    ? 'due'
-                                    : po.cod_remitted
-                                      ? 'remitted'
-                                      : 'with driver'}
+                                {/* A partial still owes a balance — surface it in
+                                    amber rather than a remittance state (073). */}
+                                <span className={`block text-[11px] ${po.status === 'partial' ? TONE_TEXT.amber : 'text-muted-foreground'}`}>
+                                  {po.status === 'partial'
+                                    ? `${peso(remainingCod(po))} left`
+                                    : po.cod_amount === null
+                                      ? 'due'
+                                      : po.cod_remitted
+                                        ? 'remitted'
+                                        : 'with driver'}
                                 </span>
                               </>
                             ) : (

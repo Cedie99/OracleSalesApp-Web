@@ -63,6 +63,8 @@ const PRIOR_USE_PHRASE: Record<DeliveryStatus, string> = {
   pending: 'It is already waiting on the list for',
   delivered: 'It was delivered to',
   failed: 'It came back from',
+  // Handed over, COD only part-paid — still open on its list (migration 073).
+  partial: 'It was delivered, with COD still part-paid, to',
 }
 
 /** And what that means for the admin about to reuse it. */
@@ -70,6 +72,7 @@ const PRIOR_USE_ADVICE: Record<DeliveryStatus, string> = {
   pending: ' Listing it twice at once would put the same order on two trucks.',
   delivered: ' Make sure this is a second order and not a repeat of that one.',
   failed: ' Listing it again is how a backload goes back out, so this is expected.',
+  partial: ' That COD is still being collected on the open stop — this would be a separate order.',
 }
 
 /**
