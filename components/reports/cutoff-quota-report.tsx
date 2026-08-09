@@ -13,6 +13,8 @@ import {
   ATTRIBUTION_ORDER,
   agentPeriodUsage,
   attributionBuckets,
+  capForRole,
+  capsDiffer,
   clientQuotaUsage,
   dailyUsage,
   periodDateLabel,
@@ -96,7 +98,7 @@ interface CutoffQuotaReportProps {
 export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaReportProps) {
   const { periods, loading: periodsLoading } = useCutoffPeriods()
   const { attributions, unattributedMeetingCount, loading: ledgerLoading } = useCutoffAttributions()
-  const { teamName } = useTeams()
+  const { teams, teamName } = useTeams()
   const { holidays } = useQuotaSettings()
   const [periodId, setPeriodId] = useState<string>('')
   const [showBreakdown, setShowBreakdown] = useState(false)
@@ -116,6 +118,21 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
   }, [agents])
 
   /**
+   * A team's kind, and an agent's by way of their team. Only managers need it —
+   * they inherit their team's target and ceiling, and `sales_manager` covers
+   * both kinds, so the role alone cannot say which applies.
+   */
+  const kindOfTeam = useMemo(() => {
+    const map = new Map(teams.map(t => [t.id, t.kind]))
+    return (teamId: string | null) => (teamId ? map.get(teamId) ?? null : null)
+  }, [teams])
+
+  const kindOfAgent = useMemo(() => {
+    const map = new Map(agents.map(a => [a.id, a.team_id]))
+    return (agentId: string) => kindOfTeam(map.get(agentId) ?? null)
+  }, [agents, kindOfTeam])
+
+  /**
    * Working days in the visible period. The denominator for every RSR figure
    * below — their target is per day, so the period expectation only exists once
    * this is known.
@@ -126,8 +143,8 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
   )
 
   const byAgent = useMemo(
-    () => (period ? agentPeriodUsage(attributions, period, roleOf, workingDays) : new Map()),
-    [attributions, period, roleOf, workingDays]
+    () => (period ? agentPeriodUsage(attributions, period, roleOf, workingDays, kindOfAgent) : new Map()),
+    [attributions, period, roleOf, workingDays, kindOfAgent]
   )
   const byClient = useMemo(
     () => (period ? clientQuotaUsage(attributions, period) : new Map()),
@@ -135,8 +152,8 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
   )
 
   const byTeam = useMemo(
-    () => (period ? teamPeriodUsage(attributions, period, agents, workingDays) : new Map()),
-    [attributions, period, agents, workingDays]
+    () => (period ? teamPeriodUsage(attributions, period, agents, workingDays, kindOfTeam) : new Map()),
+    [attributions, period, agents, workingDays, kindOfTeam]
   )
 
   /** meeting_id -> its date, so daily counts sit on the day the visit happened. */
@@ -359,9 +376,20 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
           )}
 
           <p className="text-xs text-muted-foreground mt-2">
-            {period.label} · {workingDays} working {workingDays === 1 ? 'day' : 'days'} · each
-            client may be visited {period.client_meeting_cap}{' '}
-            {period.client_meeting_cap === 1 ? 'time' : 'times'} this cutoff
+            {period.label} · {workingDays} working {workingDays === 1 ? 'day' : 'days'} ·{' '}
+            {capsDiffer(period) ? (
+              <>
+                each client may be visited {capForRole('sales_specialist', period)}{' '}
+                {capForRole('sales_specialist', period) === 1 ? 'time' : 'times'} by Sales and{' '}
+                {capForRole('rsr', period)}{' '}
+                {capForRole('rsr', period) === 1 ? 'time' : 'times'} by RSR this cutoff
+              </>
+            ) : (
+              <>
+                each client may be visited {capForRole('sales_specialist', period)}{' '}
+                {capForRole('sales_specialist', period) === 1 ? 'time' : 'times'} this cutoff
+              </>
+            )}
             {headline.idle > 0 && (
               <> · {headline.idle} {headline.idle === 1 ? 'agent has' : 'agents have'} recorded nothing</>
             )}

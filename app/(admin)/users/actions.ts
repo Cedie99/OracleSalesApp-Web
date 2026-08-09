@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server'
 import { canManageUsers, PASSWORD_MIN_LENGTH } from '@/lib/permissions'
 import { AVATAR_ACCEPTED_TYPES } from '@/lib/avatar'
 import { adminScope } from '@/lib/permissions'
-import type { AdminScope, UserRole } from '@/types'
+import type { AdminScope, Team, TeamKind, UserRole } from '@/types'
 
 const AVATAR_BUCKET = 'avatars'
 
@@ -49,6 +49,60 @@ async function requireCallerIsSuperadmin(): Promise<string | null> {
     return 'Only a superadmin can manage users.'
   }
   return null
+}
+
+/** Long enough to be recognisable in a dropdown, short enough not to break it. */
+const TEAM_NAME_MAX = 60
+
+/**
+ * Creates a team.
+ *
+ * Until migration 075 there was no way to do this from the app at all: the four
+ * teams came from seed migrations, and `lib/teams.ts` filtered the Users picker
+ * against their hardcoded UUIDs — so even a team inserted by hand in the SQL
+ * editor would not appear in the dropdown. Adding a team meant a migration, a
+ * code change and a deploy.
+ *
+ * Service-role, like every other action in this file: 005_teams_read_policy.sql
+ * gave `teams` a SELECT policy and nothing more, and the superadmin check is the
+ * authorization rather than RLS. The alternative — an INSERT policy on the table
+ * — would open a second, weaker path to the same write.
+ */
+export async function createTeam(
+  name: string,
+  kind: TeamKind
+): Promise<{ error: string | null; team: Team | null }> {
+  const permError = await requireCallerIsSuperadmin()
+  if (permError) return { error: permError, team: null }
+
+  const trimmed = name.trim()
+  if (!trimmed) return { error: 'Team name is required.', team: null }
+  if (trimmed.length > TEAM_NAME_MAX) {
+    return { error: `Team name must be ${TEAM_NAME_MAX} characters or fewer.`, team: null }
+  }
+  if (kind !== 'sales' && kind !== 'rsr') {
+    return { error: 'Choose whether this is a Sales or an RSR team.', team: null }
+  }
+
+  const supabase = createAdminClient()
+
+  const { data: team, error } = await supabase
+    .from('teams')
+    .insert({ name: trimmed, kind })
+    .select('id, name, kind, manager_id, created_at')
+    .single()
+
+  if (error) {
+    // 075's teams_name_unique is case-insensitive, so the collision the admin
+    // needs to hear about is "that name is taken", not the raw index name.
+    // 23505 is unique_violation.
+    if (error.code === '23505') {
+      return { error: `A team called "${trimmed}" already exists.`, team: null }
+    }
+    return { error: error.message, team: null }
+  }
+
+  return { error: null, team: team as Team }
 }
 
 export async function createUser(

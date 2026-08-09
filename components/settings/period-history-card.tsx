@@ -37,7 +37,11 @@ import { format } from 'date-fns'
 const FIELD_LABEL: Record<string, string> = {
   sales_target: 'Sales target',
   rsr_daily_target: 'RSR target (per working day)',
-  client_meeting_cap: 'Visit limit per client',
+  sales_client_meeting_cap: 'Sales visit limit per client',
+  rsr_client_meeting_cap: 'RSR visit limit per client',
+  // Pre-074, when one limit covered both roles. Rows written then keep the old
+  // field name forever, so the label has to outlive the column it names.
+  client_meeting_cap: 'Visit limit per client (both roles)',
 }
 
 export function PeriodHistoryCard({ periods }: { periods: CutoffPeriod[] }) {

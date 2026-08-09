@@ -1,37 +1,66 @@
-import type { Profile, UserRole } from '@/types'
+import type { Profile, Team, TeamKind, UserRole } from '@/types'
 
 /**
- * Fixed team IDs shared between the seed migrations (004_seed_teams.sql,
- * 007_seed_rsr_teams.sql), the mock data, and the Dashboard's "Viewing as"
- * switcher, so a real manager account's profiles.team_id lines up with the
- * demo data. Sales teams and RSR teams are kept separate (no mixed teams).
+ * Fixed team IDs from the seed migrations (004_seed_teams.sql,
+ * 007_seed_rsr_teams.sql), kept so `lib/mock/data.ts` can hand its demo
+ * profiles a `team_id` that matches a real row.
+ *
+ * These are NOT the list of teams. Teams are rows, and which ones are sales or
+ * RSR is `teams.kind` (migration 075) — the arrays that used to live here made
+ * every hand-created team invisible to the app, since the Users picker filtered
+ * against them by id.
  */
 export const TEAM_1_ID = '00000000-0000-0000-0000-000000000001'
 export const TEAM_2_ID = '00000000-0000-0000-0000-000000000002'
 export const TEAM_RSR_1_ID = '00000000-0000-0000-0000-000000000003'
 export const TEAM_RSR_2_ID = '00000000-0000-0000-0000-000000000004'
 
-export const TEAM_LABELS: Record<string, string> = {
-  [TEAM_1_ID]: 'Sales Team 1',
-  [TEAM_2_ID]: 'Sales Team 2',
-  [TEAM_RSR_1_ID]: 'RSR Team 1',
-  [TEAM_RSR_2_ID]: 'RSR Team 2',
+/**
+ * The kind of team a role belongs to, or null for roles that have no team at
+ * all — superadmin, admin, executive, collector and delivery. An executive
+ * reads across every team rather than belonging to one.
+ *
+ * `sales_manager` returns null too, but for the opposite reason: a manager runs
+ * EITHER kind. Since migration 010 folded rsr_manager into sales_manager, the
+ * role no longer says which, so a manager may be offered any team and it is
+ * their team's kind that types them — not the other way round. Callers that
+ * need "which teams may this person join" should use `teamsForRole`, which
+ * handles that case; this function only answers the narrower question.
+ */
+export function teamKindForRole(role: UserRole): TeamKind | null {
+  if (role === 'sales_specialist') return 'sales'
+  if (role === 'rsr') return 'rsr'
+  return null
 }
 
-export const SALES_TEAM_IDS: string[] = [TEAM_1_ID, TEAM_2_ID]
-export const RSR_TEAM_IDS: string[] = [TEAM_RSR_1_ID, TEAM_RSR_2_ID]
+/** Whether a role belongs to a team at all. */
+export function roleHasTeam(role: UserRole): boolean {
+  return role === 'sales_manager' || teamKindForRole(role) !== null
+}
 
 /**
- * Which team IDs are valid for a role. Superadmin/Admin/Executive/Collector/
- * Delivery have no team — an executive reads across every team rather than
- * belonging to one. 'sales_manager' oversees either team type (sales or RSR) —
- * the team type is decided by team_id, not by a separate manager role.
+ * The teams a person in this role may be assigned to, in the order given.
+ *
+ * A manager gets every team because they may run either kind; a specialist or
+ * RSR gets only their own kind, because a team is never mixed. Everyone else
+ * gets nothing, which is what disables the picker.
  */
-export function teamIdsForRole(role: UserRole): string[] {
-  if (role === 'sales_manager') return [...SALES_TEAM_IDS, ...RSR_TEAM_IDS]
-  if (role === 'sales_specialist') return SALES_TEAM_IDS
-  if (role === 'rsr') return RSR_TEAM_IDS
-  return []
+export function teamsForRole<T extends { kind: TeamKind }>(role: UserRole, teams: T[]): T[] {
+  if (role === 'sales_manager') return teams
+  const kind = teamKindForRole(role)
+  return kind ? teams.filter(t => t.kind === kind) : []
+}
+
+/**
+ * The kind of team a manager runs, from their team_id — the only way to tell a
+ * sales manager from an RSR manager, since they share one role.
+ */
+export function managerTeamKind(
+  teamId: string | null | undefined,
+  teams: Pick<Team, 'id' | 'kind'>[]
+): TeamKind | null {
+  if (!teamId) return null
+  return teams.find(t => t.id === teamId)?.kind ?? null
 }
 
 /**

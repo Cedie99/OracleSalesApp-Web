@@ -5,13 +5,14 @@ import { createClient } from '@/lib/supabase/client'
 import type { Team } from '@/types'
 
 /**
- * The real `teams` rows.
+ * The real `teams` rows — the only source of team names and kinds.
  *
- * Prefer this over `TEAM_LABELS` in lib/teams.ts, which hardcodes names that
- * have already drifted: it calls teams 3 and 4 "RSR Team 1" / "RSR Team 2",
- * while the database has them as plain "Team 3" / "Team 4" (checked
- * 2026-07-24). The fixed UUIDs in lib/teams.ts are still correct and still
- * useful for `teamIdsForRole`; only the display names are stale.
+ * lib/teams.ts used to carry a hardcoded label map alongside the fixed UUIDs,
+ * which had already drifted (it called teams 3 and 4 "RSR Team 1"/"RSR Team 2"
+ * while the database had them as plain "Team 3"/"Team 4", checked 2026-07-24).
+ * That map is gone as of migration 075, along with the id arrays that decided
+ * which teams were sales and which were RSR; `kind` is a column now, so this
+ * hook returns everything a caller needs.
  */
 export function useTeams() {
   const [teams, setTeams] = useState<Team[]>([])
@@ -23,7 +24,7 @@ export function useTeams() {
     const supabase = createClient()
     const { data, error: queryError } = await supabase
       .from('teams')
-      .select('id, name, manager_id, created_at')
+      .select('id, name, kind, manager_id, created_at')
       .order('name')
 
     if (queryError) {

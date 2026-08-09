@@ -27,12 +27,14 @@ import type {
 
 const PERIOD_COLUMNS = `
   id, label, starts_on, ends_on, sales_target, rsr_target, rsr_daily_target,
-  working_days_override, client_meeting_cap, status, supersedes_period_id,
+  working_days_override, client_meeting_cap, sales_client_meeting_cap,
+  rsr_client_meeting_cap, status, supersedes_period_id,
   version, created_by, created_at, updated_at
 `
 
 const ATTRIBUTION_COLUMNS = `
   meeting_id, period_id, client_id, agent_id, captured_client_stage,
+  captured_agent_role, captured_team_kind, participation,
   attribution, slot_index, attributed_at
 `
 
@@ -247,7 +249,9 @@ export function useQuotaSettings(): UseQuotaSettingsResult {
     const [settingsRow, holidayRows] = await Promise.all([
       supabase
         .from('quota_settings')
-        .select('id, sales_target, rsr_daily_target, client_meeting_cap, updated_by, updated_at')
+        .select(
+          'id, sales_target, rsr_daily_target, client_meeting_cap, sales_client_meeting_cap, rsr_client_meeting_cap, updated_by, updated_at'
+        )
         .maybeSingle(),
       supabase
         .from('holidays')

@@ -589,10 +589,29 @@ export interface Profile {
   created_at: string
 }
 
+/**
+ * Sales teams and RSR teams are kept separate — there are no mixed teams.
+ * Stored on the row since migration 075; before that it was a hardcoded list of
+ * four UUIDs in lib/teams.ts, which is why a team created by hand was invisible
+ * to the app.
+ */
+export type TeamKind = 'sales' | 'rsr'
+
+export const TEAM_KIND_LABEL: Record<TeamKind, string> = {
+  sales: 'Sales',
+  rsr: 'RSR',
+}
+
 export interface Team {
   id: string
   name: string
-  manager_id: string
+  kind: TeamKind
+  /**
+   * Never written by any migration, so it is null on every row in practice —
+   * a team's manager is resolved from profiles.team_id instead. See
+   * `managerForTeam` in lib/teams.ts.
+   */
+  manager_id: string | null
   created_at: string
 }
 
@@ -795,8 +814,9 @@ export type CutoffPeriodStatus = 'draft' | 'scheduled' | 'active' | 'closed' | '
  *
  * Targets are PER ROLE and independent (contract O-6): a null target means "not
  * configured for this role" and must render as such, never as zero and never as
- * a hardcoded fallback. `client_meeting_cap` is a different axis entirely — one
- * shared pool across new+existing, per client, per period.
+ * a hardcoded fallback. The visit limit is a different axis entirely — a
+ * ceiling rather than a goal — and as of migration 074 it is also per role,
+ * counted as separate pools across new+existing per client per period.
  */
 export interface CutoffPeriod {
   id: string
@@ -821,8 +841,23 @@ export interface CutoffPeriod {
    * schedule the rule cannot express. Null means derive it.
    */
   working_days_override: number | null
-  /** Per-client meeting ceiling: one pool shared across new and existing. */
+  /**
+   * @deprecated Migration 074. Was the single ceiling applied to every meeting
+   * whatever the agent's role. Use `sales_client_meeting_cap` /
+   * `rsr_client_meeting_cap` via `capForRole()`. Still maintained server-side as
+   * the greater of the two, because mobile's sync-down selects it into a NOT
+   * NULL column — it is no longer what attribution reads for a sales or RSR
+   * meeting.
+   */
   client_meeting_cap: number
+  /**
+   * Per-client meeting ceiling for a sales_specialist's meetings: one pool
+   * across new and existing, counted separately from the RSR pool. Null means
+   * the period was written before 074 and falls back to `client_meeting_cap`.
+   */
+  sales_client_meeting_cap: number | null
+  /** The same ceiling for an rsr's meetings, counted as its own pool. */
+  rsr_client_meeting_cap: number | null
   status: CutoffPeriodStatus
   supersedes_period_id: string | null
   version: number
@@ -865,8 +900,15 @@ export interface QuotaSettings {
   sales_target: number | null
   /** Visits per working day for rsr. Null = not configured. */
   rsr_daily_target: number | null
-  /** The per-client ceiling. A limit, not a goal — see QuotaState. */
+  /**
+   * @deprecated Migration 074 — the standing visit limit is now per role. Kept
+   * as the greater of the two so nothing reading it under-states an allowance.
+   */
   client_meeting_cap: number
+  /** The standing per-client ceiling for Sales. A limit, not a goal — see QuotaState. */
+  sales_client_meeting_cap: number | null
+  /** The standing per-client ceiling for RSR, counted as its own pool. */
+  rsr_client_meeting_cap: number | null
   updated_by: string | null
   updated_at: string
 }
@@ -913,6 +955,12 @@ export type CutoffAttribution =
  * meetings are absent rather than `unattributed`. Anything reporting on this
  * table has to say so instead of implying those visits never happened.
  */
+/**
+ * How someone took part in a meeting. Since migration 076 the ledger holds one
+ * row per participant rather than one per meeting.
+ */
+export type MeetingParticipation = 'agent' | 'tag_along'
+
 export interface MeetingCutoffAttribution {
   meeting_id: string
   period_id: string | null
@@ -920,8 +968,28 @@ export interface MeetingCutoffAttribution {
   agent_id: string
   /** The client's lifecycle stage at attribution time, not necessarily now. */
   captured_client_stage: CustomerType | null
+  /**
+   * The agent's role at attribution time, not necessarily now (migration 074).
+   * Identifies which per-role pool this row consumed — a client's Sales and RSR
+   * allowances are counted separately. Null on a row whose agent had no profile.
+   */
+  captured_agent_role: UserRole | null
+  /**
+   * The team kind the agent belonged to at attribution time (migration 076),
+   * frozen for the same reason as the role. It is what separates a sales
+   * manager's pool from an RSR manager's — one role, two ceilings.
+   */
+  captured_team_kind: TeamKind | null
+  /**
+   * Whether this row credits the meeting's own agent or a manager who tagged
+   * along and accepted (migration 076). A teammate companion gets no row.
+   */
+  participation: MeetingParticipation
   attribution: CutoffAttribution
-  /** 1-based slot consumed. Non-null exactly when attribution is 'counted'. */
+  /**
+   * 1-based slot consumed, within this row's own pool. Non-null exactly when
+   * attribution is 'counted'.
+   */
   slot_index: number | null
   attributed_at: string
 }

@@ -3,7 +3,7 @@
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { TONE_CLASS } from '@/lib/status-styles'
-import { periodDateLabel, periodTargetFor, workingDaysIn } from '@/lib/cutoff'
+import { capForRole, capsDiffer, periodDateLabel, periodTargetFor, workingDaysIn } from '@/lib/cutoff'
 import type { CutoffPeriod, Holiday } from '@/types'
 
 /**
@@ -94,10 +94,21 @@ export function CurrentCutoffSummary({ period, holidays }: CurrentCutoffSummaryP
                 : 'not configured'
             }
           />
+          {/* One figure while the roles agree, both when they do not — and the
+              hint carries the pooling rule in the only place a reader is
+              looking at the two numbers side by side. */}
           <Stat
             label="Visit limit"
-            value={String(period.client_meeting_cap)}
-            hint="per client, new + existing"
+            value={
+              capsDiffer(period)
+                ? `${capForRole('sales_specialist', period)} / ${capForRole('rsr', period)}`
+                : String(capForRole('sales_specialist', period))
+            }
+            hint={
+              capsDiffer(period)
+                ? 'Sales / RSR per client, separate pools'
+                : 'per client, new + existing'
+            }
           />
           <Stat
             label="Working days"

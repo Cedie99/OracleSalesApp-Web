@@ -1,6 +1,7 @@
 import { addMonths, differenceInCalendarDays } from 'date-fns'
 import type { Client, Meeting } from '@/types'
 import type { ClientQuotaUsage } from '@/lib/cutoff'
+import { poolLabel } from '@/lib/cutoff'
 
 /**
  * Accounts that need somebody to do something, and why.
@@ -125,14 +126,38 @@ export function clientAttention(
   const flags: AttentionFlag[] = []
 
   // --- The cutoff cap -------------------------------------------------------
-  // Keyed on `overCap`, never on `used > cap`: the server allocates slots up to
-  // the cap and classifies the rest as over_cap, so `used` can never exceed
+  // Keyed on refused slots, never on `used > cap`: the server allocates slots up
+  // to the cap and classifies the rest as over_cap, so `used` can never exceed
   // `cap` and the comparison would silently never fire. See quotaState().
-  if (usage && usage.overCap > 0) {
+  //
+  // Read off the POOLS rather than usage.overCap, because since 076 the two
+  // measure different things: overCap counts MEETINGS, while a pool can overflow
+  // on a manager's tag-along, which is not a meeting of its own and would slip
+  // through here unnoticed.
+  const overflowed = usage ? usage.pools.filter(pool => pool.overCap > 0) : []
+  if (usage && overflowed.length > 0) {
+    // Since 074 a client can hold one allowance per pool, and `usage.cap` is
+    // their sum. Where two pools exist, "2 past the limit of 6" is arithmetic
+    // the reader cannot check against anything on screen — so the pool that
+    // actually overflowed is named instead, which also says whose visits they
+    // were. A single-pool client, which is nearly all of them, reads exactly as
+    // it did before.
+    const refused = overflowed.reduce((total, pool) => total + pool.overCap, 0)
+    const breach =
+      usage.pools.length > 1
+        ? overflowed
+            .map(pool => `${pool.overCap} past ${poolLabel(pool)}'s limit of ${pool.cap}`)
+            .join(' · ')
+        : `${refused} past the limit of ${usage.cap}`
+
+    // Visits, meaning MEETINGS — `used`/`overCap` are already meeting counts, so
+    // a visit two people attended stays one visit here.
+    const visits = usage.used + usage.overCap
+
     flags.push({
       kind: 'over_limit',
       daysLeft: null,
-      detail: `${usage.used + usage.overCap} visits this cutoff · ${usage.overCap} past the limit of ${usage.cap}`,
+      detail: `${visits} ${visits === 1 ? 'visit' : 'visits'} this cutoff · ${breach}`,
     })
   }
 
