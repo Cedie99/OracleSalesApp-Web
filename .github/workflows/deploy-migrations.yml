@@ -2,12 +2,15 @@ name: Deploy Supabase migrations
 
 on:
   push:
-    branches: [main]
+    # `main` deploys to PRODUCTION, `staging` deploys to STAGING. Which set of
+    # secrets is used is chosen per-branch in the steps below.
+    branches: [main, staging]
     paths:
       - 'supabase/migrations/**'
   # Manual trigger: lets us deploy on demand without a migration change —
   # e.g. to reconcile schema_migrations after a hand-applied migration, or to
   # re-run a deploy that failed on transient infra without touching a .sql file.
+  # The branch you dispatch from decides the target (main → prod, staging → staging).
   workflow_dispatch:
 
 jobs:
@@ -25,14 +28,21 @@ jobs:
           # version skips that lookup entirely. Bump deliberately when needed.
           version: 2.109.1
 
+      - name: Show target environment
+        run: echo "Branch '${{ github.ref_name }}' → deploying to ${{ github.ref_name == 'staging' && 'STAGING' || 'PRODUCTION' }} Supabase"
+
+      # One job, two targets. On `staging` we use the STAGING_* secrets (the
+      # staging Supabase project, owned by the staging account); on any other
+      # branch (i.e. `main`) we use the production secrets. Anon/URL aside, the
+      # access token, project ref and DB password all differ per project.
       - name: Link project
         run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+          SUPABASE_ACCESS_TOKEN: ${{ github.ref_name == 'staging' && secrets.STAGING_SUPABASE_ACCESS_TOKEN || secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ github.ref_name == 'staging' && secrets.STAGING_SUPABASE_PROJECT_ID || secrets.SUPABASE_PROJECT_ID }}
 
       - name: Push migrations
         run: supabase db push
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_ACCESS_TOKEN: ${{ github.ref_name == 'staging' && secrets.STAGING_SUPABASE_ACCESS_TOKEN || secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ github.ref_name == 'staging' && secrets.STAGING_SUPABASE_DB_PASSWORD || secrets.SUPABASE_DB_PASSWORD }}
