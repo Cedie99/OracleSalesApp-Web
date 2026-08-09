@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -31,6 +31,8 @@ import {
   type MapTileType,
 } from '@/components/maps/map-constants'
 import {
+  capForRole,
+  capsDiffer,
   clientQuotaUsage,
   emptyUsage,
   periodDateLabel,
@@ -478,10 +480,25 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
    */
   const now = useMemo(() => new Date(), [])
 
-  /** Per-client usage for the visible period, folded from the ledger. */
+  /**
+   * Per-client usage for the visible period, folded from the ledger.
+   *
+   * The owning agent's role is handed over so a client that has drawn on no
+   * pool yet still reports the ceiling that would apply to it rather than zero.
+   * Every client that HAS visits takes its ceiling from the roles frozen on its
+   * own ledger rows, not from this.
+   */
+  const roleOfClient = useCallback(
+    (clientId: string) => clients.find(c => c.id === clientId)?.agent?.role,
+    [clients]
+  )
+
   const usageByClient = useMemo(
-    () => (period ? clientQuotaUsage(attributions, period) : new Map<string, ClientQuotaUsage>()),
-    [attributions, period]
+    () =>
+      period
+        ? clientQuotaUsage(attributions, period, roleOfClient)
+        : new Map<string, ClientQuotaUsage>(),
+    [attributions, period, roleOfClient]
   )
 
   /**
@@ -722,7 +739,9 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
       // The meeting-type tabs deliberately do NOT apply, same as the quota lens:
       // the cap counts meetings and an online meeting is a meeting, and a
       // lifecycle clock has no opinion about how the visit was held.
-      const usage = period ? usageByClient.get(client.id) ?? emptyUsage(client.id, period) : null
+      const usage = period
+        ? usageByClient.get(client.id) ?? emptyUsage(client.id, period, client.agent?.role)
+        : null
       const flags = clientAttention(client, all, usage, now)
       if (flags.length > 0) {
         // Pinned at the attributed visit where there is one, because that is the
@@ -1368,7 +1387,11 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                       Needs attention
                       {period && (
                         <span className="text-muted-foreground font-normal">
-                          {' '}· {period.label}, at most {period.client_meeting_cap} per client
+                          {' '}· {period.label}, at most{' '}
+                          {capsDiffer(period)
+                            ? `${capForRole('sales_specialist', period)} Sales / ${capForRole('rsr', period)} RSR`
+                            : capForRole('sales_specialist', period)}{' '}
+                          per client
                         </span>
                       )}
                     </p>

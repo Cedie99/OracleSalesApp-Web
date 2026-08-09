@@ -26,6 +26,7 @@ import {
 import { createClient } from '@/lib/supabase/client'
 import {
   createUser, updateUser, toggleUserStatus, uploadUserAvatar, removeUserAvatar, resetUserPassword,
+  createTeam,
 } from './actions'
 import {
   AVATAR_ACCEPT_ATTR, AVATAR_ACCEPTED_TYPES, AVATAR_MAX_SOURCE_BYTES, resizeAvatar,
@@ -35,8 +36,9 @@ import {
   canManageUsers, platformForRole, roleScopeLabel, PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD,
 } from '@/lib/permissions'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import { teamIdsForRole, managerForTeam } from '@/lib/teams'
-import type { AdminScope, UserRole } from '@/types'
+import { teamsForRole, teamKindForRole, roleHasTeam, managerForTeam } from '@/lib/teams'
+import type { AdminScope, TeamKind, UserRole } from '@/types'
+import { TEAM_KIND_LABEL } from '@/types'
 import { PLATFORM_TONE, ROLE_TONE, TONE_CLASS, TONE_TEXT, roleTone } from '@/lib/status-styles'
 
 const ROLE_ICON: Record<UserRole, React.ElementType> = {
@@ -83,6 +85,7 @@ const ROLE_DESCRIPTION: Record<UserRole, string> = {
 interface TeamRow {
   id: string
   name: string
+  kind: TeamKind
 }
 
 interface UserRow {
@@ -289,9 +292,28 @@ export default function UsersPage() {
 
   async function loadTeams() {
     const supabase = createClient()
-    const { data, error } = await supabase.from('teams').select('id, name').order('name')
+    const { data, error } = await supabase.from('teams').select('id, name, kind').order('name')
     if (error) console.error('Failed to load teams:', error.message)
     setTeams(data ?? [])
+  }
+
+  /**
+   * Creates a team from inside the user form and selects it.
+   *
+   * The new row is spliced into local state rather than refetched: the admin is
+   * mid-form, and a reload would race the select they are about to make. Sorted
+   * on insert to match loadTeams' .order('name').
+   */
+  async function handleCreateTeam(name: string, kind: TeamKind): Promise<string> {
+    const { error, team } = await createTeam(name, kind)
+    if (error || !team) return error ?? 'Could not create the team.'
+
+    const row: TeamRow = { id: team.id, name: team.name, kind: team.kind }
+    setTeams(prev => [...prev, row].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    ))
+    setForm(prev => ({ ...prev, team_id: row.id }))
+    return ''
   }
 
   useEffect(() => {
@@ -421,6 +443,16 @@ export default function UsersPage() {
     if (isCreate && !form.password) return 'Password is required.'
     if (isCreate && form.password.length < PASSWORD_MIN_LENGTH) {
       return `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`
+    }
+    // Required for managers only. A manager's team is the sole record of which
+    // kind they run — the role has covered both since migration 010 folded
+    // rsr_manager into sales_manager — so a teamless manager cannot be scoped,
+    // and from migration 076 cannot be given a visit limit either. Specialists
+    // and RSRs stay optional so that opening an existing teamless agent's row to
+    // change something unrelated doesn't block on a field the admin didn't come
+    // here to fill.
+    if (form.role === 'sales_manager' && !form.team_id) {
+      return 'A manager must be assigned to a team. Pick one, or create it here.'
     }
     return ''
   }
@@ -761,6 +793,7 @@ export default function UsersPage() {
             <DialogTitle>Create New User</DialogTitle>
           </DialogHeader>
           <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate teams={teams} users={users} canCreateAdmins={canManage}
+            editingUserId={null} onCreateTeam={handleCreateTeam}
             avatarPreview={avatarPreview} onAvatarPick={handleAvatarPick} onAvatarClear={handleAvatarClear} />
           {formError && (
             <Alert variant="destructive" className="py-2">
@@ -783,6 +816,7 @@ export default function UsersPage() {
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
           <UserForm form={form} setForm={setForm} showPassword={showPassword} setShowPassword={setShowPassword} isCreate={false} teams={teams} users={users} canCreateAdmins={canManage}
+            editingUserId={editTarget?.id ?? null} onCreateTeam={handleCreateTeam}
             avatarPreview={avatarPreview} onAvatarPick={handleAvatarPick} onAvatarClear={handleAvatarClear} />
           {formError && (
             <Alert variant="destructive" className="py-2">
@@ -913,34 +947,77 @@ interface UserFormProps {
   teams: TeamRow[]
   users: UserRow[]
   canCreateAdmins: boolean
+  /** Null while creating. Lets the takeover warning ignore the user's own team. */
+  editingUserId: string | null
+  /** Resolves to an error message, or '' on success. */
+  onCreateTeam: (name: string, kind: TeamKind) => Promise<string>
   avatarPreview: string | null
   onAvatarPick: (file: File) => void
   onAvatarClear: () => void
 }
 
+/** Sentinel for the picker's "+ New team…" row, which is not a team id. */
+const NEW_TEAM = '__new__'
+
 function UserForm({
   form, setForm, showPassword, setShowPassword, isCreate, teams, users, canCreateAdmins,
+  editingUserId, onCreateTeam,
   avatarPreview, onAvatarPick, onAvatarClear,
 }: UserFormProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // The inline create-a-team panel. Local to the form: nothing outside it needs
+  // to know a team is half-typed, and closing the dialog should discard it.
+  const [newTeamOpen, setNewTeamOpen] = useState(false)
+  const [newTeamName, setNewTeamName] = useState('')
+  const [newTeamKind, setNewTeamKind] = useState<TeamKind>('sales')
+  const [newTeamError, setNewTeamError] = useState('')
+  const [creatingTeam, setCreatingTeam] = useState(false)
 
   function set(field: keyof UserFormData, value: string) {
     setForm(prev => ({ ...prev, [field]: value }))
   }
 
+  const availableTeams = teamsForRole(form.role, teams)
+
   function setRole(role: UserRole) {
-    const validTeamIds = teamIdsForRole(role)
+    const validIds = teamsForRole(role, teams).map(t => t.id)
     setForm(prev => ({
       ...prev,
       role,
       // Only admins carry a category; anything else must go back to 'all' or
       // the DB's profiles_admin_scope_role_check rejects the row.
       admin_scope: role === 'admin' ? prev.admin_scope : 'all',
-      team_id: validTeamIds.includes(prev.team_id) ? prev.team_id : '',
+      team_id: validIds.includes(prev.team_id) ? prev.team_id : '',
     }))
+    // A half-typed team belongs to the role that was on screen when it started.
+    closeNewTeam()
   }
 
-  const availableTeams = teams.filter(t => teamIdsForRole(form.role).includes(t.id))
+  function closeNewTeam() {
+    setNewTeamOpen(false)
+    setNewTeamName('')
+    setNewTeamError('')
+  }
+
+  function openNewTeam() {
+    // A specialist or RSR can only ever be in a team of their own kind, so the
+    // choice is theirs to make only when the role permits both — a manager.
+    setNewTeamKind(teamKindForRole(form.role) ?? 'sales')
+    setNewTeamName('')
+    setNewTeamError('')
+    setNewTeamOpen(true)
+  }
+
+  async function submitNewTeam() {
+    setCreatingTeam(true)
+    const error = await onCreateTeam(newTeamName, newTeamKind)
+    setCreatingTeam(false)
+    if (error) { setNewTeamError(error); return }
+    // The parent selected it for us; this just puts the panel away.
+    closeNewTeam()
+  }
+
   const managers = users.filter(u => u.role === 'sales_manager')
 
   function managerNameForTeam(teamId: string): string | undefined {
@@ -948,6 +1025,24 @@ function UserForm({
   }
 
   const selectedTeamManager = form.team_id ? managerNameForTeam(form.team_id) : undefined
+
+  const teamRequired = form.role === 'sales_manager'
+
+  /**
+   * The manager this save would displace.
+   *
+   * A team has one manager, so assigning a second is a handover — and because a
+   * manager now requires a team, the outgoing one is left without one rather
+   * than quietly sharing. That is worth saying out loud before the click, not
+   * discovering afterwards in the list. Excludes the user being edited, who is
+   * not taking over from themselves.
+   */
+  const displacedManager = (() => {
+    if (!teamRequired || !form.team_id) return undefined
+    const current = managerForTeam(form.team_id, managers)
+    if (!current || current.id === editingUserId) return undefined
+    return current
+  })()
 
   return (
     <div className="space-y-4 py-2">
@@ -1103,34 +1198,108 @@ function UserForm({
       )}
 
       <div className="space-y-1.5">
-        <Label>Team <span className="text-muted-foreground">(optional)</span></Label>
+        <Label>
+          Team{' '}
+          <span className="text-muted-foreground">
+            {teamRequired ? '(required)' : '(optional)'}
+          </span>
+        </Label>
         <Select
           value={form.team_id || 'none'}
-          onValueChange={v => set('team_id', v === 'none' ? '' : (v ?? ''))}
-          disabled={availableTeams.length === 0}
+          onValueChange={v => {
+            if (v === NEW_TEAM) { openNewTeam(); return }
+            closeNewTeam()
+            set('team_id', v === 'none' ? '' : (v ?? ''))
+          }}
+          disabled={!roleHasTeam(form.role)}
         >
           <SelectTrigger className="w-full">
-            <SelectValue placeholder={availableTeams.length === 0 ? 'This role has no teams' : 'No team'} />
+            <SelectValue placeholder={roleHasTeam(form.role) ? 'No team' : 'This role has no teams'} />
           </SelectTrigger>
           <SelectContent className="min-w-[280px]">
-            <SelectItem value="none">No team</SelectItem>
+            {/* A manager must land on a real team, so "No team" is not offered
+                to them — leaving it selectable would only produce a save error
+                further down the form. */}
+            {!teamRequired && <SelectItem value="none">No team</SelectItem>}
             {availableTeams.map(t => {
               const manager = managerNameForTeam(t.id)
               return (
                 <SelectItem key={t.id} value={t.id}>
-                  {`${t.name} — ${manager ?? 'No manager assigned'}`}
+                  {/* The kind is shown only to managers: for a specialist or an
+                      RSR every option is their own kind already, so the label
+                      would repeat on every row and distinguish nothing. */}
+                  {teamRequired ? `${t.name} · ${TEAM_KIND_LABEL[t.kind]} — ` : `${t.name} — `}
+                  {manager ?? 'No manager assigned'}
                 </SelectItem>
               )
             })}
+            <SelectItem value={NEW_TEAM}>+ New team…</SelectItem>
           </SelectContent>
         </Select>
-        {form.team_id && (
+
+        {newTeamOpen && (
+          <div className="space-y-2 rounded-md border border-border bg-muted/40 p-3">
+            <Label htmlFor="new-team-name" className="text-xs">New team</Label>
+            <Input
+              id="new-team-name"
+              value={newTeamName}
+              onChange={e => setNewTeamName(e.target.value)}
+              placeholder="e.g. Sales Team 3"
+              maxLength={60}
+              autoFocus
+            />
+            {/* Only a manager gets the choice — see openNewTeam. */}
+            {teamKindForRole(form.role) === null ? (
+              <Select value={newTeamKind} onValueChange={v => setNewTeamKind(v as TeamKind)}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="sales">Sales team</SelectItem>
+                  <SelectItem value="rsr">RSR team</SelectItem>
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Created as a {TEAM_KIND_LABEL[newTeamKind]} team, matching this role.
+              </p>
+            )}
+            {newTeamError && (
+              <Alert variant="destructive" className="py-2">
+                <AlertDescription className="text-xs">{newTeamError}</AlertDescription>
+              </Alert>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" size="sm" onClick={closeNewTeam} disabled={creatingTeam}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={submitNewTeam}
+                disabled={creatingTeam || !newTeamName.trim()}
+              >
+                {creatingTeam ? 'Creating…' : 'Create team'}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {displacedManager ? (
+          <Alert className="py-2">
+            <AlertDescription className="text-xs">
+              <span className="text-foreground font-medium">{displacedManager.full_name}</span>{' '}
+              currently manages this team. Saving hands it over, and leaves them without a
+              team until you assign one.
+            </AlertDescription>
+          </Alert>
+        ) : form.team_id && !teamRequired ? (
           <p className="text-xs text-muted-foreground">
             {selectedTeamManager
               ? <>Managed by <span className="text-foreground font-medium">{selectedTeamManager}</span></>
               : 'No manager is currently assigned to this team.'}
           </p>
-        )}
+        ) : null}
       </div>
     </div>
   )

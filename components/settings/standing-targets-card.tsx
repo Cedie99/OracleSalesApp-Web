@@ -9,20 +9,25 @@ import { Label } from '@/components/ui/label'
 import { createClient } from '@/lib/supabase/client'
 import { activePeriod, workingDaysIn } from '@/lib/cutoff'
 import type { CutoffPeriod, Holiday, QuotaSettings } from '@/types'
-import { Target, Loader2, TriangleAlert, Check } from 'lucide-react'
+import { Target, Loader2, TriangleAlert, Check, Info } from 'lucide-react'
 
 /**
  * The standing quota numbers — the one place an admin sets them.
  *
  * These are the REAL quota: 35 meetings per cutoff for Sales, 16 visits per
- * working day for RSR. The per-client visit limit sitting alongside them is a
- * different kind of number entirely, a ceiling rather than a goal, and is
+ * working day for RSR. The per-client visit limits sitting alongside them are a
+ * different kind of number entirely, a ceiling rather than a goal, and are
  * labelled as such so the two never get read as the same thing again.
+ *
+ * Both axes are now per role (migration 074, supervisor 2026-08-09). The limits
+ * are counted as SEPARATE POOLS, which is the fact the hint under them has to
+ * carry: Sales using its allowance against a client consumes none of RSR's.
  *
  * Saving goes through `apply_standing_targets()`, which pushes the change onto
  * every period that has not ended and writes an audit row per field it touched.
  * Periods that have finished keep the numbers they were measured against — see
- * the note on that function.
+ * the note on that function. The two limits reach only periods that have not
+ * STARTED, because unlike a target they drive slot allocation.
  */
 
 interface StandingTargetsCardProps {
@@ -36,7 +41,8 @@ interface StandingTargetsCardProps {
 interface Draft {
   sales_target: string
   rsr_daily_target: string
-  client_meeting_cap: string
+  sales_client_meeting_cap: string
+  rsr_client_meeting_cap: string
 }
 
 /** What `apply_standing_targets` reports back. */
@@ -53,7 +59,17 @@ function toDraft(settings: QuotaSettings | null): Draft {
     // chose (Batch-0 items 1-2).
     sales_target: settings?.sales_target != null ? String(settings.sales_target) : '',
     rsr_daily_target: settings?.rsr_daily_target != null ? String(settings.rsr_daily_target) : '',
-    client_meeting_cap: String(settings?.client_meeting_cap ?? 2),
+    // Unlike the targets, a visit limit has no "not configured" state — it is a
+    // ceiling the trigger applies to every meeting, so it always has a value.
+    // Falls back through the pre-074 shared number before the literal default,
+    // so an admin who has never opened this card since the split sees the limit
+    // that is actually in force rather than a 2 nobody chose.
+    sales_client_meeting_cap: String(
+      settings?.sales_client_meeting_cap ?? settings?.client_meeting_cap ?? 2
+    ),
+    rsr_client_meeting_cap: String(
+      settings?.rsr_client_meeting_cap ?? settings?.client_meeting_cap ?? 2
+    ),
   }
 }
 
@@ -98,7 +114,8 @@ export function StandingTargetsCard({
     const { data, error: rpcError } = await supabase.rpc('apply_standing_targets', {
       p_sales_target: draft.sales_target === '' ? null : Number(draft.sales_target),
       p_rsr_daily_target: draft.rsr_daily_target === '' ? null : Number(draft.rsr_daily_target),
-      p_client_meeting_cap: Number(draft.client_meeting_cap),
+      p_sales_client_cap: Number(draft.sales_client_meeting_cap),
+      p_rsr_client_cap: Number(draft.rsr_client_meeting_cap),
     })
 
     if (rpcError) setError(rpcError.message)
@@ -111,7 +128,16 @@ export function StandingTargetsCard({
     setSaving(false)
   }
 
-  const valid = Number(draft.client_meeting_cap) > 0
+  const valid =
+    Number(draft.sales_client_meeting_cap) > 0 && Number(draft.rsr_client_meeting_cap) > 0
+
+  // Compared against what is stored, so the notice appears while a change is
+  // unsaved and again on any reload where the two still disagree — never on a
+  // card the admin only opened to read.
+  const stored = toDraft(settings)
+  const capChanged =
+    draft.sales_client_meeting_cap !== stored.sales_client_meeting_cap ||
+    draft.rsr_client_meeting_cap !== stored.rsr_client_meeting_cap
 
   return (
     <Card>
@@ -172,18 +198,69 @@ export function StandingTargetsCard({
           </div>
         </div>
 
-        <div className="grid gap-1.5 sm:max-w-xs">
-          <Label htmlFor="q-cap">Visit limit per client</Label>
-          <Input
-            id="q-cap"
-            type="number"
-            min={1}
-            disabled={!canEdit}
-            value={draft.client_meeting_cap}
-            onChange={e => set('client_meeting_cap', e.target.value)}
-          />
-          {/* No hint: the label says limit, and the save confirmation already
-              reports which cutoffs a change reached. */}
+        {/* Its own block under a rule, because these are a different kind of
+            number from the two above — a ceiling, not a goal — and the split
+            makes that easy to lose. The heading says so once rather than
+            repeating "limit, not target" on each field. */}
+        <div className="border-t border-border pt-4 space-y-3">
+          <div>
+            <p className="text-sm font-medium text-foreground">Visit limit per client</p>
+            <p className="text-xs text-muted-foreground">
+              The most times one client may be visited in a cutoff. A ceiling, not something
+              to fill. Each role has its own allowance against a client — Sales using up its
+              visits leaves RSR&apos;s untouched. A manager follows the limit of the team they
+              run, counted separately again, so joining a visit never spends their agent&apos;s
+              allowance.
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 items-start">
+            <div className="grid gap-1.5">
+              <Label htmlFor="q-cap-sales">Sales limit</Label>
+              <Input
+                id="q-cap-sales"
+                type="number"
+                min={1}
+                disabled={!canEdit}
+                value={draft.sales_client_meeting_cap}
+                onChange={e => set('sales_client_meeting_cap', e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Visits per client per cutoff, for each sales specialist.
+              </p>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="q-cap-rsr">RSR limit</Label>
+              <Input
+                id="q-cap-rsr"
+                type="number"
+                min={1}
+                disabled={!canEdit}
+                value={draft.rsr_client_meeting_cap}
+                onChange={e => set('rsr_client_meeting_cap', e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Visits per client per cutoff, for each RSR.
+              </p>
+            </div>
+          </div>
+
+          {/* The one consequence an admin cannot see from the fields, and the
+              one that generates the support question: they typed a number, saved
+              it, and the running cutoff did not move. Stated only when a change
+              is actually pending, so it is news rather than boilerplate. */}
+          {capChanged && (
+            <Alert>
+              <Info className="w-4 h-4" />
+              <AlertTitle>This takes effect next cutoff</AlertTitle>
+              <AlertDescription>
+                A visit limit reaches only cutoffs that have not started. Meetings in the
+                running cutoff already hold slots allocated against its current limit, and
+                changing the ceiling now cannot un-slot them.
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
 
         {error && (

@@ -25,6 +25,8 @@ import { PeriodHistoryCard } from '@/components/settings/period-history-card'
 import { CurrentCutoffSummary } from '@/components/settings/current-cutoff-summary'
 import {
   activePeriod,
+  capForRole,
+  capsDiffer,
   generatePeriods,
   overlappingWithExisting,
   periodDateLabel,
@@ -112,7 +114,8 @@ interface DraftPeriod {
   label: string
   starts_on: string
   ends_on: string
-  client_meeting_cap: string
+  sales_client_meeting_cap: string
+  rsr_client_meeting_cap: string
   sales_target: string
   rsr_target: string
 }
@@ -121,7 +124,8 @@ const EMPTY_DRAFT: DraftPeriod = {
   label: '',
   starts_on: '',
   ends_on: '',
-  client_meeting_cap: '2',
+  sales_client_meeting_cap: '2',
+  rsr_client_meeting_cap: '2',
   sales_target: '',
   rsr_target: '',
 }
@@ -184,7 +188,14 @@ export default function SettingsPage() {
     setInherited(true)
     setDraft(d => ({
       ...d,
-      client_meeting_cap: String(settings.client_meeting_cap),
+      // Through the pre-074 shared number, so a settings row written before the
+      // per-role split still seeds the limit that is genuinely in force.
+      sales_client_meeting_cap: String(
+        settings.sales_client_meeting_cap ?? settings.client_meeting_cap
+      ),
+      rsr_client_meeting_cap: String(
+        settings.rsr_client_meeting_cap ?? settings.client_meeting_cap
+      ),
       sales_target: settings.sales_target != null ? String(settings.sales_target) : '',
       rsr_target: settings.rsr_daily_target != null ? String(settings.rsr_daily_target) : '',
     }))
@@ -305,7 +316,16 @@ export default function SettingsPage() {
         label: row.label,
         starts_on: row.starts_on,
         ends_on: row.ends_on,
-        client_meeting_cap: settings.client_meeting_cap,
+        // Per role since 074. client_meeting_cap is still written because the
+        // column is NOT NULL and mobile's sync-down selects it — carried as the
+        // looser of the two, matching what apply_standing_targets() maintains.
+        sales_client_meeting_cap:
+          settings.sales_client_meeting_cap ?? settings.client_meeting_cap,
+        rsr_client_meeting_cap: settings.rsr_client_meeting_cap ?? settings.client_meeting_cap,
+        client_meeting_cap: Math.max(
+          settings.sales_client_meeting_cap ?? settings.client_meeting_cap,
+          settings.rsr_client_meeting_cap ?? settings.client_meeting_cap
+        ),
         sales_target: settings.sales_target,
         // rsr_daily_target, not the deprecated rsr_target: an RSR is measured
         // per working day, and 064 moved the number to a column that says so.
@@ -332,7 +352,8 @@ export default function SettingsPage() {
     draft.starts_on !== '' &&
     draft.ends_on !== '' &&
     draft.ends_on >= draft.starts_on &&
-    Number(draft.client_meeting_cap) > 0
+    Number(draft.sales_client_meeting_cap) > 0 &&
+    Number(draft.rsr_client_meeting_cap) > 0
 
   async function createPeriod(status: CutoffPeriodStatus) {
     setCreating(true)
@@ -342,7 +363,13 @@ export default function SettingsPage() {
       label: draft.label.trim(),
       starts_on: draft.starts_on,
       ends_on: draft.ends_on,
-      client_meeting_cap: Number(draft.client_meeting_cap),
+      sales_client_meeting_cap: Number(draft.sales_client_meeting_cap),
+      rsr_client_meeting_cap: Number(draft.rsr_client_meeting_cap),
+      // NOT NULL and read by mobile's sync-down — see `generate`.
+      client_meeting_cap: Math.max(
+        Number(draft.sales_client_meeting_cap),
+        Number(draft.rsr_client_meeting_cap)
+      ),
       // Empty means "not configured for this role" and must stay null — a zero
       // would render as a real target of nothing (contract O-6).
       sales_target: draft.sales_target === '' ? null : Number(draft.sales_target),
@@ -570,10 +597,16 @@ export default function SettingsPage() {
                         comparable numbers, and they are not — one is a fortnight's
                         work and the other a single day's. */}
                     <div className="flex items-center gap-3 text-xs text-muted-foreground ml-auto">
+                      {/* Collapsed to one figure while the two roles agree,
+                          which is every period until an admin makes them
+                          differ. Printing "Limit 2/2" on twenty-four identical
+                          rows is noise that hides the row where it is 2/4. */}
                       <span>
                         Limit{' '}
                         <span className="text-foreground font-medium">
-                          {period.client_meeting_cap}
+                          {capsDiffer(period)
+                            ? `${capForRole('sales_specialist', period)} Sales · ${capForRole('rsr', period)} RSR`
+                            : capForRole('sales_specialist', period)}
                         </span>
                         /client
                       </span>
@@ -738,9 +771,11 @@ export default function SettingsPage() {
                           ? `RSR ${settings.rsr_daily_target} per working day`
                           : 'no RSR target'}
                       </span>
-                      , and a{' '}
+                      , and visit limits of{' '}
                       <span className="font-medium text-foreground">
-                        visit limit of {settings?.client_meeting_cap ?? '—'}
+                        {settings
+                          ? `Sales ${settings.sales_client_meeting_cap ?? settings.client_meeting_cap} and RSR ${settings.rsr_client_meeting_cap ?? settings.client_meeting_cap} per client`
+                          : '—'}
                       </span>
                       . Change them in Quota targets above.
                     </p>
@@ -841,23 +876,39 @@ export default function SettingsPage() {
                     Prefilled from the standing numbers — change them only if this one
                     period genuinely differs. Note that saving Quota targets afterwards
                     rewrites the two targets on every period that has not ended, this one
-                    included; the visit limit survives once the period has started.
+                    included; the visit limits survive once the period has started.
                   </p>
 
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <div className="grid gap-1.5">
-                      <Label htmlFor="p-cap">Visit limit per client</Label>
+                      <Label htmlFor="p-cap-sales">Sales visit limit (per client)</Label>
                       <Input
-                        id="p-cap"
+                        id="p-cap-sales"
                         type="number"
                         min={1}
-                        value={draft.client_meeting_cap}
-                        onChange={e => set('client_meeting_cap', e.target.value)}
+                        value={draft.sales_client_meeting_cap}
+                        onChange={e => set('sales_client_meeting_cap', e.target.value)}
                       />
                       <p className="text-xs text-muted-foreground">
-                        One shared pool across new and existing. Prospects are uncapped.
+                        One pool across new and existing. Prospects are uncapped.
                       </p>
                     </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="p-cap-rsr">RSR visit limit (per client)</Label>
+                      <Input
+                        id="p-cap-rsr"
+                        type="number"
+                        min={1}
+                        value={draft.rsr_client_meeting_cap}
+                        onChange={e => set('rsr_client_meeting_cap', e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Counted separately from the Sales pool, not shared with it.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <div className="grid gap-1.5">
                       <Label htmlFor="p-sales">Sales target (per cutoff)</Label>
                       <Input

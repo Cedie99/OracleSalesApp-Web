@@ -1,4 +1,11 @@
-import type { CutoffAttribution, CutoffPeriod, MeetingCutoffAttribution } from '@/types'
+import type {
+  CutoffAttribution,
+  CutoffPeriod,
+  MeetingCutoffAttribution,
+  TeamKind,
+  UserRole,
+} from '@/types'
+import { ROLE_LABEL } from '@/lib/permissions'
 
 /**
  * Cutoff/quota helpers.
@@ -23,6 +30,10 @@ import type { CutoffAttribution, CutoffPeriod, MeetingCutoffAttribution } from '
  * 2 of 2 has done nothing wrong and needs no attention, so distinguishing it
  * from one at 0 of 2 only invites the reading that the allowance is a score to
  * fill. The one fact worth reporting is whether somebody went past the wall.
+ *
+ * Unchanged by the per-role split (074): the ceiling a meeting was measured
+ * against depends on the recording agent's role, but going past one is going
+ * past one, so 'over' still means any pool overflowed.
  */
 export type QuotaState = 'exempt' | 'within' | 'over'
 
@@ -272,13 +283,107 @@ export function periodDateLabel(period: CutoffPeriod): string {
   )
 }
 
+/**
+ * The visit ceiling that applies to a meeting recorded by this role, on a team
+ * of this kind.
+ *
+ * Mirrors `public.cutoff_cap_for_agent()` (migration 076) exactly, including the
+ * fallback: a role with no ceiling of its own gets the legacy shared one, because
+ * the alternative is an undefined ceiling, which would read as "nothing ever
+ * counts". It also covers periods created before 074, whose two columns are null.
+ *
+ * The team kind matters for exactly one role. `sales_manager` covers both a
+ * sales team and an RSR team — migration 010 folded rsr_manager into it — so a
+ * manager is capped as the team they run is capped, and the role alone cannot
+ * say which that is.
+ */
+export function capForAgent(
+  role: UserRole | null | undefined,
+  teamKind: TeamKind | null | undefined,
+  period: CutoffPeriod
+): number {
+  const salesCap = period.sales_client_meeting_cap ?? period.client_meeting_cap
+  const rsrCap = period.rsr_client_meeting_cap ?? period.client_meeting_cap
+
+  if (role === 'sales_specialist') return salesCap
+  if (role === 'rsr') return rsrCap
+  if (role === 'sales_manager' && teamKind === 'sales') return salesCap
+  if (role === 'sales_manager' && teamKind === 'rsr') return rsrCap
+  return period.client_meeting_cap
+}
+
+/**
+ * The ceiling for a role whose team is unknown. Mirrors the deprecated
+ * `public.cutoff_cap_for_role()` shim — a manager resolves to the legacy shared
+ * ceiling rather than to either side's.
+ */
+export function capForRole(role: UserRole | null | undefined, period: CutoffPeriod): number {
+  return capForAgent(role, null, period)
+}
+
+/**
+ * Which pool a participant draws from — mirrors `public.cutoff_pool_key()`.
+ *
+ * Role alone for everyone except a manager, whose one role carries two different
+ * ceilings and so has to split by team kind. Folding team kind into a
+ * specialist's or RSR's key would only strand a teamless agent in a pool of
+ * their own, since their kind never varies.
+ */
+export function poolKey(
+  role: UserRole | null | undefined,
+  teamKind: TeamKind | null | undefined
+): string {
+  if (role === 'sales_manager') return `sales_manager:${teamKind ?? 'none'}`
+  return role ?? ''
+}
+
+/** True when the two roles are actually set to different ceilings. */
+export function capsDiffer(period: CutoffPeriod): boolean {
+  return capForRole('sales_specialist', period) !== capForRole('rsr', period)
+}
+
+/**
+ * One pool's allowance against one client.
+ *
+ * Pools are counted separately (migration 074): a client with a Sales limit of 2
+ * and an RSR limit of 4 has both, and Sales filling its two slots consumes none
+ * of RSR's four. Since 076 a manager has a pool of their own too, so a manager
+ * tagging along never eats the specialist's allowance.
+ */
+export interface QuotaPool {
+  /** `poolKey(role, teamKind)` — what the server counted this row against. */
+  key: string
+  /** Null for a row whose agent had no profile — its own pool, not a match-all. */
+  role: UserRole | null
+  /** Only meaningful for `sales_manager`, whose ceiling depends on it. */
+  teamKind: TeamKind | null
+  used: number
+  overCap: number
+  cap: number
+}
+
+/**
+ * Names a pool for a reader.
+ *
+ * A manager's pool carries the team kind, because "Sales Manager's limit of 4"
+ * is confusing next to a Sales limit of 2 — the 4 is the RSR ceiling, and the
+ * only thing that explains it is which team they run.
+ */
+export function poolLabel(pool: Pick<QuotaPool, 'role' | 'teamKind'>): string {
+  if (!pool.role) return 'an unknown role'
+  if (pool.role === 'sales_manager' && pool.teamKind) {
+    return `${ROLE_LABEL[pool.role]} (${pool.teamKind === 'rsr' ? 'RSR' : 'Sales'} team)`
+  }
+  return ROLE_LABEL[pool.role]
+}
+
 /** What one client did against its allowance in one period. */
 export interface ClientQuotaUsage {
   clientId: string
-  /** Meetings that consumed a slot. Never exceeds `cap` — the server caps it. */
+  /** Meetings that consumed a slot, across every pool. */
   used: number
   /**
-   * Meetings refused a slot because the pool was full. THIS is the
+   * Meetings refused a slot because their pool was full. THIS is the
    * over-visiting signal, not `used > cap`, which the server makes impossible.
    */
   overCap: number
@@ -286,7 +391,19 @@ export interface ClientQuotaUsage {
   uncapped: number
   /** Meetings whose tag-along confirmation is still open, reserving nothing. */
   pending: number
+  /**
+   * Total allowance across the pools this client actually drew on — the sum of
+   * `pools[].cap`, not any single role's ceiling.
+   *
+   * Summed rather than picked because with per-role pools there is no one cap
+   * for a client that both roles visited: its real allowance is both ceilings
+   * together, and reporting either alone would show 3 of 2. A client assigned to
+   * one agent has one pool, so this is that role's cap and reads exactly as it
+   * did before 074 — which is every client, near enough.
+   */
   cap: number
+  /** Per-role breakdown, for a surface that needs to say which pool overflowed. */
+  pools: QuotaPool[]
   state: QuotaState
 }
 
@@ -295,10 +412,22 @@ export interface ClientQuotaUsage {
  *
  * Rows for other periods are ignored rather than filtered upstream, so a caller
  * can hand over the whole ledger and switch periods without refetching.
+ *
+ * The pools are built from `captured_agent_role`, the role frozen onto the row
+ * when it was decided — never from the agent's role now. Reading the roster live
+ * would move a client between pools the moment somebody changed jobs, and
+ * silently restate a finished cutoff.
  */
 export function clientQuotaUsage(
   attributions: MeetingCutoffAttribution[],
-  period: CutoffPeriod
+  period: CutoffPeriod,
+  /**
+   * The role owning each client, used ONLY to name a ceiling for a client that
+   * has opened no pool — one whose meetings were all uncapped, invalid, or still
+   * pending. Without it such a client reports a cap of 0, which reads as "no
+   * allowance" when the truth is "none of it drawn on yet".
+   */
+  roleOfClient?: (clientId: string) => UserRole | null | undefined
 ): Map<string, ClientQuotaUsage> {
   const byClient = new Map<string, ClientQuotaUsage>()
 
@@ -308,22 +437,56 @@ export function clientQuotaUsage(
     overCap: 0,
     uncapped: 0,
     pending: 0,
-    cap: period.client_meeting_cap,
+    cap: 0,
+    pools: [],
     state: 'within',
   })
 
   for (const row of attributions) {
     if (row.period_id !== period.id) continue
     const entry = byClient.get(row.client_id) ?? blank(row.client_id)
-    if (row.attribution === 'counted') entry.used += 1
-    else if (row.attribution === 'over_cap') entry.overCap += 1
-    else if (row.attribution === 'excluded_uncapped') entry.uncapped += 1
-    else if (row.attribution === 'pending_validity') entry.pending += 1
-    // excluded_invalid and unattributed contribute to nothing by design.
+
+    // MEETINGS at this level, PARTICIPATIONS in the pools below. These four
+    // describe what happened to the client — how often it was visited — and a
+    // visit with a manager along is one visit, not two. Since 076 that meeting
+    // has two ledger rows, so counting every row here would tell an admin a
+    // client was seen twice when somebody went out once. The 'agent' row is the
+    // canonical one: every meeting has exactly one.
+    if (row.participation === 'agent') {
+      if (row.attribution === 'counted') entry.used += 1
+      else if (row.attribution === 'over_cap') entry.overCap += 1
+      else if (row.attribution === 'excluded_uncapped') entry.uncapped += 1
+      else if (row.attribution === 'pending_validity') entry.pending += 1
+      // excluded_invalid and unattributed contribute to nothing by design.
+    }
+
+    // Every participant, not just the agent: a slot is consumed per person, so
+    // this is where a manager's tag-along has to be counted or their pool would
+    // read as empty while the server had it full.
+    //
+    // Only the two capped outcomes open a pool. An uncapped or invalid meeting
+    // consumed no slot, so counting its role here would add a whole ceiling to
+    // the client's allowance on the strength of a meeting that used none of it.
+    if (row.attribution === 'counted' || row.attribution === 'over_cap') {
+      const role = row.captured_agent_role ?? null
+      const teamKind = row.captured_team_kind ?? null
+      const key = poolKey(role, teamKind)
+      let pool = entry.pools.find(p => p.key === key)
+      if (!pool) {
+        pool = { key, role, teamKind, used: 0, overCap: 0, cap: capForAgent(role, teamKind, period) }
+        entry.pools.push(pool)
+      }
+      if (row.attribution === 'counted') pool.used += 1
+      else pool.overCap += 1
+    }
+
     byClient.set(row.client_id, entry)
   }
 
   for (const entry of byClient.values()) {
+    entry.cap = entry.pools.length
+      ? entry.pools.reduce((total, pool) => total + pool.cap, 0)
+      : capForRole(roleOfClient?.(entry.clientId), period)
     entry.state = quotaState(entry)
   }
   return byClient
@@ -337,16 +500,25 @@ export function clientQuotaUsage(
  * because such a client has `used = 0`, which would otherwise read as "plenty of
  * room left" rather than "no limit here".
  *
- * 'over' keys off `overCap`, never off `used > cap`. The server allocates slots
- * up to the cap and classifies the rest as over_cap, so `used` can never exceed
- * `cap` and a comparison would silently never fire.
+ * 'over' keys off refused slots, never off `used > cap`. The server allocates
+ * slots up to the cap and classifies the rest as over_cap, so `used` can never
+ * exceed `cap` and a comparison would silently never fire.
+ *
+ * It reads the POOLS rather than the client-level `overCap`, because since 076
+ * those count different things: `overCap` counts meetings, and a pool that
+ * overflowed on a manager's tag-along has no meeting of its own to show up as.
+ * Falling back to `overCap` keeps the function usable on a bare count.
  *
  * Everything else is 'within', with no gradient inside it — see QuotaState.
  */
 export function quotaState(
-  usage: Pick<ClientQuotaUsage, 'used' | 'overCap' | 'uncapped' | 'cap'>
+  usage: Pick<ClientQuotaUsage, 'used' | 'overCap' | 'uncapped' | 'cap'> &
+    Partial<Pick<ClientQuotaUsage, 'pools'>>
 ): QuotaState {
-  if (usage.overCap > 0) return 'over'
+  const refused = usage.pools
+    ? usage.pools.reduce((total, pool) => total + pool.overCap, 0)
+    : usage.overCap
+  if (refused > 0 || usage.overCap > 0) return 'over'
   if (usage.used === 0 && usage.uncapped > 0) return 'exempt'
   return 'within'
 }
@@ -395,18 +567,29 @@ export function workingDaysIn(period: CutoffPeriod, holidays: string[] = []): nu
  * What one agent of this role is expected to do across the whole period.
  *
  * Null in, null out: an unconfigured role has no target, and must render as
- * such rather than as zero (O-6). A role with no quota at all — manager,
- * admin — is also null, which is why the parameter is widened to string.
+ * such rather than as zero (O-6). A role with no quota at all — admin,
+ * executive, collector — is also null, which is why the parameter is widened to
+ * string.
+ *
+ * A manager inherits the target of the team they run (migration 076), which is
+ * why `teamKind` is needed: `sales_manager` covers both kinds, so the role alone
+ * cannot say whether the flat per-cutoff sales number or the RSR daily number
+ * multiplied out applies. Without a team kind a manager falls back to null —
+ * "not configured" — rather than being handed an arbitrary one of the two.
  */
 export function periodTargetFor(
   role: string | undefined,
   period: CutoffPeriod,
-  workingDays: number
+  workingDays: number,
+  teamKind?: TeamKind | null
 ): number | null {
+  const perPeriodRsr = () =>
+    period.rsr_daily_target == null ? null : period.rsr_daily_target * workingDays
+
   if (role === 'sales_specialist') return period.sales_target
-  if (role === 'rsr') {
-    return period.rsr_daily_target == null ? null : period.rsr_daily_target * workingDays
-  }
+  if (role === 'rsr') return perPeriodRsr()
+  if (role === 'sales_manager' && teamKind === 'sales') return period.sales_target
+  if (role === 'sales_manager' && teamKind === 'rsr') return perPeriodRsr()
   return null
 }
 
@@ -441,6 +624,10 @@ export function dailyUsage(
   for (const row of attributions) {
     if (row.period_id !== period.id) continue
     if (!TARGET_CONTRIBUTING.includes(row.attribution)) continue
+    // One visit per meeting — see attributionBuckets. This chart is read against
+    // the RSR daily target, so counting a manager's tag-along row as a second
+    // visit would make a 16-visit day look like 20.
+    if (row.participation !== 'agent') continue
     const date = meetingDates.get(row.meeting_id)
     if (!date) continue
     counts.set(date, (counts.get(date) ?? 0) + 1)
@@ -514,6 +701,12 @@ export function attributionBuckets(
   >
   for (const row of attributions) {
     if (row.period_id !== period.id) continue
+    // Meetings, not participations. Since 076 a manager who tagged along has a
+    // ledger row of their own, so counting every row would report more visits
+    // than happened — and this total is reconciled on screen against
+    // `unattributedMeetingCount`, which counts meetings. Every meeting has
+    // exactly one 'agent' row, which makes it the canonical one to count.
+    if (row.participation !== 'agent') continue
     counts[row.attribution] += 1
   }
   return counts
@@ -546,7 +739,9 @@ export function agentPeriodUsage(
   attributions: MeetingCutoffAttribution[],
   period: CutoffPeriod,
   roleOf: (agentId: string) => string | undefined,
-  workingDays: number
+  workingDays: number,
+  /** Needed only to resolve a manager's target — see `periodTargetFor`. */
+  teamKindOf?: (agentId: string) => TeamKind | null | undefined
 ): Map<string, AgentPeriodUsage> {
   const byAgent = new Map<string, AgentPeriodUsage>()
 
@@ -564,7 +759,7 @@ export function agentPeriodUsage(
         towardTarget: 0,
         // Via periodTargetFor, so an RSR's daily number is multiplied out to a
         // period expectation rather than compared against a fortnight's work.
-        target: periodTargetFor(role, period, workingDays),
+        target: periodTargetFor(role, period, workingDays, teamKindOf?.(row.agent_id)),
         role,
       }
       byAgent.set(row.agent_id, entry)
@@ -610,15 +805,18 @@ export interface RosterMember {
  * would report as comfortably on quota. The idle members are counted and
  * surfaced instead, because that is the fact worth acting on.
  *
- * Only roles with a configured target contribute to the denominator; a manager
- * on the roster has no personal period quota (O-6) and so adds nothing to it,
- * while any meeting they recorded still lands in the buckets.
+ * Only roles with a configured target contribute to the denominator. Since
+ * migration 076 that includes the team's manager, who inherits their team's own
+ * target — so a team of five specialists plus a manager has six targets to hit,
+ * not five, and the manager's tag-alongs count toward theirs.
  */
 export function teamPeriodUsage(
   attributions: MeetingCutoffAttribution[],
   period: CutoffPeriod,
   roster: RosterMember[],
-  workingDays: number
+  workingDays: number,
+  /** Needed only to resolve a manager's target — see `periodTargetFor`. */
+  teamKindOf?: (teamId: string | null) => TeamKind | null | undefined
 ): Map<string | null, TeamPeriodUsage> {
   const blank = (teamId: string | null): TeamPeriodUsage => ({
     teamId,
@@ -642,7 +840,9 @@ export function teamPeriodUsage(
     entry.memberCount += 1
     // Mixed-role teams sum correctly because each member is resolved in their
     // own unit first: 35 per Sales head plus (16 x working days) per RSR head.
-    const memberTarget = periodTargetFor(member.role, period, workingDays)
+    const memberTarget = periodTargetFor(
+      member.role, period, workingDays, teamKindOf?.(member.team_id)
+    )
     if (memberTarget != null) entry.target = (entry.target ?? 0) + memberTarget
     byTeam.set(member.team_id, entry)
   }
@@ -671,15 +871,27 @@ export function teamPeriodUsage(
   return byTeam
 }
 
-/** Empty usage for a client with nothing attributed in the period. */
-export function emptyUsage(clientId: string, period: CutoffPeriod): ClientQuotaUsage {
+/**
+ * Empty usage for a client with nothing attributed in the period.
+ *
+ * `role` is the client's owning agent's role, which is what names its ceiling
+ * now that pools are per role (074). It is optional because the number is only
+ * ever displayed — with no meetings there is no `overCap`, so `quotaState` is
+ * 'within' and the cap signal cannot fire whatever this says.
+ */
+export function emptyUsage(
+  clientId: string,
+  period: CutoffPeriod,
+  role?: UserRole | null
+): ClientQuotaUsage {
   return {
     clientId,
     used: 0,
     overCap: 0,
     uncapped: 0,
     pending: 0,
-    cap: period.client_meeting_cap,
+    cap: capForRole(role, period),
+    pools: [],
     state: 'within',
   }
 }
