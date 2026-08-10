@@ -117,6 +117,20 @@ export const TILE_LAYERS = {
     // Fixed low-zoom tile used as a literal thumbnail preview in the map-type picker.
     preview: 'https://a.basemaps.cartocdn.com/light_all/3/6/3.png',
   },
+  /**
+   * The DEFAULT basemap on every lens, and the freshest of these sources.
+   *
+   * OSM's own tiles re-render from minutely diffs, so a road or subdivision an
+   * agent is standing in shows up within hours of anyone mapping it. Satellite
+   * was the default until 2026-08-10 and was changed because the imagery is
+   * years stale in the provinces the field team actually works — pins were
+   * landing on farmland that has since been built on, which reads as the pin
+   * being wrong rather than the picture being old.
+   *
+   * Satellite is still in the picker: for confirming a specific building it
+   * beats a street map, and an admin can switch per session. It just shouldn't
+   * be what a page opens on.
+   */
   standard: {
     label: 'Standard',
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -132,6 +146,13 @@ export const TILE_LAYERS = {
     maxZoom: 20,
     preview: 'https://a.basemaps.cartocdn.com/dark_all/3/6/3.png',
   },
+  /**
+   * Esri World Imagery. Useful, but NOT current — capture dates vary by tile
+   * and run years behind in provincial Luzon, which is why it stopped being the
+   * default. Every free imagery source has the same problem (they are largely
+   * the same underlying captures); genuinely recent imagery means a keyed,
+   * paid provider, which is a call for the team rather than a swap in here.
+   */
   satellite: {
     label: 'Satellite',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',

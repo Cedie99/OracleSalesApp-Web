@@ -16,11 +16,21 @@ function createPinIcon(
   active: boolean,
   avatarUrl?: string | null,
   badge?: string | number | null,
-  badgeColor?: string | null
+  badgeColor?: string | null,
+  /**
+   * Pushed into the background because the user is inspecting one record.
+   *
+   * Faded rather than removed: the surrounding pins are the context that makes
+   * a location mean something ("this stop is in the middle of the day's other
+   * work"), and pulling them off the map to focus on one of them throws that
+   * away. They stay clickable at this opacity, so the way out of a drill-down
+   * is still to click whatever you want next.
+   */
+  dimmed?: boolean
 ) {
   const width = active ? 38 : 30
   const height = Math.round(width * (512 / 384))
-  const glow = active ? ` drop-shadow(0 0 5px ${color})` : ''
+  const glow = active && !dimmed ? ` drop-shadow(0 0 5px ${color})` : ''
   // Agent face inside the pin head: the head is a circle centered at (192,192)
   // in the 384x512 viewBox; a 280/384-wide photo covers the white cutout while
   // leaving the status-colored ring visible around it.
@@ -45,7 +55,7 @@ function createPinIcon(
       : ''
   return L.divIcon({
     className: '',
-    html: `<div style="position:relative;width:${width}px;height:${height}px;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.5))${glow};">
+    html: `<div style="position:relative;width:${width}px;height:${height}px;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.5))${glow};${dimmed ? 'opacity:0.3;' : ''}">
       <svg width="${width}" height="${height}" viewBox="0 0 384 512" xmlns="http://www.w3.org/2000/svg">
         <path fill="${color}" stroke="#fff" stroke-width="8" fill-rule="evenodd" d="${PIN_PATH}"/>
       </svg>${avatar}${order}
@@ -117,7 +127,8 @@ function FlyTo({ focus }: { focus: FocusTarget | null }) {
     const fit = (focus.fitTo ?? []).filter(finite)
     if (fit.length > 1) {
       map.flyToBounds(L.latLngBounds(fit.map(p => [p.lat, p.lng] as [number, number])), {
-        padding: [80, 80],
+        paddingTopLeft: focus.padTopLeft ?? [80, 80],
+        paddingBottomRight: focus.padBottomRight ?? [80, 80],
         maxZoom: focus.zoom ?? 16,
         duration: 0.6,
       })
@@ -177,6 +188,8 @@ export interface MapPin {
   badge?: string | number | null
   /** Fills the badge to show how the stop ended. Defaults to a neutral dark. */
   badgeColor?: string | null
+  /** Faded into the background while the user is drilled into one record. */
+  dimmed?: boolean
 }
 
 /**
@@ -208,6 +221,17 @@ export interface FocusTarget {
    * stay the fallback for one point or none.
    */
   fitTo?: { lat: number; lng: number }[]
+  /**
+   * Room to leave around `fitTo`, as Leaflet [x, y] pixel pairs.
+   *
+   * Split into two corners rather than one symmetric value because every lens
+   * that fits a pair of points does it FROM a detail panel pinned over the
+   * right-hand side of the map — so even padding centres the pair underneath
+   * that panel, technically in frame and entirely invisible. Callers with no
+   * overlay can omit both and get an even margin.
+   */
+  padTopLeft?: [number, number]
+  padBottomRight?: [number, number]
   /** Bumped by callers to re-trigger a fly-to even when coordinates repeat. */
   nonce: number
 }
@@ -387,7 +411,14 @@ export default function FieldMap({
         <Marker
           key={pin.id}
           position={[pin.lat, pin.lng]}
-          icon={createPinIcon(pin.color, pin.active, pin.avatarUrl, pin.badge, pin.badgeColor)}
+          icon={createPinIcon(
+            pin.color,
+            pin.active,
+            pin.avatarUrl,
+            pin.badge,
+            pin.badgeColor,
+            pin.dimmed
+          )}
           eventHandlers={{ click: () => onSelect(pin.id) }}
           zIndexOffset={pin.active ? 1000 : 0}
         >

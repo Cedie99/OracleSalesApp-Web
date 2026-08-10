@@ -57,10 +57,12 @@ import type { Client, Meeting, MeetingOutcome, TagAlongRequest } from '@/types'
 import {
   Search, Building2, Phone, User, History, ShieldCheck, MapPin as MapPinIcon, Layers,
   LockOpen, ChevronDown, ChevronLeft, ChevronRight, CalendarDays, Check, Info, PanelLeftClose,
-  PanelLeftOpen, X, Crosshair, Video, Navigation, Clock, Tag, Users,
+  PanelLeftOpen, X, Crosshair, Video, Navigation, Clock, Tag, Users, MapPinCheck,
   type LucideIcon,
 } from 'lucide-react'
-import { CHANNEL_LABEL, OUTCOME_LABEL_SHORT, OUTCOME_TONE, TONE_CLASS } from '@/lib/status-styles'
+import {
+  CAPPED_STAGES, CHANNEL_LABEL, meetingStageBadge, OUTCOME_LABEL_SHORT, OUTCOME_TONE, TONE_CLASS,
+} from '@/lib/status-styles'
 import { REASSIGN_COOLDOWN_LABEL } from '@/lib/lost-opportunity'
 import { clientAddress, clientInfoGaps } from '@/lib/client-info'
 import { format } from 'date-fns'
@@ -133,9 +135,17 @@ function meetingClock(m: Meeting) {
     date: format(at, 'MMM d, yyyy'),
     time: format(at, 'h:mm a'),
     dateTime: format(at, 'MMM d, yyyy · h:mm a'),
+    /**
+     * The capture pair as a sentence, not a bare range.
+     *
+     * "2:14 – 2:58 PM" left the two ends unnamed, on a panel where the very next
+     * line reports another pair of ends (the start and end GPS fixes) — so a
+     * reader had to guess which pair a range belonged to. Naming them costs a
+     * few characters and removes the guess.
+     */
     window:
       m.start_captured_at && m.end_captured_at
-        ? `${format(new Date(m.start_captured_at), 'h:mm')} – ${format(new Date(m.end_captured_at), 'h:mm a')}`
+        ? `Started ${format(new Date(m.start_captured_at), 'h:mm')} → ended ${format(new Date(m.end_captured_at), 'h:mm a')}`
         : null,
     duration: formatDurationMinutes(meetingDurationMinutes(m)),
     /**
@@ -223,7 +233,7 @@ function MeetingHistoryRow({
   companions,
   onLocate,
   resolvePlace,
-  pinned,
+  showing,
 }: {
   meeting: Meeting
   /**
@@ -235,16 +245,35 @@ function MeetingHistoryRow({
   /** False past HISTORY_GEOCODE_LIMIT — the row then shows raw coordinates. */
   resolvePlace: boolean
   /**
-   * This is the visit the map pin is standing on.
+   * The map is currently showing THIS visit — it is the one the drill-down
+   * markers belong to.
    *
-   * Marked because the panel header no longer names the pinned coordinate — it
-   * describes the client. Without this the map could show a pin in one town
-   * while the only address on screen names another, with nothing joining them,
-   * which is precisely how the original "the map is broken" report happened.
+   * The only "on the map" state a row has, deliberately. There was briefly a
+   * second one marking the visit the client's status pin stood on, which is a
+   * real and different fact (that pin is always the newest located visit,
+   * while a drill-down can be any visit). Shipping both put two green marks on
+   * two different rows and was reported as worse than the bug it fixed: the
+   * distinction is one the reader doesn't have and shouldn't need. One mark,
+   * one meaning — "this is what you are looking at".
    */
-  pinned: boolean
+  showing: boolean
 }) {
   const plottable = isPlottableMeeting(m)
+  /**
+   * What the client WAS when this visit happened — the only place in the app
+   * that can show the prospect → new promotion, because nothing logs it.
+   *
+   * Read down a client's history this reconstructs the lineage the cap decisions
+   * were actually made against, which is otherwise invisible: every other surface
+   * shows the client's stage NOW, so three uncapped prospect visits and one
+   * capped New visit look like four identical rows under a "New" heading.
+   */
+  const stage = meetingStageBadge(m.client_status_at_meeting)
+  // Whether clicking this row draws ONE marker or TWO. Stated on the row itself
+  // (below) rather than left to be discovered by clicking: the pair is the
+  // whole point of the end fix, and it was invisible until you happened to open
+  // a row that had one.
+  const ended = plottable && hasEndFix(m)
   const clock = meetingClock(m)
   // Cancelled requests were withdrawn before anyone answered, so nobody came.
   const liveCompanions = companions.filter(r => r.status !== 'cancelled')
@@ -270,7 +299,7 @@ function MeetingHistoryRow({
       onClick={() => onLocate(m, shouldResolve ? place.label : null)}
       disabled={!plottable}
       className={`w-full text-left rounded-lg border p-2.5 transition-colors ${
-        pinned ? 'border-primary/40 bg-primary/5' : 'border-border'
+        showing ? 'border-primary bg-primary/10' : 'border-border'
       } ${
         plottable ? 'hover:bg-primary/5 hover:border-primary/40 cursor-pointer' : 'opacity-70 cursor-default'
       }`}
@@ -299,6 +328,30 @@ function MeetingHistoryRow({
             {OUTCOME_LABEL_SHORT[m.outcome] ?? m.outcome}
           </Badge>
         </span>
+      </div>
+
+      {/* The client's stage AT THIS VISIT, on its own line rather than as a
+          third pill in the header — the header is scanned for the outcome, and
+          a stage pill sitting beside it reads as another verdict on the meeting
+          instead of a fact about the account.
+
+          "Client was" is spelled out because the whole point is the contrast
+          with what the client is NOW, which the panel states two inches above
+          this list. Without those two words the badge is just a second, older
+          status pill with no explanation of why it disagrees.
+
+          The "not capped" qualifier only appears where it changes the reading.
+          A capped visit needs no annotation — counting is the default a reader
+          already assumes — while an uncapped one is the missing half of the
+          "4 visits against a limit of 2, and nothing flagged" puzzle. */}
+      <div className="flex items-center gap-1.5 mt-1.5" title={stage.title}>
+        <span className="text-[10px] text-muted-foreground shrink-0">Client was</span>
+        <Badge variant="tone" className={`text-[10px] px-1.5 h-4 shrink-0 ${TONE_CLASS[stage.tone]}`}>
+          {stage.label}
+        </Badge>
+        {!stage.capped && m.client_status_at_meeting && (
+          <span className="text-[10px] text-muted-foreground/70 truncate">· visit not capped</span>
+        )}
       </div>
 
       {/* Duration, and what it was measured from. Stated as unrecorded rather
@@ -332,20 +385,37 @@ function MeetingHistoryRow({
           {/* Flags the rows worth opening: only these draw a second marker, and
               the number says up front whether the agent moved. No counterpart
               line when there is no end fix — the duration line above already
-              reports that same absence, and saying it twice reads as two faults. */}
+              reports that same absence, and saying it twice reads as two faults.
+
+              Written as a sentence rather than the old "Start → end · 40 m",
+              which named neither end and left the number's unit to be inferred
+              from a lone "m". It is deliberately the same sentence the end
+              marker's own popup uses (see locateMeeting), so the list and the
+              map state one fact one way. */}
           {clock.drift && (
-            <p className="text-[10px] text-muted-foreground/70 truncate">
-              Start → end · <span className="text-foreground font-medium">{clock.drift}</span>
+            <p className="text-[10px] text-muted-foreground/70">
+              Ended <span className="text-foreground font-medium">{clock.drift}</span> from where it
+              started
             </p>
           )}
         </div>
-        {pinned ? (
-          <span className="shrink-0 flex items-center gap-1 text-[10px] font-medium text-primary">
-            <MapPinIcon className="w-3 h-3" />
-            On map
+        {/* What this row HAS — not what the map is showing, which is the strip
+            at the foot of the row. The two icons are the same pair the Meetings
+            table uses for the same distinction (MapPinCheck = both fixes,
+            MapPin = start only), so one symbol is learned once across pages. */}
+        {plottable ? (
+          <span className="shrink-0 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+            {ended ? (
+              <MapPinCheck className="w-3 h-3 text-primary" aria-label="Start and end GPS captured">
+                <title>Start and end GPS captured</title>
+              </MapPinCheck>
+            ) : (
+              <MapPinIcon className="w-3 h-3 text-primary" aria-label="Start GPS only">
+                <title>Start GPS only — no closing fix</title>
+              </MapPinIcon>
+            )}
+            {ended ? 'Start + end' : null}
           </span>
-        ) : plottable ? (
-          <MapPinIcon className="w-3 h-3 shrink-0 mt-0.5 text-primary" />
         ) : (
           <span className="shrink-0 text-[10px] text-muted-foreground">no pin</span>
         )}
@@ -362,6 +432,20 @@ function MeetingHistoryRow({
       {liveCompanions.length > 0 && (
         <div className="mt-1.5 pt-1.5 border-t border-border/60">
           <CompanionList requests={liveCompanions} />
+        </div>
+      )}
+
+      {/* Names the markers standing on the map right now, on its own full-width
+          line because it is a sentence rather than a badge. In the right-hand
+          column beside the place name it would have to truncate to about two
+          words, and a truncated "Showing…" is exactly as useless as no label —
+          which was the state that prompted this. */}
+      {showing && (
+        <div className="mt-1.5 pt-1.5 border-t border-primary/30 flex items-center gap-1.5 text-[10px] font-medium text-primary">
+          <Crosshair className="w-3 h-3 shrink-0" />
+          {/* A plain "&" — this is a JS string, so an &amp; entity would render
+              as those five characters rather than as an ampersand. */}
+          {ended ? 'Showing start & end on the map' : 'Showing this location on the map'}
         </div>
       )}
     </button>
@@ -435,14 +519,30 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
    */
   const [periodIndex, setPeriodIndex] = useState(0)
 
-  const [mapType, setMapType] = useState<MapTileType>('satellite')
+  // Standard, not satellite — see the note on TILE_LAYERS.standard.
+  const [mapType, setMapType] = useState<MapTileType>('standard')
   const [mapTypeMenuOpen, setMapTypeMenuOpen] = useState(false)
   const mapTypeMenuRef = useRef<HTMLDivElement>(null)
 
   const [listOpen, setListOpen] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [focus, setFocus] = useState<FocusTarget | null>(null)
-  const [highlight, setHighlight] = useState<HighlightMarker | null>(null)
+  /**
+   * The one-off marker the user drilled into, together with WHICH meeting
+   * produced it.
+   *
+   * Deliberately one piece of state rather than two. The marker is drawn on the
+   * map and the id marks its row in the history list, so the two have to be set
+   * and cleared in the same breath — held apart, a stale id would badge a row
+   * whose markers are no longer on screen, which is the same class of bug as
+   * the one this state was added to fix. `meetingId` is null for the coordinate
+   * search marker, which has no meeting behind it.
+   */
+  const [drilldown, setDrilldown] = useState<{
+    marker: HighlightMarker
+    meetingId: string | null
+  } | null>(null)
+  const highlight = drilldown?.marker ?? null
   const focusNonce = useRef(0)
 
   const { clients } = useClients()
@@ -598,7 +698,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   if (lastFilterKey !== filterKey) {
     setLastFilterKey(filterKey)
     setSelectedId(null)
-    setHighlight(null)
+    setDrilldown(null)
   }
 
   // --- Meetings grouped per client, newest first ------------------------------
@@ -660,11 +760,14 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     // coordinate branch below can re-set the highlight in the same batch; both
     // writes land in one render and the marker survives.
     setSelectedId(null)
-    setHighlight(null)
+    setDrilldown(null)
     const c = parseLatLng(value)
     if (c) {
       focusNonce.current += 1
-      setHighlight({ lat: c.lat, lng: c.lng, kind: 'search', label: `${c.lat}, ${c.lng}` })
+      setDrilldown({
+        marker: { lat: c.lat, lng: c.lng, kind: 'search', label: `${c.lat}, ${c.lng}` },
+        meetingId: null,
+      })
       setFocus({ lat: c.lat, lng: c.lng, zoom: 16, nonce: focusNonce.current })
     }
   }
@@ -844,6 +947,17 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
    */
   const plotPlace = useReverseGeocode(selectedPlotMeeting?.gps_lat, selectedPlotMeeting?.gps_lng)
 
+  /**
+   * A visit is being inspected, so its start/end markers are the subject of the
+   * map and every status pin steps back behind them.
+   *
+   * Without this the pair was drawn into a field of nine equally bright pins —
+   * the camera framed it, but nothing said which markers the panel was talking
+   * about, and one of those bright pins is the same client's own newest visit
+   * sitting somewhere else entirely.
+   */
+  const inspectingVisit = drilldown?.meetingId != null
+
   const pins = useMemo<MapPin[]>(() => {
     // Every attention signal rests on an account that has been visited at some
     // point, so all three plot — seeing WHERE trouble clusters is most of the
@@ -901,6 +1015,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
               ...visit.meta,
             ],
             avatarUrl: r.client.agent?.avatar_url,
+            dimmed: inspectingVisit,
           }
         })
     }
@@ -921,9 +1036,10 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
           label: v.client.company_name,
           ...visitMeta(v.plotMeeting!, active),
           avatarUrl: v.client.agent?.avatar_url,
+          dimmed: inspectingVisit,
         }
       })
-  }, [visited, attention, selectedId, colorBy, listMode, plotPlace.loading, plotPlace.label, tagAlongsByMeetingId])
+  }, [visited, attention, selectedId, colorBy, listMode, plotPlace.loading, plotPlace.label, tagAlongsByMeetingId, inspectingVisit])
 
   // Built from STATUS_KEYS, not a literal, so adding a lifecycle stage to
   // STATUS_META can't leave a legend row counting `undefined + 1` (NaN). A
@@ -982,24 +1098,60 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     [selectedId, meetingsByClient]
   )
 
+  /**
+   * Opening a client opens its newest located visit — the same thing clicking
+   * that visit's row does.
+   *
+   * Selecting a client IS asking about their last visit, so making the user
+   * click twice for it was ceremony. The old behaviour also left the map in a
+   * genuinely unhelpful state: it flew somewhere and dropped no drill-down, so
+   * nothing on screen said WHICH of the rows in the panel it had flown to, and
+   * the only way to find out was to click one and see if the camera moved.
+   *
+   * Clearing first means a client with no located visit at all — nothing to
+   * open — still drops the previous client's markers instead of stranding them
+   * beside a panel that has stopped describing them.
+   */
+  /**
+   * Close the panel and take the map back to plain pins.
+   *
+   * Both halves always move together: the drill-down markers and the dimming
+   * they cause are only explained by the open panel, so a close that left them
+   * up would strand a bright pair and eight faded pins with nothing on screen
+   * saying what they were.
+   */
+  function clearSelection() {
+    setSelectedId(null)
+    setDrilldown(null)
+  }
+
+  /**
+   * The LIST rows' handler: clicking the row that is already open closes it.
+   *
+   * Only the list toggles. A map pin keeps selecting unconditionally, because
+   * clicking a marker also opens that marker's popup — a click that closed the
+   * panel while opening a popup about the very thing it just closed would be
+   * two contradictory answers to one action.
+   */
+  function toggleClient(id: string) {
+    if (id === selectedId) clearSelection()
+    else selectClient(id)
+  }
+
   function selectClient(id: string) {
     setSelectedId(id)
     // Each lens pins a different meeting — the latest in the date range vs the
-    // latest this cutoff — so fly to whichever one the visible list is showing.
+    // latest this cutoff — so open whichever one the visible list is showing.
     const plotMeeting =
       listMode === 'attention'
         ? attention.find(r => r.client.id === id)?.plotMeeting
         : visited.find(v => v.client.id === id)?.plotMeeting
-    if (plotMeeting) {
-      focusNonce.current += 1
-      setHighlight(null)
-      setFocus({
-        lat: plotMeeting.gps_lat!,
-        lng: plotMeeting.gps_lng!,
-        zoom: 15,
-        nonce: focusNonce.current,
-      })
-    }
+    setDrilldown(null)
+    // No place name passed: the reverse geocode for these coordinates is keyed
+    // on the selection this call is still making, so it has not resolved yet.
+    // The popup omits that one line rather than risk captioning the new pin
+    // with the previously selected client's place.
+    if (plotMeeting) locateMeeting(plotMeeting)
   }
 
   // Clicking a meeting in the history pins it and flies there. The marker mirrors
@@ -1010,54 +1162,73 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     const clock = meetingClock(m)
     const ended = hasEndFix(m)
     focusNonce.current += 1
-    setHighlight({
-      lat: m.gps_lat!,
-      lng: m.gps_lng!,
-      kind: 'meeting',
-      // Named as the START only once there is an end fix to tell it apart from.
-      // On the ~78% of meetings with no second fix there is nothing to compare,
-      // and "Started here" would imply a missing counterpart that was never
-      // captured rather than simply not shown.
-      label: ended ? `Started · ${clock.dateTime}` : clock.dateTime,
-      // `place` comes from the history row that was clicked — it resolved this
-      // coordinate for its own line already, so the popup costs no extra lookup.
-      meta: [
-        clock.window ? `${clock.window}${clock.duration ? ` · ${clock.duration}` : ''}` : null,
-        place,
-        `Tagged ${meetingTag(m)}`,
-        m.agent?.full_name ?? client?.agent?.full_name ?? null,
-      ],
-      color: client ? mapStatusMeta(client).color : undefined,
-      avatarUrl: m.agent?.avatar_url ?? client?.agent?.avatar_url ?? null,
-      end: ended
-        ? {
-            lat: m.end_gps_lat!,
-            lng: m.end_gps_lng!,
-            label: m.end_captured_at
-              ? `Ended · ${format(new Date(m.end_captured_at), 'MMM d, yyyy · h:mm a')}`
-              : 'Meeting ended here',
-            // The gap is stated, not judged. Nobody has set a distance that
-            // makes a meeting suspect, and a threshold invented here would read
-            // as policy — the admin compares, this just measures.
-            meta: [
-              clock.drift ? `${clock.drift} from where it started` : null,
-              formatCoords(m.end_gps_lat!, m.end_gps_lng!),
-            ],
-          }
-        : undefined,
+    setDrilldown({
+      // Carried alongside the marker so the history list can badge the row these
+      // markers came from — without it, clicking any row left "On map" sitting
+      // on whichever visit the client's pin happened to stand on.
+      meetingId: m.id,
+      marker: {
+        lat: m.gps_lat!,
+        lng: m.gps_lng!,
+        kind: 'meeting',
+        // Named as the START only once there is an end fix to tell it apart
+        // from. On the ~78% of meetings with no second fix there is nothing to
+        // compare, and "Started here" would imply a missing counterpart that
+        // was never captured rather than simply not shown.
+        label: ended ? `Started · ${clock.dateTime}` : clock.dateTime,
+        // `place` comes from the history row that was clicked — it resolved this
+        // coordinate for its own line already, so the popup costs no extra
+        // lookup.
+        meta: [
+          clock.window ? `${clock.window}${clock.duration ? ` · ${clock.duration}` : ''}` : null,
+          place,
+          `Tagged ${meetingTag(m)}`,
+          m.agent?.full_name ?? client?.agent?.full_name ?? null,
+        ],
+        color: client ? mapStatusMeta(client).color : undefined,
+        avatarUrl: m.agent?.avatar_url ?? client?.agent?.avatar_url ?? null,
+        end: ended
+          ? {
+              lat: m.end_gps_lat!,
+              lng: m.end_gps_lng!,
+              label: m.end_captured_at
+                ? `Ended · ${format(new Date(m.end_captured_at), 'MMM d, yyyy · h:mm a')}`
+                : 'Meeting ended here',
+              // The gap is stated, not judged. Nobody has set a distance that
+              // makes a meeting suspect, and a threshold invented here would
+              // read as policy — the admin compares, this just measures.
+              meta: [
+                clock.drift ? `${clock.drift} from where it started` : null,
+                formatCoords(m.end_gps_lat!, m.end_gps_lng!),
+              ],
+            }
+          : undefined,
+      },
     })
     setFocus({
       lat: m.gps_lat!,
       lng: m.gps_lng!,
-      // Both fixes in frame when there are two. zoom is the ceiling in that
-      // case, so the usual metres-apart pair doesn't slam into max zoom.
+      // Both fixes in frame when there are two.
       fitTo: ended
         ? [
             { lat: m.gps_lat!, lng: m.gps_lng! },
             { lat: m.end_gps_lat!, lng: m.end_gps_lng! },
           ]
         : undefined,
-      zoom: 16,
+      // A CEILING when fitting a pair, a target otherwise. Raised from 16 so a
+      // drill-down actually lands on the two markers: at 16 a pair a few metres
+      // apart — the common case, since the agent usually stays put — sat in the
+      // middle of a whole neighbourhood, which is not "showing the start and
+      // end", it is showing the town they happened. Nothing is lost on a pair
+      // that IS far apart: flyToBounds drops below the ceiling to fit them.
+      // Terrain tiles stop at 17 and Leaflet clamps to the layer, so this is a
+      // request, not a promise.
+      zoom: ended ? 18 : 17,
+      // The detail panel is pinned over the right of the map and is ALWAYS open
+      // here — it is what the drill-down was launched from — so the frame is
+      // pushed clear of it. Even padding would centre the pair under the panel.
+      padTopLeft: [72, 72],
+      padBottomRight: [352, 72],
       nonce: focusNonce.current,
     })
   }
@@ -1292,10 +1463,30 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                   {visited.map(({ client, inRange, plotMeeting, lastVisit, viaTagAlong }) => {
                     const status = mapStatusMeta(client)
                     const active = client.id === selectedId
+                    /**
+                     * Visits here that the cap never applied to, counted off the
+                     * MEETINGS themselves rather than off the attribution ledger.
+                     *
+                     * That is what keeps this honest next to `inRange.length`.
+                     * The ledger is folded per CUTOFF PERIOD while this list
+                     * follows the toolbar's date range, and the two windows are
+                     * routinely different — quoting a ledger figure beside a
+                     * range figure would produce "4 visits · 1 counted" where the
+                     * 4 and the 1 describe different fortnights. An uncapped
+                     * stage is a property of the meeting alone, so it can be
+                     * counted within whatever window the row is already showing.
+                     *
+                     * A null stage is NOT counted as uncapped: it is unknown, and
+                     * pre-067 rows are common enough that treating them as
+                     * uncapped would explain away breaches that may be real.
+                     */
+                    const uncapped = inRange.filter(
+                      m => m.client_status_at_meeting && !CAPPED_STAGES.includes(m.client_status_at_meeting)
+                    ).length
                     return (
                       <button
                         key={client.id}
-                        onClick={() => selectClient(client.id)}
+                        onClick={() => toggleClient(client.id)}
                         className={`w-full text-left px-4 py-3 transition-colors ${active ? 'bg-primary/10' : 'hover:bg-muted/30'}`}
                       >
                         <div className="flex items-center gap-2">
@@ -1345,6 +1536,19 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                             <Badge variant="outline" className="text-[9px] px-1 h-3.5">
                               {inRange.length} {inRange.length === 1 ? 'visit' : 'visits'}
                             </Badge>
+                            {/* Only from two visits up. One visit never reads as
+                                a cap breach, so annotating it would put this
+                                badge on nearly every prospect row in the list to
+                                answer a question nobody asked there. */}
+                            {uncapped > 0 && inRange.length > 1 && (
+                              <Badge
+                                variant="outline"
+                                className="text-[9px] px-1 h-3.5 text-muted-foreground"
+                                title={`${uncapped} of these ${inRange.length} visits happened while the client was a Prospect or In Progress. Those stages carry no visit limit, so they count against none. Open the client to see the stage on each visit.`}
+                              >
+                                {uncapped} uncapped
+                              </Badge>
+                            )}
                             {!plotMeeting && (
                               <Badge variant="outline" className="text-[9px] px-1 h-3.5 text-muted-foreground">
                                 No pin
@@ -1424,7 +1628,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                     return (
                       <button
                         key={client.id}
-                        onClick={() => selectClient(client.id)}
+                        onClick={() => toggleClient(client.id)}
                         className={`w-full text-left px-4 py-3 transition-colors ${active ? 'bg-primary/10' : 'hover:bg-muted/30'}`}
                       >
                         <div className="flex items-center gap-2">
@@ -1672,6 +1876,55 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
             </Card>
           )}
 
+          {/* The key for a start/end pair, shown ONLY while a pair is on screen.
+              A permanent legend row would explain a ring that isn't drawn on the
+              other ~78% of meetings — and this map already carries a colour
+              legend, so a second standing key competes with it. Appearing at the
+              moment of confusion teaches the vocabulary and then gets out of the
+              way. Colours are read from the highlight itself so the key can
+              never describe a different marker than the one being drawn. */}
+          {inspectingVisit && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-3 rounded-full border border-border bg-card/95 backdrop-blur-sm shadow-sm pl-3 pr-1.5 py-1.5 text-[11px] whitespace-nowrap">
+              <span className="flex items-center gap-1.5">
+                <MapPinIcon
+                  className="w-3 h-3 shrink-0"
+                  style={{ color: highlight?.color ?? '#0ea5e9' }}
+                />
+                <span className="text-muted-foreground">
+                  Pin ={' '}
+                  <span className="text-foreground font-medium">
+                    {highlight?.end ? 'started here' : 'this visit'}
+                  </span>
+                </span>
+              </span>
+              {/* Only when a closing fix exists — naming a ring that isn't drawn
+                  would have the reader hunting the map for it. */}
+              {highlight?.end && (
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="w-2.5 h-2.5 rounded-full border-2 bg-background shrink-0"
+                    style={{ borderColor: highlight.color ?? '#0ea5e9' }}
+                  />
+                  <span className="text-muted-foreground">
+                    Ring = <span className="text-foreground font-medium">ended here</span>
+                  </span>
+                </span>
+              )}
+              {/* The way out. It matters more now that the other pins fade while
+                  a visit is being inspected: without a stated exit, the only way
+                  back to a full-strength map is to guess that clicking another
+                  client clears it. */}
+              <button
+                type="button"
+                onClick={() => setDrilldown(null)}
+                className="shrink-0 p-1 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+                aria-label="Stop showing this visit"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+
           {/* Map type switcher */}
           <div ref={mapTypeMenuRef} className="absolute bottom-4 left-4 z-10">
             <button
@@ -1799,7 +2052,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                 </div>
                 <button
                   type="button"
-                  onClick={() => setSelectedId(null)}
+                  onClick={clearSelection}
                   className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
                   aria-label="Close"
                 >
@@ -1949,8 +2202,18 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                   <div className="flex items-center gap-2 mb-2.5">
                     <History className="w-3.5 h-3.5 text-primary" />
                     <p className="text-xs font-medium text-foreground">Meeting History</p>
-                    <span className="text-[10px] text-muted-foreground ml-auto">Tap a visit to locate</span>
+                    {/* "another" because the newest is already open — selecting
+                        the client opened it. */}
+                    <span className="text-[10px] text-muted-foreground ml-auto">Tap another visit to show it</span>
                   </div>
+
+                  {/* No "show start & end" button here any more.
+                      ------------------------------------------------------
+                      It only ever targeted `selectedPlotMeeting` — the newest
+                      located visit — so it was a second, weaker way to do what
+                      clicking the top row of this very list already does, while
+                      looking like it applied to the history as a whole. Every
+                      row opens its own pair; that is the one path. */}
                   <div className="space-y-1.5">
                     {selectedHistory.length === 0 && (
                       <p className="text-xs text-muted-foreground">No meetings logged yet.</p>
@@ -1962,7 +2225,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                         companions={tagAlongsFor(tagAlongsByMeetingId, m.id)}
                         onLocate={locateMeeting}
                         resolvePlace={i < HISTORY_GEOCODE_LIMIT}
-                        pinned={m.id === selectedPlotMeeting?.id}
+                        showing={m.id === drilldown?.meetingId}
                       />
                     ))}
                     {selectedHistory.length > HISTORY_GEOCODE_LIMIT && (
