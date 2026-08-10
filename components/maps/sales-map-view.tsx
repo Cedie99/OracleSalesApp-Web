@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
+import Link from 'next/link'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -57,7 +58,7 @@ import type { Client, Meeting, MeetingOutcome, TagAlongRequest } from '@/types'
 import {
   Search, Building2, Phone, User, History, ShieldCheck, MapPin as MapPinIcon, Layers,
   LockOpen, ChevronDown, ChevronLeft, ChevronRight, CalendarDays, Check, Info, PanelLeftClose,
-  PanelLeftOpen, X, Crosshair, Video, Navigation, Clock, Tag, Users, MapPinCheck,
+  PanelLeftOpen, X, Crosshair, Video, Navigation, Clock, Tag, Users,
   type LucideIcon,
 } from 'lucide-react'
 import {
@@ -227,6 +228,13 @@ const HISTORY_GEOCODE_LIMIT = 10
  * absent), and WHERE — the resolved GPS place, with the venue tag demoted to a
  * labelled second line because "Client office" was the only location text on
  * screen and reads as an address it isn't.
+ *
+ * Answering them cost lines, and the row grew until a single visit filled the
+ * panel. It has since been pulled back the other way: facts that only qualify
+ * another fact (whether the visit counted against the cutoff) are gone, and the
+ * stage is a bare pill in the header rather than a sentence on a line of its
+ * own. The rule this settles on is that a history row states WHAT HAPPENED —
+ * anything explaining what that means belongs on the record it links to.
  */
 function MeetingHistoryRow({
   meeting: m,
@@ -267,6 +275,11 @@ function MeetingHistoryRow({
    * were actually made against, which is otherwise invisible: every other surface
    * shows the client's stage NOW, so three uncapped prospect visits and one
    * capped New visit look like four identical rows under a "New" heading.
+   *
+   * Rendered only where a stage was actually recorded: "Stage not recorded" is a
+   * legacy-data artifact of rows predating the column, and a grey pill saying so
+   * on every old row is a line of noise per row for no fact. The Meetings record
+   * behind "Open full details" still names the gap.
    */
   const stage = meetingStageBadge(m.client_status_at_meeting)
   // Whether clicking this row draws ONE marker or TWO. Stated on the row itself
@@ -294,161 +307,215 @@ function MeetingHistoryRow({
       : (shouldResolve ? place.label : formatCoords(m.gps_lat!, m.gps_lng!)) ?? '—'
 
   return (
-    <button
-      type="button"
-      onClick={() => onLocate(m, shouldResolve ? place.label : null)}
-      disabled={!plottable}
-      className={`w-full text-left rounded-lg border p-2.5 transition-colors ${
+    /* A row is two actions, not one: locate on the map, and open the record. So
+       the card is a container and the locate action is a button inside it —
+       nesting the Meetings link inside a button would be invalid markup, and
+       hanging it off the same click would cost the map action the panel exists
+       for. */
+    <div
+      className={`rounded-lg border transition-colors ${
         showing ? 'border-primary bg-primary/10' : 'border-border'
-      } ${
-        plottable ? 'hover:bg-primary/5 hover:border-primary/40 cursor-pointer' : 'opacity-70 cursor-default'
-      }`}
+      } ${plottable ? 'hover:border-primary/40' : 'opacity-70'}`}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">
-          {clock.date} <span className="text-muted-foreground font-normal">· {clock.time}</span>
-        </span>
-        <span className="flex items-center gap-1 shrink-0">
-          {/* Says the visit had a companion before the row is opened or read —
-              on this panel the outcome badge is the only thing scanned, so a
-              tag-along stated further down would be missed. The names and each
-              answer sit on the line below. */}
-          {liveCompanions.length > 0 && (
-            <Badge variant="outline" className="text-[10px] px-1.5 h-4 shrink-0 text-muted-foreground">
-              <Users className="w-2.5 h-2.5" />
-              Tagged along
-            </Badge>
-          )}
-          {/* Tone comes from the app-wide badge vocabulary, not from the map's
-              own OUTCOME_META palette: this is the same pill an admin just read
-              on Meetings and in the client dialog, and a "Lost Opportunity" that
-              is red there and grey here is a third thing to learn. The map's
-              hexes stay where they belong — on the pins and the legend. */}
-          <Badge variant="tone" className={`text-[10px] px-1.5 h-4 shrink-0 ${TONE_CLASS[OUTCOME_TONE[m.outcome]]}`}>
-            {OUTCOME_LABEL_SHORT[m.outcome] ?? m.outcome}
-          </Badge>
-        </span>
-      </div>
-
-      {/* The client's stage AT THIS VISIT, on its own line rather than as a
-          third pill in the header — the header is scanned for the outcome, and
-          a stage pill sitting beside it reads as another verdict on the meeting
-          instead of a fact about the account.
-
-          "Client was" is spelled out because the whole point is the contrast
-          with what the client is NOW, which the panel states two inches above
-          this list. Without those two words the badge is just a second, older
-          status pill with no explanation of why it disagrees.
-
-          The "not capped" qualifier only appears where it changes the reading.
-          A capped visit needs no annotation — counting is the default a reader
-          already assumes — while an uncapped one is the missing half of the
-          "4 visits against a limit of 2, and nothing flagged" puzzle. */}
-      <div className="flex items-center gap-1.5 mt-1.5" title={stage.title}>
-        <span className="text-[10px] text-muted-foreground shrink-0">Client was</span>
-        <Badge variant="tone" className={`text-[10px] px-1.5 h-4 shrink-0 ${TONE_CLASS[stage.tone]}`}>
-          {stage.label}
-        </Badge>
-        {!stage.capped && m.client_status_at_meeting && (
-          <span className="text-[10px] text-muted-foreground/70 truncate">· visit not capped</span>
-        )}
-      </div>
-
-      {/* Duration, and what it was measured from. Stated as unrecorded rather
-          than omitted: a blank row can't be told apart from a short meeting,
-          and most rows predating 2026-07-24 have no capture pair at all. */}
-      <div className="flex items-center gap-1.5 mt-1 text-[11px] text-muted-foreground">
-        <Clock className="w-3 h-3 shrink-0" />
-        {clock.duration ? (
-          <>
-            {clock.window && <span className="truncate">{clock.window} ·</span>}
-            <span className="shrink-0 font-medium text-foreground">{clock.duration}</span>
-          </>
-        ) : (
-          <span className="text-muted-foreground/70">Duration not recorded</span>
-        )}
-      </div>
-
-      {/* Where, measured. The tag underneath is the agent's claim about the
-          venue — see meetingTag. */}
-      <div className="flex items-start gap-1.5 mt-1 text-[11px]">
-        {online ? (
-          <Video className="w-3 h-3 shrink-0 mt-0.5 text-muted-foreground" />
-        ) : (
-          <Navigation className="w-3 h-3 shrink-0 mt-0.5 text-muted-foreground" />
-        )}
-        <div className="min-w-0 flex-1">
-          <p className={`truncate ${plottable ? 'text-foreground' : 'text-muted-foreground/70'}`}>
-            {online && plottable ? `Agent at ${placeText}` : placeText}
-          </p>
-          <p className="text-[10px] text-muted-foreground/70 truncate">Tagged {meetingTag(m)}</p>
-          {/* Flags the rows worth opening: only these draw a second marker, and
-              the number says up front whether the agent moved. No counterpart
-              line when there is no end fix — the duration line above already
-              reports that same absence, and saying it twice reads as two faults.
-
-              Written as a sentence rather than the old "Start → end · 40 m",
-              which named neither end and left the number's unit to be inferred
-              from a lone "m". It is deliberately the same sentence the end
-              marker's own popup uses (see locateMeeting), so the list and the
-              map state one fact one way. */}
-          {clock.drift && (
-            <p className="text-[10px] text-muted-foreground/70">
-              Ended <span className="text-foreground font-medium">{clock.drift}</span> from where it
-              started
-            </p>
-          )}
-        </div>
-        {/* What this row HAS — not what the map is showing, which is the strip
-            at the foot of the row. The two icons are the same pair the Meetings
-            table uses for the same distinction (MapPinCheck = both fixes,
-            MapPin = start only), so one symbol is learned once across pages. */}
-        {plottable ? (
-          <span className="shrink-0 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-            {ended ? (
-              <MapPinCheck className="w-3 h-3 text-primary" aria-label="Start and end GPS captured">
-                <title>Start and end GPS captured</title>
-              </MapPinCheck>
-            ) : (
-              <MapPinIcon className="w-3 h-3 text-primary" aria-label="Start GPS only">
-                <title>Start GPS only — no closing fix</title>
-              </MapPinIcon>
-            )}
-            {ended ? 'Start + end' : null}
+      <button
+        type="button"
+        onClick={() => onLocate(m, shouldResolve ? place.label : null)}
+        disabled={!plottable}
+        className={`w-full text-left rounded-t-lg px-2.5 pt-2.5 pb-1 transition-colors ${
+          plottable ? 'hover:bg-primary/5 cursor-pointer' : 'cursor-default'
+        }`}
+      >
+        {/* The date alone, no time. Two pills now sit beside it in a 264px-wide
+            panel, and "Aug 10, 2026 · 10:21 PM" + "In Progress" + "Successful"
+            overflows it by about ten pixels — which broke the timestamp across
+            two lines, the one thing in the row that has to read as a single
+            fact. The time was the part to give up because it is not lost: the
+            line directly below is built from the same instant and states it
+            either as the capture window or on its own. */}
+        <div className="flex items-start justify-between gap-2">
+          <span className="text-xs font-medium text-foreground whitespace-nowrap">
+            {clock.date}
           </span>
-        ) : (
-          <span className="shrink-0 text-[10px] text-muted-foreground">no pin</span>
+          <span className="flex flex-wrap items-center justify-end gap-1 shrink-0">
+            {/* Says the visit had a companion before the row is opened or read —
+                on this panel the outcome badge is the only thing scanned, so a
+                tag-along stated further down would be missed. The names and each
+                answer sit on the line below. */}
+            {liveCompanions.length > 0 && (
+              <Badge variant="outline" className="text-[10px] px-1.5 h-4 shrink-0 text-muted-foreground">
+                <Users className="w-2.5 h-2.5" />
+                Tagged along
+              </Badge>
+            )}
+            {/* The client's stage AT THIS VISIT, bare — no "Client was" lead-in
+                and no capped/uncapped qualifier. It had a line to itself with
+                both, which cost three lines of a six-line row to carry one word;
+                the panel states the client's stage NOW a couple of inches above,
+                so a reader comparing the two has the contrast in front of them
+                without being told to look for it. Whether a visit counted
+                against the cutoff is a quota question, answered in full by the
+                Cutoff & Quota report and by the Meetings record this row links
+                to — it was never worth a permanent line here.
+
+                The full sentence survives as the pill's tooltip, which is the
+                one place it costs nothing. */}
+            {m.client_status_at_meeting && (
+              <Badge
+                variant="tone"
+                title={stage.title}
+                className={`text-[10px] px-1.5 h-4 shrink-0 ${TONE_CLASS[stage.tone]}`}
+              >
+                {stage.label}
+              </Badge>
+            )}
+            {/* Tone comes from the app-wide badge vocabulary, not from the map's
+                own OUTCOME_META palette: this is the same pill an admin just read
+                on Meetings and in the client dialog, and a "Lost Opportunity" that
+                is red there and grey here is a third thing to learn. The map's
+                hexes stay where they belong — on the pins and the legend.
+
+                Last in the header, so the outcome keeps the right-hand edge the
+                eye scans down. The stage pill sits to its left rather than after
+                it for the same reason. */}
+            <Badge variant="tone" className={`text-[10px] px-1.5 h-4 shrink-0 ${TONE_CLASS[OUTCOME_TONE[m.outcome]]}`}>
+              {OUTCOME_LABEL_SHORT[m.outcome] ?? m.outcome}
+            </Badge>
+          </span>
+        </div>
+
+        {/* Duration, and what it was measured from. Stated as unrecorded rather
+            than omitted: a blank row can't be told apart from a short meeting,
+            and most rows predating 2026-07-24 have no capture pair at all. */}
+        <div className="flex items-center gap-1.5 mt-1 text-[11px] text-muted-foreground">
+          <Clock className="w-3 h-3 shrink-0" />
+          {/* WHEN, at whatever precision the row actually has. The capture
+              window names both ends and so carries the time by itself; without
+              one, the headline timestamp stands in — this is the only place the
+              time appears now that the header shows the date alone, so it can
+              never be dropped, even on a row that records no duration. */}
+          {clock.window ? (
+            <span className="truncate">{clock.window}</span>
+          ) : (
+            <span className="shrink-0 font-medium text-foreground">{clock.time}</span>
+          )}
+          {clock.duration ? (
+            <span className="shrink-0 font-medium text-foreground">· {clock.duration}</span>
+          ) : (
+            <span className="text-muted-foreground/70 truncate">· duration not recorded</span>
+          )}
+        </div>
+  
+        {/* Where, measured. The line underneath is the agent's claim about the
+            venue — see meetingTag. It used to be prefixed "Tagged", which read as
+            a status rather than as the label of a second, softer fact; the
+            styling already says which line is which, so the word was doing the
+            work twice. */}
+        <div className="flex items-start gap-1.5 mt-1 text-[11px]">
+          {online ? (
+            <Video className="w-3 h-3 shrink-0 mt-0.5 text-muted-foreground" />
+          ) : (
+            <Navigation className="w-3 h-3 shrink-0 mt-0.5 text-muted-foreground" />
+          )}
+          <div className="min-w-0 flex-1">
+            <p className={`truncate ${plottable ? 'text-foreground' : 'text-muted-foreground/70'}`}>
+              {online && plottable ? `Agent at ${placeText}` : placeText}
+            </p>
+            <p className="text-[10px] text-muted-foreground/70 truncate">{meetingTag(m)}</p>
+            {/* Flags the rows worth opening: only these draw a second marker, and
+                the number says up front whether the agent moved. No counterpart
+                line when there is no end fix — the duration line above already
+                reports that same absence, and saying it twice reads as two faults.
+  
+                Written as a sentence rather than the old "Start → end · 40 m",
+                which named neither end and left the number's unit to be inferred
+                from a lone "m". It is deliberately the same sentence the end
+                marker's own popup uses (see locateMeeting), so the list and the
+                map state one fact one way. */}
+            {clock.drift && (
+              <p className="text-[10px] text-muted-foreground/70">
+                Ended <span className="text-foreground font-medium">{clock.drift}</span> from where it
+                started
+              </p>
+            )}
+          </div>
+          {/* No "Start + end" / "no pin" chip here any more. Which fixes a visit
+              has was stated three times over: this chip, the "Ended 9 m from
+              where it started" line right beside it, and the "Showing start &
+              end on the map" strip once the row is open — and the chip was the
+              one saying it in a vocabulary of its own. Rows with no GPS at all
+              still say so in the place line above ("No GPS captured"). The full
+              pair is on the Meetings record behind the link. */}
+        </div>
+
+      </button>
+
+      {/* Everything from the agent line down sits OUTSIDE the locate button, so
+          the link can be a real <a> — an anchor nested in a button is invalid
+          markup that browsers repair by breaking one of the two. Nothing here is
+          clickable except the link itself, so the only cost is that this strip
+          doesn't re-locate the pin, and the whole block above it does. */}
+      <div className="px-2.5 pb-2.5">
+        {/* The agent line was a half-empty row of small grey text; the link
+            takes the space beside it rather than adding a row of its own. It is
+            the only primary-coloured text in the row, which is what makes it
+            findable without dressing it up as a button — the panel is a reading
+            surface and a filled bar in every history row competes with the
+            outcome badges for the eye. */}
+        <div className="flex items-center justify-between gap-2">
+          {/* WHO held the visit, in foreground weight — with the qualifying
+              lines stripped out of this row, the agent is one of the few facts
+              left and it was the faintest thing on the card. The contact person
+              stays muted behind it: same line, lesser fact. */}
+          <p className="text-[11px] truncate">
+            {m.agent?.full_name && (
+              <span className="font-semibold text-foreground">{m.agent.full_name}</span>
+            )}
+            {m.contact_person && (
+              <span className="text-muted-foreground">
+                {m.agent?.full_name ? ' · ' : ''}
+                {m.contact_person}
+              </span>
+            )}
+          </p>
+          {/* Remarks, photos, who recorded it, the full GPS pair — none of that
+              is on this panel, and copying it here would make the row a second
+              detail view that drifts from the first. The link goes to the record
+              that has it, landing on this exact meeting rather than on a table
+              the admin then has to search (see `?meeting=` on the Meetings
+              page). A real href, so it middle-clicks into a new tab: checking a
+              visit's photos without losing the map is the normal use. */}
+          <Link
+            href={`/meetings?meeting=${encodeURIComponent(m.id)}`}
+            className="shrink-0 inline-flex items-center gap-0.5 text-[11px] font-semibold text-primary hover:underline underline-offset-2"
+          >
+            Open full details
+            <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+          </Link>
+        </div>
+
+        {/* Who joined, in what capacity, and whether they answered — directly
+            under the agent, since the two together are the full attendance. */}
+        {liveCompanions.length > 0 && (
+          <div className="mt-1.5 pt-1.5 border-t border-border/60">
+            <CompanionList requests={liveCompanions} />
+          </div>
+        )}
+
+        {/* Names the markers standing on the map right now, on its own full-width
+            line because it is a sentence rather than a badge. In the right-hand
+            column beside the place name it would have to truncate to about two
+            words, and a truncated "Showing…" is exactly as useless as no label —
+            which was the state that prompted this. */}
+        {showing && (
+          <div className="mt-1.5 pt-1.5 border-t border-primary/30 flex items-center gap-1.5 text-[10px] font-medium text-primary">
+            <Crosshair className="w-3 h-3 shrink-0" />
+            {/* A plain "&" — this is a JS string, so an &amp; entity would render
+                as those five characters rather than as an ampersand. */}
+            {ended ? 'Showing start & end on the map' : 'Showing this location on the map'}
+          </div>
         )}
       </div>
-
-      {(m.agent?.full_name || m.contact_person) && (
-        <p className="text-[11px] text-muted-foreground mt-1 truncate">
-          {[m.agent?.full_name, m.contact_person].filter(Boolean).join(' · ')}
-        </p>
-      )}
-
-      {/* Who joined, in what capacity, and whether they answered — directly
-          under the agent, since the two together are the full attendance. */}
-      {liveCompanions.length > 0 && (
-        <div className="mt-1.5 pt-1.5 border-t border-border/60">
-          <CompanionList requests={liveCompanions} />
-        </div>
-      )}
-
-      {/* Names the markers standing on the map right now, on its own full-width
-          line because it is a sentence rather than a badge. In the right-hand
-          column beside the place name it would have to truncate to about two
-          words, and a truncated "Showing…" is exactly as useless as no label —
-          which was the state that prompted this. */}
-      {showing && (
-        <div className="mt-1.5 pt-1.5 border-t border-primary/30 flex items-center gap-1.5 text-[10px] font-medium text-primary">
-          <Crosshair className="w-3 h-3 shrink-0" />
-          {/* A plain "&" — this is a JS string, so an &amp; entity would render
-              as those five characters rather than as an ampersand. */}
-          {ended ? 'Showing start & end on the map' : 'Showing this location on the map'}
-        </div>
-      )}
-    </button>
+    </div>
   )
 }
 
@@ -1215,15 +1282,18 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
             { lat: m.end_gps_lat!, lng: m.end_gps_lng! },
           ]
         : undefined,
-      // A CEILING when fitting a pair, a target otherwise. Raised from 16 so a
-      // drill-down actually lands on the two markers: at 16 a pair a few metres
-      // apart — the common case, since the agent usually stays put — sat in the
-      // middle of a whole neighbourhood, which is not "showing the start and
-      // end", it is showing the town they happened. Nothing is lost on a pair
-      // that IS far apart: flyToBounds drops below the ceiling to fit them.
-      // Terrain tiles stop at 17 and Leaflet clamps to the layer, so this is a
-      // request, not a promise.
-      zoom: ended ? 18 : 17,
+      // All the way in — a CEILING when fitting a pair, a target otherwise.
+      //
+      // Read off the ACTIVE basemap rather than hardcoded, because the layers
+      // stop at different places (19 standard and satellite, 20 light/dark, 17
+      // terrain) and Leaflet clamps to whichever is loaded: a fixed 18 was two
+      // levels short on light and a level past what terrain can serve. Drilling
+      // into one visit is the most zoomed-in question this map answers — which
+      // doorway, which side of the street — so it goes as deep as the tiles do.
+      //
+      // Nothing is lost on a pair that IS far apart: flyToBounds drops below the
+      // ceiling as far as it needs to fit both fixes in frame.
+      zoom: TILE_LAYERS[mapType].maxZoom,
       // The detail panel is pinned over the right of the map and is ALWAYS open
       // here — it is what the drill-down was launched from — so the frame is
       // pushed clear of it. Even padding would centre the pair under the panel.
