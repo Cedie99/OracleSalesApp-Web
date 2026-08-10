@@ -15,7 +15,7 @@ import { CircularProgress } from '@/components/ui/circular-progress'
 import { Pagination } from '@/components/ui/pagination'
 import { usePagination } from '@/lib/hooks/use-pagination'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
-import { getClientProgress } from '@/lib/client-progress'
+import { getQualifiedAgendaMilestones } from '@/lib/client-progress'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useMeetings } from '@/lib/hooks/use-meetings'
@@ -113,16 +113,44 @@ export default function ClientsPage() {
   // the header's notification bell.
   const visibleClients = clients.filter(c => c.status !== 'deleted')
 
-  // Global counts, not narrowed by this page's own search/type/channel/status
-  // filters — same convention as the Meetings page's stat row.
+  // Every visible client's manager, computed once regardless of this page's
+  // own search/type/channel/status filters — so scoping the stat row to a
+  // manager below doesn't inherit those filters either, same convention as
+  // the unscoped totals previously had.
+  const clientsByManagerKey = useMemo(() => {
+    const map = new Map<string, Client[]>()
+    for (const c of visibleClients) {
+      const key = managerForTeam(c.agent?.team_id, managers)?.id ?? 'unassigned'
+      const bucket = map.get(key)
+      if (bucket) bucket.push(c)
+      else map.set(key, [c])
+    }
+    return map
+  }, [visibleClients, managers])
+
+  // Whichever manager/agent is currently drilled into (accordion-expanded or
+  // fully selected) narrows the stat row to their own clients; otherwise it's
+  // the global total. Priority: a selected agent is the most specific scope,
+  // then a selected/expanded manager, then everyone.
+  const statsClients = useMemo(() => {
+    if (selectedAgentId) {
+      return visibleClients.filter(c => (c.assigned_agent_id ?? 'unassigned') === selectedAgentId)
+    }
+    const managerKey = selectedManagerKey ?? expandedManagerKey
+    if (managerKey) {
+      return clientsByManagerKey.get(managerKey) ?? []
+    }
+    return visibleClients
+  }, [selectedAgentId, selectedManagerKey, expandedManagerKey, clientsByManagerKey, visibleClients])
+
   const counts = {
-    total: visibleClients.length,
-    existing: visibleClients.filter(c => c.customer_type === 'existing').length,
-    new: visibleClients.filter(c => c.customer_type === 'new').length,
-    inProgress: visibleClients.filter(c => c.customer_type === 'in_progress').length,
-    prospect: visibleClients.filter(c => c.customer_type === 'prospect').length,
-    active: visibleClients.filter(c => c.status === 'active').length,
-    lost: visibleClients.filter(c => c.status === 'lost').length,
+    total: statsClients.length,
+    existing: statsClients.filter(c => c.customer_type === 'existing').length,
+    new: statsClients.filter(c => c.customer_type === 'new').length,
+    inProgress: statsClients.filter(c => c.customer_type === 'in_progress').length,
+    prospect: statsClients.filter(c => c.customer_type === 'prospect').length,
+    active: statsClients.filter(c => c.status === 'active').length,
+    lost: statsClients.filter(c => c.status === 'lost').length,
   }
 
   const filtered = visibleClients.filter(c => {
@@ -197,6 +225,7 @@ export default function ClientsPage() {
       const ownClientCount = filtered.filter(c => ownClientIds.has(c.id)).length
       const invited = tagAlongClientIds.get(m.id)
       const tagAlongCount = invited ? filtered.filter(c => invited.has(c.id)).length : 0
+      const managerClientCount = filtered.filter(c => ownClientIds.has(c.id) || (invited?.has(c.id) ?? false)).length
       return {
         key: m.id,
         label: m.full_name,
@@ -204,6 +233,7 @@ export default function ClientsPage() {
         clientCount,
         ownClientCount,
         tagAlongCount,
+        managerClientCount,
       }
     })
     const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
@@ -215,6 +245,7 @@ export default function ClientsPage() {
         clientCount: unassignedGroups.reduce((sum, g) => sum + g.clients.length, 0),
         ownClientCount: 0,
         tagAlongCount: 0,
+        managerClientCount: 0,
       })
     }
     return buckets
@@ -457,7 +488,7 @@ export default function ClientsPage() {
               Managers
             </p>
             <div className="space-y-3">
-              {managerBuckets.map(({ key, label, agentCount, clientCount, ownClientCount, tagAlongCount }) => {
+              {managerBuckets.map(({ key, label, agentCount, clientCount, managerClientCount }) => {
                 const isOpen = expandedManagerKey === key
                 const bucketGroups = groups.filter(g => g.managerKey === key)
                 return (
@@ -503,7 +534,7 @@ export default function ClientsPage() {
                                 <div className="min-w-0">
                                   <p className="text-sm font-semibold text-foreground truncate">{label}</p>
                                   <p className="text-xs text-muted-foreground">
-                                    {ownClientCount} recorded · {tagAlongCount} tagged along
+                                    {managerClientCount} client{managerClientCount === 1 ? '' : 's'}
                                   </p>
                                 </div>
                               </div>
@@ -634,7 +665,7 @@ export default function ClientsPage() {
                         </div>
                       </div>
 
-                      <CircularProgress value={getClientProgress(client.id, meetings)} size={80} strokeWidth={7} className="shrink-0" />
+                      <CircularProgress value={getQualifiedAgendaMilestones(client.id, meetings).percent} size={80} strokeWidth={7} className="shrink-0" />
                     </div>
 
                     <div className="flex-1" />

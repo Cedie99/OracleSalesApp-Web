@@ -7,14 +7,14 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CircularProgress } from '@/components/ui/circular-progress'
-import { getClientProgress } from '@/lib/client-progress'
-import { meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
+import { getQualifiedAgendaMilestones } from '@/lib/client-progress'
+import { meetingGpsDriftMeters, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
 import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
 import { CompanionLine, ManagerGateIcon } from '@/components/tag-along-indicator'
-import { formatDistanceMeters } from '@/lib/utils'
+import { formatDistanceMeters, formatDurationMinutes } from '@/lib/utils'
 import { clientAddress, hasOfficePin, officePinSourceLabel } from '@/lib/client-info'
 import type { Client, Meeting, MeetingOutcome, TagAlongRequest } from '@/types'
-import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, Tag, X as XIcon } from 'lucide-react'
+import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, Tag, X as XIcon, Clock, ChevronRight, FileText, ListChecks } from 'lucide-react'
 import { format } from 'date-fns'
 import {
   CHANNEL_TONE,
@@ -36,15 +36,43 @@ const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
   ),
 })
 
-function MeetingRow({ meeting, companions }: { meeting: Meeting; companions: TagAlongRequest[] }) {
+const MeetingRouteMap = dynamic(() => import('@/components/maps/meeting-route-map'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground bg-muted/40">
+      Loading map…
+    </div>
+  ),
+})
+
+const LOCATION_TYPE_LABEL: Record<Meeting['location_type'], string> = {
+  client_office: "Client's office",
+  other: 'Other location',
+}
+
+const ONLINE_PLATFORM_LABEL: Record<NonNullable<Meeting['online_platform']>, string> = {
+  zoom: 'Zoom',
+  googlemeet: 'Google Meet',
+}
+
+function MeetingRow({ meeting, companions, onClick }: { meeting: Meeting; companions: TagAlongRequest[]; onClick: () => void }) {
   const submittedBy = meeting.recorder?.full_name ?? meeting.agent?.full_name ?? 'Unknown'
   // How far the agent was from where they opened the meeting when they closed
   // it. Only the ~20% of meetings carrying both fixes have one; the rest say
   // nothing rather than claim a match they can't support.
   const drift = formatDistanceMeters(meetingGpsDriftMeters(meeting))
   const stage = meetingStageBadge(meeting.client_status_at_meeting)
+  const duration = formatDurationMinutes(meetingDurationMinutes(meeting))
+  const startTime = meeting.start_captured_at ? format(new Date(meeting.start_captured_at), 'h:mm a') : null
+  const endTime = meeting.end_captured_at ? format(new Date(meeting.end_captured_at), 'h:mm a') : null
+  const hasStart = meeting.gps_lat != null && meeting.gps_lng != null
+  const hasEnd = meeting.end_gps_lat != null && meeting.end_gps_lng != null
   return (
-    <div className="flex items-center justify-between gap-2 text-xs bg-muted/40 rounded-md px-3 py-2">
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full flex items-center justify-between gap-2 text-xs bg-muted/40 hover:bg-muted/70 rounded-md px-3 py-2 text-left transition-colors"
+    >
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
           <CalendarCheck className="w-3 h-3 text-muted-foreground shrink-0" />
@@ -70,15 +98,24 @@ function MeetingRow({ meeting, companions }: { meeting: Meeting; companions: Tag
             <span className="text-muted-foreground/70 truncate">· not capped</span>
           )}
         </div>
-        {drift && (
+        {(startTime || endTime) && (
           <div className="flex items-center gap-1.5 mt-1 pl-[18px] text-muted-foreground">
-            <Navigation className="w-3 h-3 shrink-0" />
-            {/* The same sentence the map's history row and the end marker's
-                popup use. The old "Start → end · 40 m" named neither end and
-                left a bare "m" to be told apart from the "m" of a duration. */}
-            <span>
-              Ended <span className="text-foreground font-medium">{drift}</span> from where it
-              started
+            <Clock className="w-3 h-3 shrink-0" />
+            <span className="truncate">
+              {startTime ?? '—'} → {endTime ?? '—'}
+              {duration && <> · <span className="text-foreground font-medium">{duration}</span></>}
+            </span>
+          </div>
+        )}
+        {(hasStart || hasEnd) && (
+          <div className="flex items-center gap-1.5 mt-1 pl-[18px] text-muted-foreground">
+            <MapPin className="w-3 h-3 shrink-0" />
+            <span className="truncate">
+              {hasStart && hasEnd ? (
+                <>Start → End{drift && <> · <span className="text-foreground font-medium">{drift}</span></>}</>
+              ) : (
+                'Location captured'
+              )}
             </span>
           </div>
         )}
@@ -94,8 +131,139 @@ function MeetingRow({ meeting, companions }: { meeting: Meeting; companions: Tag
         <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[meeting.outcome]]}>
           {OUTCOME_LABEL[meeting.outcome]}
         </Badge>
+        <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
+      </div>
+    </button>
+  )
+}
+
+function DetailLine({ icon: Icon, label, value }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string }) {
+  return (
+    <div className="flex items-start gap-2 text-xs">
+      <Icon className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+      <div className="min-w-0">
+        <p className="text-muted-foreground">{label}</p>
+        <p className="text-foreground font-medium break-words">{value}</p>
       </div>
     </div>
+  )
+}
+
+/** The map-and-details popup opened by clicking a Meeting History row. */
+function MeetingDetailDialog({ meeting, companions, onOpenChange }: { meeting: Meeting | null; companions: TagAlongRequest[]; onOpenChange: (open: boolean) => void }) {
+  const hasStart = meeting?.gps_lat != null && meeting?.gps_lng != null
+  const hasEnd = meeting?.end_gps_lat != null && meeting?.end_gps_lng != null
+  const start = meeting && hasStart ? { lat: meeting.gps_lat as number, lng: meeting.gps_lng as number, label: 'Start' } : null
+  const end = meeting && hasEnd ? { lat: meeting.end_gps_lat as number, lng: meeting.end_gps_lng as number, label: 'End' } : null
+  const drift = meeting ? formatDistanceMeters(meetingGpsDriftMeters(meeting)) : null
+  const duration = meeting ? formatDurationMinutes(meetingDurationMinutes(meeting)) : null
+  const startTime = meeting?.start_captured_at ? format(new Date(meeting.start_captured_at), 'h:mm a') : null
+  const endTime = meeting?.end_captured_at ? format(new Date(meeting.end_captured_at), 'h:mm a') : null
+  const submittedBy = meeting?.recorder?.full_name ?? meeting?.agent?.full_name ?? 'Unknown'
+
+  return (
+    <Dialog open={!!meeting} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-3xl max-h-[92vh] flex flex-col gap-0 p-0 overflow-hidden" showCloseButton={false}>
+        {meeting && (
+          <>
+            <DialogHeader className="shrink-0 border-b border-border px-5 py-3 flex-row items-center justify-between space-y-0">
+              <div>
+                <DialogTitle className="text-base">{format(new Date(meeting.meeting_date), 'MMMM d, yyyy')}</DialogTitle>
+                <p className="text-xs text-muted-foreground">Meeting details</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[meeting.outcome]]}>
+                  {OUTCOME_LABEL[meeting.outcome]}
+                </Badge>
+                <DialogClose render={<Button variant="ghost" size="icon-sm" />}>
+                  <XIcon className="w-4 h-4" />
+                  <span className="sr-only">Close</span>
+                </DialogClose>
+              </div>
+            </DialogHeader>
+
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <div className="px-5 pt-5">
+                <div className="h-64 bg-muted/40 rounded-lg border border-border overflow-hidden">
+                  {start || end ? (
+                    <MeetingRouteMap start={start} end={end} distanceLabel={drift} />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">
+                      No location captured for this meeting
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-y-3 gap-x-0 sm:[&>*:nth-child(odd)]:pr-6 sm:[&>*:nth-child(even)]:pl-6 sm:[&>*:nth-child(even)]:border-l sm:[&>*:nth-child(even)]:border-border">
+                <DetailLine icon={User} label="Submitted by" value={submittedBy} />
+                <DetailLine
+                  icon={Clock}
+                  label="Time"
+                  value={startTime || endTime ? `${startTime ?? '—'} → ${endTime ?? '—'}` : 'Not captured'}
+                />
+                <DetailLine icon={Navigation} label="Duration" value={duration ?? 'Not captured'} />
+                <DetailLine icon={MapPin} label="Distance start → end" value={drift ?? 'Not captured'} />
+                <DetailLine
+                  icon={Building2}
+                  label="Meeting type"
+                  value={
+                    meeting.meeting_type === 'online'
+                      ? `Online${meeting.online_platform ? ` · ${ONLINE_PLATFORM_LABEL[meeting.online_platform]}` : ''}`
+                      : 'Face to face'
+                  }
+                />
+                <DetailLine
+                  icon={MapPin}
+                  label="Location"
+                  value={meeting.location_name || LOCATION_TYPE_LABEL[meeting.location_type]}
+                />
+                <DetailLine icon={User} label="Contact person" value={meeting.contact_person || 'Not recorded'} />
+                <DetailLine icon={Phone} label="Contact position" value={meeting.contact_position || 'Not recorded'} />
+              </div>
+
+              <div className="px-5 pb-5 space-y-3">
+                <div className="flex items-start gap-2 text-xs">
+                  <ListChecks className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="text-muted-foreground mb-1.5">Agenda</p>
+                    {meeting.agenda.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {meeting.agenda.map(a => (
+                          <Badge key={a} variant="tone" className={TONE_CLASS.neutral}>{a}</Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-foreground">Not recorded</p>
+                    )}
+                  </div>
+                </div>
+
+                {meeting.remarks && (
+                  <div className="flex items-start gap-2 text-xs">
+                    <FileText className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-muted-foreground mb-1">Remarks</p>
+                      <p className="text-foreground break-words">{meeting.remarks}</p>
+                    </div>
+                  </div>
+                )}
+
+                {companions.length > 0 && (
+                  <div className="flex items-start gap-2 text-xs">
+                    <Camera className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-muted-foreground mb-1">Companions</p>
+                      <CompanionLine requests={companions} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -120,10 +288,11 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
   const [showAllMeetings, setShowAllMeetings] = useState(false)
   const [showAllPhotos, setShowAllPhotos] = useState(false)
   const [outcomeFilter, setOutcomeFilter] = useState<MeetingOutcome | 'all'>('all')
+  const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null)
   const { byMeeting: tagAlongsByMeetingId } = useTagAlongs()
 
   function handleOpenChange(open: boolean) {
-    if (!open) { setShowAllMeetings(false); setShowAllPhotos(false) }
+    if (!open) { setShowAllMeetings(false); setShowAllPhotos(false); setSelectedMeeting(null) }
     onOpenChange(open)
   }
 
@@ -141,7 +310,7 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
               .filter(m => m.client_id === client.id)
               .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
             const meetingPhotos = clientMeetings.filter(m => m.photo_url)
-            const progress = getClientProgress(client.id, meetings)
+            const progress = getQualifiedAgendaMilestones(client.id, meetings).percent
 
             return (
               <>
@@ -330,6 +499,7 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                               key={m.id}
                               meeting={m}
                               companions={tagAlongsFor(tagAlongsByMeetingId, m.id)}
+                              onClick={() => setSelectedMeeting(m)}
                             />
                           ))}
                           {clientMeetings.length === 0 && (
@@ -394,6 +564,7 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                       key={m.id}
                       meeting={m}
                       companions={tagAlongsFor(tagAlongsByMeetingId, m.id)}
+                      onClick={() => setSelectedMeeting(m)}
                     />
                   ))}
                   {filteredMeetings.length === 0 && (
@@ -460,6 +631,12 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
           )}
         </DialogContent>
       </Dialog>
+
+      <MeetingDetailDialog
+        meeting={selectedMeeting}
+        companions={selectedMeeting ? tagAlongsFor(tagAlongsByMeetingId, selectedMeeting.id) : []}
+        onOpenChange={open => { if (!open) setSelectedMeeting(null) }}
+      />
     </>
   )
 }

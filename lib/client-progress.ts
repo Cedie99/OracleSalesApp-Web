@@ -1,20 +1,36 @@
 import type { Meeting } from '@/types'
 
-// Binary per client rule: 100% once any saved meeting's agenda includes a
-// product/company presentation, 0% otherwise — info completion has no weight.
+// Single source of truth for "client progress" everywhere on web — the card
+// ring on the Clients list and the big ring in the client detail dialog both
+// call this, so the same client always shows the same number in both places.
 //
-// Takes the meetings to search rather than importing them, so one rule serves
-// both the mock-backed pages and the Supabase-backed Clients page.
-//
-// Matched as a regex, not string equality: agenda is a text[] written by the
-// mobile app. The live value is "Product / company presentation" (15 of 30
-// rows on 2026-07-24), but the spacing around the slash is the phone's to
-// change and equality would fail silently the day it does.
-export function getClientProgress(clientId: string, meetings: Meeting[]): number {
-  const presented = meetings.some(
-    m =>
-      m.client_id === clientId &&
-      (m.agenda ?? []).some(a => /product\s*\/?\s*company presentation/i.test(a))
-  )
-  return presented ? 100 : 0
+// Mirrors the mobile app's MEETING_AGENDAS (types/index.ts) — the 6 topics
+// (every entry except the terminal "Close deal") whose coverage across a
+// client's recorded meetings drives mobile's My Clients "Qualified agenda
+// progress" meter and "{completed}/6 agenda milestones" copy. Ported here so
+// web shows the same number mobile does for the same client.
+const QUALIFIED_AGENDA_MILESTONES = [
+  'New business opportunity',
+  'Product / company presentation',
+  'Price negotiation / quotation',
+  'Terms & limit negotiation',
+  'Relationship building',
+  'Technical support',
+] as const
+
+export interface QualifiedAgendaMilestones {
+  completed: number
+  total: number
+  percent: number
+}
+
+export function getQualifiedAgendaMilestones(clientId: string, meetings: Meeting[]): QualifiedAgendaMilestones {
+  const covered = new Set<string>()
+  meetings.forEach(m => {
+    if (m.client_id !== clientId) return
+    ;(m.agenda ?? []).forEach(a => covered.add(a))
+  })
+  const completed = QUALIFIED_AGENDA_MILESTONES.filter(a => covered.has(a)).length
+  const total = QUALIFIED_AGENDA_MILESTONES.length
+  return { completed, total, percent: Math.round((completed / total) * 100) }
 }
