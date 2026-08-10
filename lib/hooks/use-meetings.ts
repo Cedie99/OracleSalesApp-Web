@@ -10,7 +10,7 @@ const MEETING_COLUMNS = `
   location_type, location_name, gps_lat, gps_lng, photo_url, agenda, remarks,
   outcome, contact_person, contact_position, meeting_date, created_at,
   start_photo_url, start_captured_at, end_photo_url, end_captured_at,
-  end_gps_lat, end_gps_lng,
+  end_gps_lat, end_gps_lng, client_status_at_meeting,
   client:clients!client_id ( id, company_name, office_address, city, province, customer_type, status ),
   agent:profiles!agent_id ( id, user_id, full_name, role, team_id, avatar_url, created_at ),
   recorder:profiles!recorded_by ( id, user_id, full_name, role, team_id, avatar_url, created_at )

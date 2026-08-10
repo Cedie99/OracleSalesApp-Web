@@ -14,12 +14,13 @@ import { CompanionLine, ManagerGateIcon } from '@/components/tag-along-indicator
 import { formatDistanceMeters } from '@/lib/utils'
 import { clientAddress, hasOfficePin, officePinSourceLabel } from '@/lib/client-info'
 import type { Client, Meeting, MeetingOutcome, TagAlongRequest } from '@/types'
-import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, X as XIcon } from 'lucide-react'
+import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, Tag, X as XIcon } from 'lucide-react'
 import { format } from 'date-fns'
 import {
   CHANNEL_TONE,
   CLIENT_STATUS_TONE,
   customerTypeBadge,
+  meetingStageBadge,
   OUTCOME_LABEL,
   OUTCOME_TONE,
   TONE_CLASS,
@@ -41,6 +42,7 @@ function MeetingRow({ meeting, companions }: { meeting: Meeting; companions: Tag
   // it. Only the ~20% of meetings carrying both fixes have one; the rest say
   // nothing rather than claim a match they can't support.
   const drift = formatDistanceMeters(meetingGpsDriftMeters(meeting))
+  const stage = meetingStageBadge(meeting.client_status_at_meeting)
   return (
     <div className="flex items-center justify-between gap-2 text-xs bg-muted/40 rounded-md px-3 py-2">
       <div className="min-w-0">
@@ -52,11 +54,31 @@ function MeetingRow({ meeting, companions }: { meeting: Meeting; companions: Tag
           <User className="w-3 h-3 shrink-0" />
           <span className="truncate">{submittedBy}</span>
         </div>
+        {/* What the client WAS at this visit — the one row on this dialog that
+            is allowed to disagree with the stage pill in the header above it.
+            Reading the history down, this is where a promotion becomes visible:
+            three rows saying Prospect under a header saying New is the only
+            record that the first three visits were never capped. Nothing else in
+            the schema dates the change. */}
+        <div className="flex items-center gap-1.5 mt-1 pl-[18px]" title={stage.title}>
+          <Tag className="w-3 h-3 shrink-0 text-muted-foreground" />
+          <span className="text-muted-foreground shrink-0">Was</span>
+          <Badge variant="tone" className={`text-[10px] px-1.5 h-4 shrink-0 ${TONE_CLASS[stage.tone]}`}>
+            {stage.label}
+          </Badge>
+          {!stage.capped && meeting.client_status_at_meeting && (
+            <span className="text-muted-foreground/70 truncate">· not capped</span>
+          )}
+        </div>
         {drift && (
           <div className="flex items-center gap-1.5 mt-1 pl-[18px] text-muted-foreground">
             <Navigation className="w-3 h-3 shrink-0" />
-            <span className="truncate">
-              Start → end · <span className="text-foreground font-medium">{drift}</span>
+            {/* The same sentence the map's history row and the end marker's
+                popup use. The old "Start → end · 40 m" named neither end and
+                left a bare "m" to be told apart from the "m" of a duration. */}
+            <span>
+              Ended <span className="text-foreground font-medium">{drift}</span> from where it
+              started
             </span>
           </div>
         )}

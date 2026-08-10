@@ -119,6 +119,69 @@ export function customerTypeBadge(type: CustomerType): { tone: BadgeTone; label:
 }
 
 /**
+ * Stages the per-cutoff visit cap applies to.
+ *
+ * Mirrors the `stage not in ('new','existing')` test in `attribute_meeting_cutoff`
+ * (migration 079). A meeting on any other stage is attributed `excluded_uncapped`
+ * — it consumes no slot and can never put an account over its limit.
+ */
+export const CAPPED_STAGES: CustomerType[] = ['new', 'existing']
+
+/**
+ * How the client's stage AT THE TIME OF A VISIT reads on a history row.
+ *
+ * Distinct from `customerTypeBadge`, which describes what a client IS now. This
+ * describes what it WAS then, and the two disagree constantly — that disagreement
+ * is the whole reason this badge exists. An account visited three times as a
+ * Prospect and once as New reads "New · 4 visits" everywhere in the app, while
+ * only one of those four was ever measured against the cap; without the stage on
+ * each row an admin has no way to see that, because nothing in the schema records
+ * when the promotion happened (see Meeting.client_status_at_meeting).
+ *
+ * Two deliberate departures from `customerTypeBadge`:
+ *
+ * In Progress keeps its own compact label rather than expanding to
+ * "Prospect · In Progress". That expansion exists so a record surface can answer
+ * "customer, or not yet" in one pill; here the pill sits in a narrow column
+ * beside an outcome badge, and for the question this badge is asked — did the cap
+ * apply — Prospect and In Progress are the same answer anyway.
+ *
+ * A null stage renders as "Stage not recorded", never as the client's current
+ * type. Rows written before migration 067 have no frozen stage, and substituting
+ * today's `customer_type` would invent a history that the attribution function
+ * itself refuses to assume (079's fast-path arm reads the frozen column with no
+ * fallback, precisely so a pre-067 row keeps failing closed).
+ */
+export function meetingStageBadge(stage: CustomerType | null | undefined): {
+  tone: BadgeTone
+  label: string
+  /** False for an uncapped stage AND for an unknown one — see `title`. */
+  capped: boolean
+  /** The full sentence, for a `title` tooltip on a pill too small to hold it. */
+  title: string
+} {
+  if (!stage) {
+    return {
+      tone: 'neutral',
+      label: 'Stage not recorded',
+      capped: false,
+      title:
+        'This visit predates the stage being recorded on meetings, so what the client was at the time is unknown.',
+    }
+  }
+  const capped = CAPPED_STAGES.includes(stage)
+  const label = CUSTOMER_TYPE_LABEL[stage]
+  return {
+    tone: CUSTOMER_TYPE_TONE[stage],
+    label,
+    capped,
+    title: capped
+      ? `The client was ${label} at this visit, so the visit counted against its cutoff limit.`
+      : `The client was ${label} at this visit. Visits at that stage are not capped, so this one counted against no limit.`,
+  }
+}
+
+/**
  * Sales channel is a taxonomy, not a lifecycle state — nothing about being a
  * "Dealer" is more urgent than being a "Distributor". So it renders neutral.
  *
