@@ -287,6 +287,13 @@ export interface CollectionPayment {
   remarks: string | null
   paid_at: string
   created_at: string
+  /**
+   * The remittance that covered this hand-over, or null while it is still on
+   * hand. Per-payment remittance coverage (migration 086): a payment is remitted
+   * exactly once and this — not remittances.visit_ids — defines coverage.
+   * On hand ⇔ remittance_id === null. See REMITTANCE_CONTRACT.md.
+   */
+  remittance_id: string | null
   /** The collector who made this payment, joined in for display. */
   collector?: Profile
 }
@@ -519,6 +526,13 @@ export interface CodPayment {
   remarks: string | null
   paid_at: string
   created_at: string
+  /**
+   * The COD remittance that covered this hand-over, or null while it is still on
+   * hand. Per-payment coverage (migration 087): a COD payment is remitted exactly
+   * once and this — not cod_remittances.po_ids / purchase_orders.cod_remitted —
+   * defines coverage. On hand ⇔ cod_remittance_id === null. See REMITTANCE_CONTRACT.md.
+   */
+  cod_remittance_id: string | null
   /** The driver who took this payment, joined in for display. */
   driver?: Profile
 }
@@ -544,6 +558,10 @@ export interface CodRemittance {
   receiver_name: string
   /** Signature pad capture. Required — Office is the only destination. */
   receiver_signature_url: string | null
+  /**
+   * @deprecated Kept for display/back-compat only. Since migration 087, coverage
+   * is defined per-payment by cod_payments.cod_remittance_id, not this array.
+   */
   po_ids: string[]
   submitted_at: string
   created_at: string
@@ -569,6 +587,10 @@ export interface Remittance {
    * Not required for bayad-center or bank-deposit destinations.
    */
   receiver_signature_url: string | null
+  /**
+   * @deprecated Kept for display/back-compat only. Since migration 086, coverage
+   * is defined per-payment by collection_payments.remittance_id, not this array.
+   */
   visit_ids: string[]
   submitted_at: string
   created_at: string
