@@ -26,7 +26,9 @@ import {
   Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown, ArrowLeft, User, ExternalLink,
 } from 'lucide-react'
 import { format } from 'date-fns'
-import { OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS, TONE_TEXT } from '@/lib/status-styles'
+import {
+  CUSTOMER_TYPE_LABEL, meetingStageBadge, OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS, TONE_TEXT,
+} from '@/lib/status-styles'
 import { managerForTeam } from '@/lib/teams'
 import { formatDistanceMeters } from '@/lib/utils'
 
@@ -495,6 +497,20 @@ export default function MeetingsPage() {
                   <thead>
                     <tr className="border-b border-border">
                       <SortHeader label="Client" sortKey="client" sort={sort} onSort={toggleSort} />
+                      {/* Its own column, not a pill under the client name.
+                          A bare "Prospect" sitting beneath a company name in a
+                          column headed "Client" reads as that client's status
+                          today, which is exactly the confusion this exists to
+                          undo — the two disagree on most rows. The header says
+                          which one this is; nothing shorter can.
+
+                          Unsorted deliberately. Sorting a table of meetings by
+                          the stage each was recorded at groups rows that have
+                          nothing else in common; the question this answers is
+                          always asked of one client's rows, read down. */}
+                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground whitespace-nowrap">
+                        Stage at visit
+                      </th>
                       <SortHeader label="Agent" sortKey="agent" sort={sort} onSort={toggleSort} />
                       <SortHeader label="Type" sortKey="type" sort={sort} onSort={toggleSort} />
                       <SortHeader label="Location" sortKey="location" sort={sort} onSort={toggleSort} />
@@ -513,6 +529,30 @@ export default function MeetingsPage() {
                         <td className="px-4 py-3">
                           <p className="font-medium text-foreground truncate max-w-[160px]">{m.client?.company_name}</p>
                           <p className="text-xs text-muted-foreground">{m.contact_person}</p>
+                        </td>
+                        <td className="px-4 py-3">
+                          {(() => {
+                            const stage = meetingStageBadge(m.client_status_at_meeting)
+                            return (
+                              <span className="inline-flex flex-col items-start gap-0.5" title={stage.title}>
+                                <Badge
+                                  variant="tone"
+                                  className={`text-[10px] px-1.5 h-4 whitespace-nowrap ${TONE_CLASS[stage.tone]}`}
+                                >
+                                  {stage.label}
+                                </Badge>
+                                {/* Only where the cap did NOT apply. Saying
+                                    "capped" on the rest would put a word on every
+                                    row to confirm the default a reader already
+                                    assumes, and drown the exceptions. */}
+                                {!stage.capped && m.client_status_at_meeting && (
+                                  <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                                    not capped
+                                  </span>
+                                )}
+                              </span>
+                            )
+                          })()}
                         </td>
                         <td className="px-4 py-3">
                           <p className="text-foreground">{m.agent?.full_name}</p>
@@ -684,6 +724,10 @@ export default function MeetingsPage() {
                         {selected.end_gps_lat.toFixed(4)}, {selected.end_gps_lng.toFixed(4)}
                         {(() => {
                           const drift = formatDistanceMeters(meetingGpsDriftMeters(selected))
+                          // "apart" rather than the map's fuller "from where it
+                          // started": here the two coordinates are printed on
+                          // adjacent lines under their own Start/End labels, so
+                          // what the gap is between is already on screen.
                           return drift && <span className="text-foreground font-medium"> · {drift} apart</span>
                         })()}
                       </p>
@@ -727,6 +771,45 @@ export default function MeetingsPage() {
                   ))}
                 </div>
               </div>
+
+              {/* Stage at the visit, and what it cost the cutoff.
+                  ------------------------------------------------------------
+                  Always shown, unlike the companions panel below — its absence
+                  would be indistinguishable from a client that never moved
+                  stage, and "not recorded" is itself the answer on every row
+                  written before migration 067.
+
+                  The client's stage NOW is deliberately printed beside it, and
+                  only when the two differ. That difference is the entire fact:
+                  an admin reading a New client's four visits has no other way to
+                  learn that three of them happened while it was still a Prospect
+                  and were never measured against any limit. Nothing in the
+                  schema records the promotion — not the client row, not the
+                  cycles table — so this pairing is the only place it surfaces. */}
+              {(() => {
+                const stage = meetingStageBadge(selected.client_status_at_meeting)
+                const nowType = selected.client?.customer_type
+                const moved = nowType && selected.client_status_at_meeting !== nowType
+                return (
+                  <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
+                    <div className="flex items-center justify-between gap-2 mb-2.5">
+                      <p className="text-xs text-muted-foreground font-medium">Client stage at this visit</p>
+                      <Badge variant="tone" className={TONE_CLASS[stage.tone]}>{stage.label}</Badge>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">{stage.title}</p>
+                    {moved && (
+                      <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
+                        The account is{' '}
+                        <span className="text-foreground font-medium">
+                          {CUSTOMER_TYPE_LABEL[nowType]}
+                        </span>{' '}
+                        today. A stage change does not restate a past visit — this one keeps whatever
+                        the cutoff decided at the time.
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
 
               {/* Companions. Shown only when there were any: a "nobody tagged
                   along" panel on the overwhelming majority of meetings would be

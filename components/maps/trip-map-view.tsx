@@ -160,7 +160,8 @@ export function TripMapView({
   }
   const [selectedStopId, setSelectedStopId] = useState<string | null>(null)
 
-  const [mapType, setMapType] = useState<MapTileType>('satellite')
+  // Standard, not satellite — see the note on TILE_LAYERS.standard.
+  const [mapType, setMapType] = useState<MapTileType>('standard')
   const [mapTypeMenuOpen, setMapTypeMenuOpen] = useState(false)
   const mapTypeMenuRef = useRef<HTMLDivElement>(null)
 

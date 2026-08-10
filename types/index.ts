@@ -769,6 +769,29 @@ export interface Meeting {
   end_captured_at?: string | null
   end_gps_lat?: number | null
   end_gps_lng?: number | null
+
+  /**
+   * The client's lifecycle stage AT THE MOMENT OF THIS VISIT, frozen by
+   * migration 067 and never updated afterwards.
+   *
+   * This is the column the cutoff attribution function decides on — see
+   * `attribute_meeting_cutoff` in migration 079, which caps a meeting only when
+   * this reads 'new' or 'existing'. It is therefore the only honest answer to
+   * "why didn't that visit count", and it cannot be reconstructed from
+   * `client.customer_type`, which is live and moves underneath the history: an
+   * account visited three times as a Prospect and once as New shows four visits
+   * against a live status of New, with nothing on screen to say the first three
+   * were never capped.
+   *
+   * Nothing else records the transition either. `clients.in_progress_at` and
+   * `details_completed_at` are the only stage timestamps in the schema and
+   * neither says when prospect became new, nor which meeting did it.
+   *
+   * Null on every row written before 067. That must render as "not recorded"
+   * rather than falling back to the client's current type — the same fail-closed
+   * rule 079 applies for the same reason. See `meetingStageBadge`.
+   */
+  client_status_at_meeting?: CustomerType | null
 }
 
 // --- Tag-along / companion requests (migrations 019-020, ADR-030) -----------
