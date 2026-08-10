@@ -27,7 +27,8 @@ import {
   Search, Building2, Phone, MapPin, Map as MapIcon, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users,
   TrendingUp, Handshake, Target, CheckCircle2, XCircle,
 } from 'lucide-react'
-import { format, addDays } from 'date-fns'
+import { format } from 'date-fns'
+import { reassignableFrom } from '@/lib/lost-opportunity'
 import { toast } from 'sonner'
 import {
   CHANNEL_TONE,
@@ -308,8 +309,10 @@ export default function ClientsPage() {
       .insert({
         ...formColumns(),
         lost_at: isLost ? now : null,
-        // 14-day cooling-off before a lost client can be reassigned.
-        reassignable_at: isLost ? addDays(new Date(), 14).toISOString() : null,
+        // One-month cooling-off before a lost client can be reassigned. The
+        // BEFORE UPDATE trigger that normally stamps this does NOT fire on an
+        // insert, so this path has to compute it — see lib/lost-opportunity.ts.
+        reassignable_at: isLost ? reassignableFrom(new Date()).toISOString() : null,
       })
 
     setSaving(false)
@@ -334,11 +337,11 @@ export default function ClientsPage() {
     const isLost = form.status === 'lost'
 
     // Only stamp lost_at/reassignable_at on the transition. Re-saving an
-    // already-lost client must not restart its 14-day reassignment clock.
+    // already-lost client must not restart its reassignment clock.
     const lostFields = isLost
       ? {
           lost_at: editTarget.lost_at ?? new Date().toISOString(),
-          reassignable_at: editTarget.reassignable_at ?? addDays(new Date(), 14).toISOString(),
+          reassignable_at: editTarget.reassignable_at ?? reassignableFrom(new Date()).toISOString(),
         }
       : wasLost
         ? { lost_at: null, reassignable_at: null }

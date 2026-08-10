@@ -43,7 +43,7 @@ interface NavGroup {
  * was filtered away. Leading the nav is what it actually is now.
  *
  * SALES is the entity spine (Clients -> Meetings) plus Lost Opportunities, which
- * is literally `clients.filter(status === 'lost')` with the 14-day reassignment
+ * is literally `clients.filter(status === 'lost')` with the one-month reassignment
  * rule layered on — it sits beside Clients because that is what it is a view of.
  *
  * MANAGEMENT is the oversight surface — the things an admin acts on or exports,

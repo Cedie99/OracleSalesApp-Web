@@ -96,9 +96,10 @@ export const ATTENTION_META: Record<AttentionKind, { label: string; color: strin
 
 /**
  * A Lost Opportunity keeps its last agent on the row for history, but per the
- * handle_lost_opportunity() trigger (supabase/migrations/001_initial.sql) it
- * enters a 14-day cooldown (reassignable_at) before it's meant to be picked
- * up by a different agent. Everything else is always reserved to its agent.
+ * handle_lost_opportunity() trigger (supabase/migrations/001_initial.sql, its
+ * interval since widened by 036) it enters a one-month cooldown
+ * (reassignable_at) before it's meant to be picked up by a different agent —
+ * see lib/lost-opportunity.ts. Everything else is always reserved to its agent.
  */
 export function isAvailableForReassignment(client: Client): boolean {
   if (client.status !== 'lost') return false

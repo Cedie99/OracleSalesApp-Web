@@ -61,6 +61,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { CHANNEL_LABEL, OUTCOME_LABEL_SHORT, OUTCOME_TONE, TONE_CLASS } from '@/lib/status-styles'
+import { REASSIGN_COOLDOWN_LABEL } from '@/lib/lost-opportunity'
 import { clientAddress, clientInfoGaps } from '@/lib/client-info'
 import { format } from 'date-fns'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
@@ -1928,14 +1929,14 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
                   </div>
                   {isAvailableForReassignment(selected) ? (
                     <p className="text-xs text-muted-foreground leading-relaxed">
-                      Lost Opportunity, past its 14-day cooldown{selected.reassignable_at ? ` (since ${format(new Date(selected.reassignable_at), 'MMM d, yyyy')})` : ''}.
+                      Lost Opportunity, past its {REASSIGN_COOLDOWN_LABEL} cooldown{selected.reassignable_at ? ` (since ${format(new Date(selected.reassignable_at), 'MMM d, yyyy')})` : ''}.
                       Last handled by <span className="text-foreground font-medium">{selected.agent?.full_name ?? 'Unassigned'}</span>, now{' '}
                       <span className="text-primary font-medium">available for reassignment</span>.
                     </p>
                   ) : selected.status === 'lost' ? (
                     <p className="text-xs text-muted-foreground leading-relaxed">
                       Lost Opportunity — still reserved to <span className="text-foreground font-medium">{selected.agent?.full_name ?? 'Unassigned'}</span> during
-                      its 14-day cooldown{selected.reassignable_at ? `, reassignable from ${format(new Date(selected.reassignable_at), 'MMM d, yyyy')}` : ''}.
+                      its {REASSIGN_COOLDOWN_LABEL} cooldown{selected.reassignable_at ? `, reassignable from ${format(new Date(selected.reassignable_at), 'MMM d, yyyy')}` : ''}.
                     </p>
                   ) : (
                     <p className="text-xs text-muted-foreground leading-relaxed">

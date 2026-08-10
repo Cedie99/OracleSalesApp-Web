@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { isAuthorizedCronRequest } from '@/lib/cron-secret'
+import { reassignableFrom } from '@/lib/lost-opportunity'
 
 export const dynamic = 'force-dynamic'
 
 const SIX_MONTHS_MS = 1000 * 60 * 60 * 24 * 30 * 6
-const REASSIGN_COOLDOWN_MS = 1000 * 60 * 60 * 24 * 14
 
 /**
  * Row 10: auto-move a client to Lost Opportunity after 6 months of no
@@ -67,9 +67,12 @@ export async function GET(request: Request) {
     .update({
       status: 'lost',
       lost_at: now.toISOString(),
-      // Same 14-day cooling-off the manual "mark lost" flow uses (see
+      // Same one-month cooling-off the manual "mark lost" flow uses (see
       // handleEdit in app/(admin)/clients/page.tsx) — one rule either way.
-      reassignable_at: new Date(now.getTime() + REASSIGN_COOLDOWN_MS).toISOString(),
+      // Belt-and-braces: this is an UPDATE, so handle_lost_opportunity() fires
+      // and overwrites the value anyway. Sending the right one keeps the two
+      // from silently disagreeing if that trigger is ever dropped.
+      reassignable_at: reassignableFrom(now).toISOString(),
       inactive_reason: 'Auto-lost: no meeting activity for 6+ months',
       updated_at: now.toISOString(),
     })
