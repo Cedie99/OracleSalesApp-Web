@@ -172,6 +172,13 @@ function MeetingDetailDialog({ meeting, companions, onOpenChange }: { meeting: M
                 <p className="text-xs text-muted-foreground">Meeting details</p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {/* A clear text badge, not just an icon — readable at a glance
+                    the same way the outcome badge next to it is. */}
+                {companions.some(r => r.status !== 'cancelled') && (
+                  <Badge variant="tone" className={TONE_CLASS.amber}>
+                    Tagged Along
+                  </Badge>
+                )}
                 <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[meeting.outcome]]}>
                   {OUTCOME_LABEL[meeting.outcome]}
                 </Badge>
