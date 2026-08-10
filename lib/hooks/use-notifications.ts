@@ -48,7 +48,7 @@ export function useNotifications(): UseNotificationsResult {
       const { data: readRow } = await supabase
         .from('notification_reads')
         .select('seen_at')
-        .eq('profile_id', userId)
+        .eq('user_id', userId)
         .maybeSingle()
       watermark = (readRow?.seen_at as string | undefined) ?? null
     }
@@ -96,7 +96,7 @@ export function useNotifications(): UseNotificationsResult {
     if (!userId) return
     await supabase
       .from('notification_reads')
-      .upsert({ profile_id: userId, seen_at: now }, { onConflict: 'profile_id' })
+      .upsert({ user_id: userId, seen_at: now }, { onConflict: 'user_id' })
   }, [])
 
   const unreadCount = notifications.filter(
