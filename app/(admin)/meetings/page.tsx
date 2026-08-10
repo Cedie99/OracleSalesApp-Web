@@ -1,7 +1,7 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useMemo, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -69,22 +69,74 @@ function mapsHref(m: Meeting): string {
   return `https://www.google.com/maps/dir/?api=1&origin=${start}&destination=${end}&travelmode=walking`
 }
 
-export default function MeetingsPage() {
+/**
+ * `useSearchParams` forces the client tree up to the nearest Suspense boundary
+ * to render on the client, and Next's docs are explicit that an otherwise
+ * statically prerendered page calling it **fails the production build** without
+ * one — while working fine in dev. Hence the split, same as the Maps page: the
+ * default export below is that boundary, and this is what it wraps.
+ */
+function MeetingsPageContent() {
   const router = useRouter()
   const [search, setSearch] = useState('')
   const [outcomeFilter, setOutcomeFilter] = useState<string>('all')
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
-  const [selected, setSelected] = useState<Meeting | null>(null)
+  const [picked, setPicked] = useState<Meeting | null>(null)
   const [sort, setSort] = useState<SortState>({ key: 'date', dir: 'desc' })
   const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
-  const [selectedManagerKey, setSelectedManagerKey] = useState<string | null>(null)
+  /**
+   * Where the admin has driven the hierarchy themselves. Null until they touch
+   * it, which is what lets a deep link stand in — see `linkedDrill`.
+   */
+  const [drill, setDrill] = useState<{ agentId: string | null; managerKey: string | null } | null>(null)
   const { meetings, loading, error } = useMeetings()
   const { byRole } = useProfiles()
   // Companions load alongside meetings rather than per-row: the panel and the
   // table both need them, and a lookup per meeting would be a request per row.
   const { byMeeting: tagAlongsByMeetingId, byInvitee: tagAlongsByInviteeId } = useTagAlongs()
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+
+  /**
+   * Deep link from the Maps meeting-history panel: `?meeting=<id>` opens that
+   * one record's detail dialog.
+   *
+   * Derived, never copied into state by an effect — the same rule the Maps page
+   * follows for its own links. The param is a default the admin's own actions
+   * outrank: `picked`/`dismissedLink` win for the dialog, `drill` for the
+   * hierarchy. Written the other way round the dialog would spring back open on
+   * every render after being closed.
+   *
+   * Looked up in `meetings` rather than in `filtered`, so a link resolves
+   * whatever the filters happen to say — the admin followed a link to one
+   * record, not to a search.
+   *
+   * The param stays in the URL rather than being stripped after use, so a reload
+   * or a forwarded link lands on the same record.
+   */
+  const searchParams = useSearchParams()
+  const linkedMeetingId = searchParams.get('meeting')
+  const [dismissedLink, setDismissedLink] = useState(false)
+  const linkedMeeting = useMemo(
+    () => (linkedMeetingId ? meetings.find(m => m.id === linkedMeetingId) ?? null : null),
+    [linkedMeetingId, meetings],
+  )
+  /**
+   * A link is only a miss once the records are actually in — before that the id
+   * is simply not looked up yet, and `error` means nothing loaded at all, which
+   * the page's own alert already explains.
+   */
+  const linkMissing = !!linkedMeetingId && !linkedMeeting && !loading && !error
+  const selected = picked ?? (dismissedLink ? null : linkedMeeting)
+  /**
+   * A link lands inside the agent's meetings, not on the manager list: the
+   * dialog opens over the table the record belongs to, so closing it leaves the
+   * admin somewhere that still has the visit they came for, and its neighbours.
+   */
+  const linkedDrill = linkedMeeting
+    ? { agentId: linkedMeeting.agent_id ?? 'unassigned', managerKey: null }
+    : null
+  const { agentId: selectedAgentId, managerKey: selectedManagerKey } =
+    drill ?? linkedDrill ?? { agentId: null, managerKey: null }
 
   // The actual managers, so the top of the hierarchy lists real people instead
   // of a generic RSR/Sales bucket — same rule as the Clients page.
@@ -347,6 +399,18 @@ export default function MeetingsPage() {
           </Alert>
         )}
 
+        {/* A followed link that resolves to nothing. Said on the page rather
+            than as a toast: the admin arrived here to see one specific record,
+            and a notice that disappears leaves them looking at an unexplained
+            full list wondering which row was theirs. */}
+        {linkMissing && (
+          <Alert>
+            <AlertDescription className="text-xs">
+              That meeting is no longer in the records — it may have been deleted since the map was drawn.
+            </AlertDescription>
+          </Alert>
+        )}
+
         {!loading && !error && !selectedGroup && !selectedManagerBucket && (
           <>
             {/* Managers — click one to drop down their team's agents right below it */}
@@ -388,7 +452,7 @@ export default function MeetingsPage() {
                             </p>
                             <button
                               type="button"
-                              onClick={() => { setSelectedManagerKey(key); setSelectedAgentId(null) }}
+                              onClick={() => setDrill({ agentId: null, managerKey: key })}
                               className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-primary/50 shadow-sm text-left hover:border-primary hover:bg-primary/5 transition-colors"
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
@@ -421,7 +485,7 @@ export default function MeetingsPage() {
                             <button
                               key={group.agentId}
                               type="button"
-                              onClick={() => { setSelectedAgentId(group.agentId); setSelectedManagerKey(null) }}
+                              onClick={() => setDrill({ agentId: group.agentId, managerKey: null })}
                               className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-card border border-border shadow-sm text-left hover:border-primary/40 hover:bg-accent/30 transition-colors"
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
@@ -456,7 +520,7 @@ export default function MeetingsPage() {
             <div className="space-y-3">
               <Button
                 variant="outline" size="sm" className="h-9 gap-2"
-                onClick={() => { setSelectedAgentId(null); setSelectedManagerKey(null) }}
+                onClick={() => setDrill({ agentId: null, managerKey: null })}
               >
                 <ArrowLeft className="w-4 h-4" />
                 Back to agents
@@ -523,7 +587,7 @@ export default function MeetingsPage() {
                     {pageItems.map(m => (
                       <tr
                         key={m.id}
-                        onClick={() => setSelected(m)}
+                        onClick={() => setPicked(m)}
                         className="hover:bg-muted/20 cursor-pointer transition-colors"
                       >
                         <td className="px-4 py-3">
@@ -646,7 +710,9 @@ export default function MeetingsPage() {
       </div>
 
       {/* Meeting Detail Dialog */}
-      <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
+      {/* Closing clears BOTH sources — the deep link is a default, and a default
+          the admin has dismissed must stay dismissed. */}
+      <Dialog open={!!selected} onOpenChange={() => { setPicked(null); setDismissedLink(true) }}>
         <DialogContent className="bg-card border-border sm:max-w-2xl p-6">
           <DialogHeader className="sr-only">
             <DialogTitle>Meeting Details</DialogTitle>
@@ -875,6 +941,29 @@ export default function MeetingsPage() {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+/**
+ * The Suspense boundary `useSearchParams` requires — see MeetingsPageContent.
+ * The fallback mirrors that component's own loading state so following a deep
+ * link doesn't flash a different shape on the way in.
+ */
+export default function MeetingsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex flex-col flex-1">
+          <Header title="Meetings" />
+          <div className="flex-1 p-6 text-center py-16 text-muted-foreground">
+            <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
+            <p className="text-sm">Loading meetings…</p>
+          </div>
+        </div>
+      }
+    >
+      <MeetingsPageContent />
+    </Suspense>
   )
 }
 
