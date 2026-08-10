@@ -607,10 +607,23 @@ export default function ClientsPage() {
                     {(activeClients ?? []).length} client{(activeClients ?? []).length === 1 ? '' : 's'}
                   </p>
                 </div>
+                {/* Same deep link for a manager as an agent — SalesMapView's `agent`
+                    param already resolves a manager's own tag-along footprint
+                    (see the comment on `scopedTagAlongs` there), not just a literal
+                    sales agent's assigned clients. 'unassigned' isn't a real person
+                    to scope by, so it gets no button. */}
                 {selectedGroup && (
                   <Button
                     variant="outline" size="sm"
                     onClick={() => router.push(`/maps?module=sales&agent=${encodeURIComponent(selectedGroup.agentId)}`)}
+                  >
+                    <MapIcon /> View on map
+                  </Button>
+                )}
+                {!selectedGroup && selectedManagerKey && selectedManagerKey !== 'unassigned' && (
+                  <Button
+                    variant="outline" size="sm"
+                    onClick={() => router.push(`/maps?module=sales&agent=${encodeURIComponent(selectedManagerKey)}`)}
                   >
                     <MapIcon /> View on map
                   </Button>

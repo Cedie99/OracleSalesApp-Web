@@ -90,7 +90,7 @@ export function CompanionList({ requests }: { requests: TagAlongRequest[] }) {
   )
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       {ordered.map(r => {
         const waiting = r.status === 'pending' ? daysWaiting(r) : null
         return (

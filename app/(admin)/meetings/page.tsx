@@ -2,20 +2,21 @@
 
 import { Suspense, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Pagination } from '@/components/ui/pagination'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
-import { useMeetings, meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
+import { useMeetings, meetingGpsDriftMeters, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
 import { CompanionLine, CompanionList, ManagerGateIcon } from '@/components/tag-along-indicator'
@@ -23,14 +24,24 @@ import { MANAGER_GATE_LABEL, MANAGER_GATE_TONE, managerGate } from '@/lib/tag-al
 import type { Meeting, MeetingOutcome } from '@/types'
 import {
   Search, CalendarCheck, MapPin, MapPinCheck, Map as MapIcon, Camera, Video, Navigation, Users, CheckCircle2, Loader2,
-  Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown, ArrowLeft, User, ExternalLink,
+  Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown, ArrowLeft, User,
+  Building2, Phone, ListChecks, FileText, Tag, X as XIcon,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import {
   CUSTOMER_TYPE_LABEL, meetingStageBadge, OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS, TONE_TEXT,
 } from '@/lib/status-styles'
 import { managerForTeam } from '@/lib/teams'
-import { formatDistanceMeters } from '@/lib/utils'
+import { formatDistanceMeters, formatDurationMinutes } from '@/lib/utils'
+
+const MeetingRouteMap = dynamic(() => import('@/components/maps/meeting-route-map'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground bg-muted/40">
+      Loading map…
+    </div>
+  ),
+})
 
 type TypeFilter = 'all' | 'f2f' | 'online'
 
@@ -54,19 +65,17 @@ const DEFAULT_SORT_DIR: Record<SortKey, SortState['dir']> = {
 /** Severity order for the Outcome column — not alphabetical, so sorting groups worst-to-best (or reverse). */
 const OUTCOME_ORDER: MeetingOutcome[] = ['successful', 'follow_up', 'no_decision', 'lost_opportunity']
 
-/**
- * Google Maps for a meeting's captured position(s). With both fixes it opens a
- * two-point view, so the admin sees the start-to-end gap on a map rather than
- * having to picture it from two coordinate pairs; with only the start fix it
- * drops a single pin.
- */
-function mapsHref(m: Meeting): string {
-  const start = `${m.gps_lat},${m.gps_lng}`
-  if (m.end_gps_lat == null || m.end_gps_lng == null) {
-    return `https://www.google.com/maps?q=${start}`
-  }
-  const end = `${m.end_gps_lat},${m.end_gps_lng}`
-  return `https://www.google.com/maps/dir/?api=1&origin=${start}&destination=${end}&travelmode=walking`
+/** One field in the Meeting Detail dialog's grid — matches the Clients page's meeting popup exactly. */
+function DetailLine({ icon: Icon, label, value }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string }) {
+  return (
+    <div className="flex items-start gap-2 text-xs">
+      <Icon className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+      <div className="min-w-0">
+        <p className="text-muted-foreground">{label}</p>
+        <p className="text-foreground font-medium break-words">{value}</p>
+      </div>
+    </div>
+  )
 }
 
 /**
@@ -145,17 +154,47 @@ function MeetingsPageContent() {
     [byRole],
   )
 
+  // Every meeting's manager, computed once regardless of this page's own
+  // search/outcome/type/date filters — so scoping the stat row to a manager
+  // below doesn't inherit those filters either. Same convention as the
+  // Clients page's clientsByManagerKey.
+  const meetingsByManagerKey = useMemo(() => {
+    const map = new Map<string, Meeting[]>()
+    for (const m of meetings) {
+      const key = managerForTeam(m.agent?.team_id, managers)?.id ?? 'unassigned'
+      const bucket = map.get(key)
+      if (bucket) bucket.push(m)
+      else map.set(key, [m])
+    }
+    return map
+  }, [meetings, managers])
+
+  // Whichever manager/agent is currently drilled into (accordion-expanded or
+  // fully selected) narrows the stat row to their own meetings; otherwise
+  // it's the global total. Priority: a selected agent is the most specific
+  // scope, then a selected/expanded manager, then everyone.
+  const statsMeetings = useMemo(() => {
+    if (selectedAgentId) {
+      return meetings.filter(m => (m.agent_id ?? 'unassigned') === selectedAgentId)
+    }
+    const managerKey = selectedManagerKey ?? expandedManagerKey
+    if (managerKey) {
+      return meetingsByManagerKey.get(managerKey) ?? []
+    }
+    return meetings
+  }, [selectedAgentId, selectedManagerKey, expandedManagerKey, meetingsByManagerKey, meetings])
+
   const counts = {
-    total: meetings.length,
-    f2f: meetings.filter(m => m.meeting_type === 'f2f').length,
+    total: statsMeetings.length,
+    f2f: statsMeetings.filter(m => m.meeting_type === 'f2f').length,
     // Mirrors the table row's own fallback (`m.online_platform === 'zoom' ? 'Zoom' : 'Google Meet'`)
     // rather than checking for the literal 'googlemeet' value, since seeded/live rows often leave
     // online_platform null and the rest of this page already treats "online, not Zoom" as Google Meet.
-    googleMeet: meetings.filter(m => m.meeting_type === 'online' && m.online_platform !== 'zoom').length,
-    successful: meetings.filter(m => m.outcome === 'successful').length,
-    followUp: meetings.filter(m => m.outcome === 'follow_up').length,
-    noDecision: meetings.filter(m => m.outcome === 'no_decision').length,
-    lost: meetings.filter(m => m.outcome === 'lost_opportunity').length,
+    googleMeet: statsMeetings.filter(m => m.meeting_type === 'online' && m.online_platform !== 'zoom').length,
+    successful: statsMeetings.filter(m => m.outcome === 'successful').length,
+    followUp: statsMeetings.filter(m => m.outcome === 'follow_up').length,
+    noDecision: statsMeetings.filter(m => m.outcome === 'no_decision').length,
+    lost: statsMeetings.filter(m => m.outcome === 'lost_opportunity').length,
   }
 
   const filtered = meetings.filter(m => {
@@ -266,6 +305,16 @@ function MeetingsPageContent() {
     [selectedManagerKey, filtered, tagAlongMeetingIds],
   )
   const activeMeetings = selectedGroup?.meetings ?? (selectedManagerBucket ? managerMeetings : null)
+
+  // How many of the selected agent's OWN meetings had someone else tag along
+  // with them — the reverse direction from the manager bucket's tagAlongCount
+  // (meetings the manager was invited to as a guest). An agent group only
+  // ever tracks meetings it owns (agent_id), so "tagged along" for an agent
+  // means "had a companion," not "was a companion" — tagAlongMeetingIds
+  // (keyed by invitee) answers the wrong question here.
+  const selectedAgentTagAlongCount = selectedGroup
+    ? selectedGroup.meetings.filter(mt => tagAlongsFor(tagAlongsByMeetingId, mt.id).some(r => r.status !== 'cancelled')).length
+    : 0
 
   function toggleSort(key: SortKey) {
     setSort(prev =>
@@ -481,7 +530,13 @@ function MeetingsPageContent() {
                           <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
                             Agents under {label}
                           </p>
-                          {bucketGroups.map(group => (
+                          {bucketGroups.map(group => {
+                            // Meetings this agent owns that also had a companion
+                            // — not tagAlongMeetingIds (that's meetings they were
+                            // invited to as a guest, the reverse direction). See
+                            // selectedAgentTagAlongCount above for the same fix.
+                            const tagAlong = group.meetings.filter(mt => tagAlongsFor(tagAlongsByMeetingId, mt.id).some(r => r.status !== 'cancelled')).length
+                            return (
                             <button
                               key={group.agentId}
                               type="button"
@@ -498,12 +553,14 @@ function MeetingsPageContent() {
                                   <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
                                   <p className="text-xs text-muted-foreground">
                                     {group.meetings.length} meeting{group.meetings.length === 1 ? '' : 's'}
+                                    {tagAlong > 0 && <> · {tagAlong} tagged along</>}
                                   </p>
                                 </div>
                               </div>
                               <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
                             </button>
-                          ))}
+                            )
+                          })}
                         </div>
                       </div>
                     )}
@@ -540,13 +597,41 @@ function MeetingsPageContent() {
                     {selectedGroup?.agentName ?? selectedManagerBucket?.label}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {(activeMeetings ?? []).length} meeting{(activeMeetings ?? []).length === 1 ? '' : 's'}
+                    {selectedManagerBucket ? (
+                      <>
+                        {selectedManagerBucket.ownMeetingCount + selectedManagerBucket.tagAlongCount} meeting{selectedManagerBucket.ownMeetingCount + selectedManagerBucket.tagAlongCount === 1 ? '' : 's'}
+                        {' '}· {selectedManagerBucket.ownMeetingCount} recorded · {selectedManagerBucket.tagAlongCount} tagged along
+                      </>
+                    ) : (
+                      // No separate "recorded" segment here: every one of an
+                      // agent's own meetings is already "recorded" by them, so
+                      // that count would just repeat the total. tagAlongCount
+                      // is a subset of it (meetings that also had a companion),
+                      // not an additional bucket — unlike the manager case above.
+                      <>
+                        {(activeMeetings ?? []).length} meeting{(activeMeetings ?? []).length === 1 ? '' : 's'}
+                        {selectedAgentTagAlongCount > 0 && <> · {selectedAgentTagAlongCount} tagged along</>}
+                      </>
+                    )}
                   </p>
                 </div>
+                {/* Same deep link for a manager as an agent — SalesMapView's `agent`
+                    param already resolves a manager's own tag-along footprint
+                    (see the comment on `scopedTagAlongs` there), not just a literal
+                    sales agent's assigned clients. 'unassigned' isn't a real person
+                    to scope by, so it gets no button. */}
                 {selectedGroup && (
                   <Button
                     variant="outline" size="sm"
                     onClick={() => router.push(`/maps?module=sales&agent=${encodeURIComponent(selectedGroup.agentId)}`)}
+                  >
+                    <MapIcon /> View on map
+                  </Button>
+                )}
+                {!selectedGroup && selectedManagerKey && selectedManagerKey !== 'unassigned' && (
+                  <Button
+                    variant="outline" size="sm"
+                    onClick={() => router.push(`/maps?module=sales&agent=${encodeURIComponent(selectedManagerKey)}`)}
                   >
                     <MapIcon /> View on map
                   </Button>
@@ -619,15 +704,33 @@ function MeetingsPageContent() {
                           })()}
                         </td>
                         <td className="px-4 py-3">
-                          <p className="text-foreground">{m.agent?.full_name}</p>
-                          {m.recorder && (
-                            <p className="text-xs text-muted-foreground">+ {m.recorder.full_name}</p>
-                          )}
-                          {/* Who else was there. Sits under the agent because
-                              that is where the reader is already asking "whose
-                              meeting is this" — not a column of its own, which
-                              would be empty on most rows. */}
-                          <CompanionLine requests={tagAlongsFor(tagAlongsByMeetingId, m.id)} />
+                          {/* Every size below is an explicit Tailwind class, not
+                              inherited from the table's own text-sm — an
+                              inherited-only size gets boosted disproportionately
+                              by mobile Safari/Chrome's font-boosting heuristic,
+                              which is what made the agent name render far larger
+                              than the companion line and badge under it. */}
+                          <div className="space-y-1">
+                            <p className="text-sm text-foreground font-medium leading-tight">{m.agent?.full_name}</p>
+                            {m.recorder && (
+                              <p className="text-xs text-muted-foreground leading-tight">+ {m.recorder.full_name}</p>
+                            )}
+                            {/* Who else was there. Sits under the agent because
+                                that is where the reader is already asking "whose
+                                meeting is this" — not a column of its own, which
+                                would be empty on most rows. */}
+                            <CompanionLine requests={tagAlongsFor(tagAlongsByMeetingId, m.id)} />
+                            {/* A visible label, not just the small Flags-column
+                                icon — readable at a glance straight off the list,
+                                in every context (agent-scoped, manager-scoped, or
+                                unscoped), not only when the scoped manager
+                                specifically isn't the owner. */}
+                            {tagAlongsFor(tagAlongsByMeetingId, m.id).some(r => r.status !== 'cancelled') && (
+                              <Badge variant="tone" className={`${TONE_CLASS.neutral} text-[10px] px-1.5 h-4`}>
+                                Tagged along
+                              </Badge>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
@@ -682,6 +785,19 @@ function MeetingsPageContent() {
                                 </MapPin>
                               ))}
                             {m.photo_url && <Camera className="w-3.5 h-3.5 text-primary" />}
+                            {/* General "someone tagged along" flag — any live
+                                companion, teammate or manager. Distinct from
+                                ManagerGateIcon below it, which only ever fires
+                                for a manager companion and carries their
+                                accept/decline status specifically. */}
+                            {tagAlongsFor(tagAlongsByMeetingId, m.id).some(r => r.status !== 'cancelled') && (
+                              <Users
+                                className="w-3.5 h-3.5 text-muted-foreground"
+                                aria-label="Someone tagged along"
+                              >
+                                <title>Someone tagged along on this meeting</title>
+                              </Users>
+                            )}
                             {/* Only ever shown when a manager gate exists —
                                 see ManagerGateIcon. */}
                             <ManagerGateIcon requests={tagAlongsFor(tagAlongsByMeetingId, m.id)} />
@@ -713,231 +829,183 @@ function MeetingsPageContent() {
       {/* Closing clears BOTH sources — the deep link is a default, and a default
           the admin has dismissed must stay dismissed. */}
       <Dialog open={!!selected} onOpenChange={() => { setPicked(null); setDismissedLink(true) }}>
-        <DialogContent className="bg-card border-border sm:max-w-2xl p-6">
-          <DialogHeader className="sr-only">
-            <DialogTitle>Meeting Details</DialogTitle>
-          </DialogHeader>
-          {selected && (
-            <div className="space-y-5 text-sm pt-1">
+        <DialogContent className="bg-card border-border sm:max-w-3xl max-h-[92vh] flex flex-col gap-0 p-0 overflow-hidden" showCloseButton={false}>
+          {selected && (() => {
+            const hasStart = selected.gps_lat != null && selected.gps_lng != null
+            const hasEnd = selected.end_gps_lat != null && selected.end_gps_lng != null
+            const mapStart = hasStart ? { lat: selected.gps_lat as number, lng: selected.gps_lng as number, label: 'Start' } : null
+            const mapEnd = hasEnd ? { lat: selected.end_gps_lat as number, lng: selected.end_gps_lng as number, label: 'End' } : null
+            const drift = formatDistanceMeters(meetingGpsDriftMeters(selected))
+            const duration = formatDurationMinutes(meetingDurationMinutes(selected))
+            const submittedBy = selected.recorder?.full_name ?? selected.agent?.full_name ?? 'Unknown'
+            const stage = meetingStageBadge(selected.client_status_at_meeting)
+            const nowType = selected.client?.customer_type
+            const stageMoved = nowType && selected.client_status_at_meeting !== nowType
+            const companions = tagAlongsFor(tagAlongsByMeetingId, selected.id)
+            const gate = managerGate(companions)
+            return (
+            <>
+            <DialogHeader className="shrink-0 border-b border-border px-5 py-3 flex-row items-center justify-between space-y-0">
               <div className="min-w-0">
-                <p className="font-semibold text-foreground text-lg truncate">{selected.client?.company_name}</p>
-                <p className="text-sm text-muted-foreground truncate">{selected.contact_person}{selected.contact_position ? ` · ${selected.contact_position}` : ''}</p>
+                <DialogTitle className="text-base truncate">{selected.client?.company_name}</DialogTitle>
+                <p className="text-xs text-muted-foreground truncate">
+                  {selected.contact_person}{selected.contact_position ? ` · ${selected.contact_position}` : ''}
+                </p>
               </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {/* A clear text badge, not just a Flags-column icon — readable
+                    at a glance the same way the outcome badge next to it is. */}
+                {companions.some(r => r.status !== 'cancelled') && (
+                  <Badge variant="tone" className={TONE_CLASS.amber}>
+                    Tagged Along
+                  </Badge>
+                )}
+                <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[selected.outcome]]}>
+                  {OUTCOME_LABEL[selected.outcome]}
+                </Badge>
+                <DialogClose render={<Button variant="ghost" size="icon-sm" />}>
+                  <XIcon className="w-4 h-4" />
+                  <span className="sr-only">Close</span>
+                </DialogClose>
+              </div>
+            </DialogHeader>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
-                  <div className="flex items-center gap-2 text-muted-foreground mb-2.5">
-                    <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                      <User className="w-3.5 h-3.5" />
-                    </div>
-                    <p className="text-xs">Agent</p>
-                  </div>
-                  <p className="text-foreground font-semibold">{selected.agent?.full_name}</p>
-                  {selected.recorder && <p className="text-xs text-muted-foreground mt-1">Assisted by {selected.recorder.full_name}</p>}
-                </div>
-                <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
-                  <div className="flex items-center gap-2 text-muted-foreground mb-2.5">
-                    <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                      <CalendarCheck className="w-3.5 h-3.5" />
-                    </div>
-                    <p className="text-xs">Date & Time</p>
-                  </div>
-                  <p className="text-foreground font-semibold">{format(new Date(selected.meeting_date), 'MMM d, yyyy')}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">{format(new Date(selected.meeting_date), 'h:mm a')}</p>
-                </div>
-                <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
-                  <div className="flex items-center gap-2 text-muted-foreground mb-2.5">
-                    <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                      {selected.meeting_type === 'f2f' ? <Navigation className="w-3.5 h-3.5" /> : <Video className="w-3.5 h-3.5" />}
-                    </div>
-                    <p className="text-xs">Type</p>
-                  </div>
-                  <p className="text-foreground font-semibold capitalize">
-                    {selected.meeting_type === 'f2f' ? 'Face to Face' : selected.online_platform === 'zoom' ? 'Zoom' : 'Google Meet'}
-                  </p>
-                </div>
-                {selected.gps_lat ? (
-                  <a
-                    href={mapsHref(selected)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="group block rounded-xl bg-muted/40 p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)] transition-colors hover:bg-muted/70"
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-2.5">
-                      <div className="flex items-center gap-2 text-muted-foreground">
-                        <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                          <MapPin className="w-3.5 h-3.5" />
-                        </div>
-                        <p className="text-xs">Location</p>
-                      </div>
-                      <ExternalLink className="w-3.5 h-3.5 text-primary shrink-0" />
-                    </div>
-                    <p className="text-foreground font-semibold group-hover:text-primary transition-colors">
-                      {selected.location_type === 'client_office' ? 'Client Office' : selected.location_name}
-                    </p>
-                    {/* Both fixes, side by side, because comparing them IS the
-                        validation — see meetingGpsDriftMeters. The gap is stated
-                        as a plain number with no verdict attached: no one has
-                        defined how far is too far, and a threshold invented here
-                        would read as policy. */}
-                    <p className="text-xs text-muted-foreground mt-1">
-                      <span className="text-muted-foreground/70">Start</span>{' '}
-                      {selected.gps_lat.toFixed(4)}, {selected.gps_lng?.toFixed(4)}
-                    </p>
-                    {selected.end_gps_lat != null && selected.end_gps_lng != null ? (
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        <span className="text-muted-foreground/70">End</span>{' '}
-                        {selected.end_gps_lat.toFixed(4)}, {selected.end_gps_lng.toFixed(4)}
-                        {(() => {
-                          const drift = formatDistanceMeters(meetingGpsDriftMeters(selected))
-                          // "apart" rather than the map's fuller "from where it
-                          // started": here the two coordinates are printed on
-                          // adjacent lines under their own Start/End labels, so
-                          // what the gap is between is already on screen.
-                          return drift && <span className="text-foreground font-medium"> · {drift} apart</span>
-                        })()}
-                      </p>
-                    ) : (
-                      <p className="text-xs text-muted-foreground/70 mt-0.5">End GPS not recorded</p>
-                    )}
-                  </a>
+            <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-5 text-sm">
+              <div className="h-64 bg-muted/40 rounded-lg border border-border overflow-hidden">
+                {mapStart || mapEnd ? (
+                  <MeetingRouteMap start={mapStart} end={mapEnd} distanceLabel={drift} />
                 ) : (
-                  <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
-                    <div className="flex items-center gap-2 text-muted-foreground mb-2.5">
-                      <div className="w-6 h-6 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                        <MapPin className="w-3.5 h-3.5" />
-                      </div>
-                      <p className="text-xs">Location</p>
-                    </div>
-                    <p className="text-foreground font-semibold">
-                      {selected.location_type === 'client_office' ? 'Client Office' : selected.location_name}
-                    </p>
+                  <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">
+                    No location captured for this meeting
                   </div>
                 )}
               </div>
 
-              {selected.remarks && (
-                <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
-                  <p className="text-xs text-muted-foreground mb-1.5 font-medium">Remarks</p>
-                  <p className="text-sm text-foreground leading-relaxed">{selected.remarks}</p>
-                </div>
-              )}
-
-              <div>
-                <p className="text-xs text-muted-foreground mb-2.5 font-medium">Agenda</p>
-                <div className="flex flex-wrap gap-2">
-                  {selected.agenda.map(a => (
-                    <span
-                      key={a}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/15"
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-                      {a}
-                    </span>
-                  ))}
-                </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-3 gap-x-0 sm:[&>*:nth-child(odd)]:pr-6 sm:[&>*:nth-child(even)]:pl-6 sm:[&>*:nth-child(even)]:border-l sm:[&>*:nth-child(even)]:border-border">
+                <DetailLine icon={User} label="Submitted by" value={submittedBy} />
+                <DetailLine
+                  icon={Clock}
+                  label="Time"
+                  value={format(new Date(selected.meeting_date), 'h:mm a')}
+                />
+                <DetailLine icon={Navigation} label="Duration" value={duration ?? 'Not captured'} />
+                <DetailLine icon={MapPin} label="Distance start → end" value={drift ?? 'Not captured'} />
+                <DetailLine
+                  icon={Building2}
+                  label="Meeting type"
+                  value={
+                    selected.meeting_type === 'f2f'
+                      ? 'Face to face'
+                      : `Online${selected.online_platform ? ` · ${selected.online_platform === 'zoom' ? 'Zoom' : 'Google Meet'}` : ''}`
+                  }
+                />
+                <DetailLine
+                  icon={MapPin}
+                  label="Location"
+                  value={selected.location_type === 'client_office' ? "Client's office" : (selected.location_name || 'Other location')}
+                />
+                <DetailLine icon={User} label="Contact person" value={selected.contact_person || 'Not recorded'} />
+                <DetailLine icon={Phone} label="Contact position" value={selected.contact_position || 'Not recorded'} />
               </div>
 
-              {/* Stage at the visit, and what it cost the cutoff.
-                  ------------------------------------------------------------
-                  Always shown, unlike the companions panel below — its absence
-                  would be indistinguishable from a client that never moved
-                  stage, and "not recorded" is itself the answer on every row
-                  written before migration 067.
+              <div className="space-y-4">
+                <div className="flex items-start gap-2 text-xs">
+                  <ListChecks className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="text-muted-foreground mb-1.5">Agenda</p>
+                    {selected.agenda.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selected.agenda.map(a => (
+                          <Badge key={a} variant="tone" className={TONE_CLASS.neutral}>{a}</Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-foreground">Not recorded</p>
+                    )}
+                  </div>
+                </div>
 
-                  The client's stage NOW is deliberately printed beside it, and
-                  only when the two differ. That difference is the entire fact:
-                  an admin reading a New client's four visits has no other way to
-                  learn that three of them happened while it was still a Prospect
-                  and were never measured against any limit. Nothing in the
-                  schema records the promotion — not the client row, not the
-                  cycles table — so this pairing is the only place it surfaces. */}
-              {(() => {
-                const stage = meetingStageBadge(selected.client_status_at_meeting)
-                const nowType = selected.client?.customer_type
-                const moved = nowType && selected.client_status_at_meeting !== nowType
-                return (
-                  <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
-                    <div className="flex items-center justify-between gap-2 mb-2.5">
-                      <p className="text-xs text-muted-foreground font-medium">Client stage at this visit</p>
-                      <Badge variant="tone" className={TONE_CLASS[stage.tone]}>{stage.label}</Badge>
+                {selected.remarks && (
+                  <div className="flex items-start gap-2 text-xs">
+                    <FileText className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-muted-foreground mb-1">Remarks</p>
+                      <p className="text-foreground break-words">{selected.remarks}</p>
                     </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">{stage.title}</p>
-                    {moved && (
-                      <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
-                        The account is{' '}
-                        <span className="text-foreground font-medium">
-                          {CUSTOMER_TYPE_LABEL[nowType]}
-                        </span>{' '}
-                        today. A stage change does not restate a past visit — this one keeps whatever
-                        the cutoff decided at the time.
+                  </div>
+                )}
+
+                {/* Stage at the visit — the one row on this dialog that is
+                    allowed to disagree with the client's live status, since
+                    the schema never records when a promotion happened. Always
+                    shown, unlike Tagged along below: its absence would be
+                    indistinguishable from a client that never moved stage. */}
+                <div className="flex items-start gap-2 text-xs bg-muted/40 rounded-lg border border-border p-3">
+                  <Tag className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <p className="text-muted-foreground">Client stage at this visit</p>
+                      <Badge variant="tone" className={`text-[10px] px-1.5 h-4 shrink-0 ${TONE_CLASS[stage.tone]}`}>{stage.label}</Badge>
+                    </div>
+                    <p className="text-foreground">{stage.title}</p>
+                    {stageMoved && (
+                      <p className="text-muted-foreground mt-1">
+                        The account is <span className="text-foreground font-medium">{CUSTOMER_TYPE_LABEL[nowType]}</span> today.
+                        A stage change does not restate a past visit — this one keeps whatever the cutoff decided at the time.
                       </p>
                     )}
                   </div>
-                )
-              })()}
+                </div>
 
-              {/* Companions. Shown only when there were any: a "nobody tagged
-                  along" panel on the overwhelming majority of meetings would be
-                  noise, and the ledger has no row to explain either way. */}
-              {(() => {
-                const companions = tagAlongsFor(tagAlongsByMeetingId, selected.id)
-                if (companions.length === 0) return null
-                const gate = managerGate(companions)
-                return (
-                  <div className="bg-muted/40 rounded-xl p-4 shadow-[0_1px_2px_rgba(18,39,28,0.05)]">
-                    <div className="flex items-center justify-between gap-2 mb-2.5">
-                      <p className="text-xs text-muted-foreground font-medium">Tagged along</p>
-                      {gate !== 'none' && (
-                        <Badge variant="tone" className={TONE_CLASS[MANAGER_GATE_TONE[gate]]}>
-                          {MANAGER_GATE_LABEL[gate]}
-                        </Badge>
+                {companions.length > 0 && (
+                  <div className="flex items-start gap-2 text-xs bg-muted/40 rounded-lg border border-border p-3">
+                    <Camera className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <p className="text-muted-foreground">Tagged along</p>
+                        {gate !== 'none' && (
+                          <Badge variant="tone" className={`text-[10px] px-1.5 h-4 shrink-0 ${TONE_CLASS[MANAGER_GATE_TONE[gate]]}`}>
+                            {MANAGER_GATE_LABEL[gate]}
+                          </Badge>
+                        )}
+                      </div>
+                      <CompanionList requests={companions} />
+                      {gate === 'pending' && (
+                        <p className="text-muted-foreground mt-2">
+                          Until the manager answers, this meeting reserves no slot against the client&apos;s cutoff limit and counts toward no one&apos;s target.
+                        </p>
+                      )}
+                      {gate === 'declined' && (
+                        <p className="text-muted-foreground mt-2">
+                          A declined tag-along excludes this meeting from the cutoff permanently. The record stays; it will never count.
+                        </p>
                       )}
                     </div>
-                    <CompanionList requests={companions} />
-                    {/* Says what the state costs, because neither consequence is
-                        inferable from the word. Both are quota facts the admin
-                        would otherwise only meet later in the cutoff report. */}
-                    {gate === 'pending' && (
-                      <p className="text-[11px] text-muted-foreground mt-2.5 leading-relaxed">
-                        Until the manager answers, this meeting reserves no slot against the
-                        client&apos;s cutoff limit and counts toward no one&apos;s target.
-                      </p>
-                    )}
-                    {gate === 'declined' && (
-                      <p className="text-[11px] text-muted-foreground mt-2.5 leading-relaxed">
-                        A declined tag-along excludes this meeting from the cutoff permanently.
-                        The record stays; it will never count.
-                      </p>
-                    )}
                   </div>
-                )
-              })()}
+                )}
+              </div>
 
-              <div className="flex items-center justify-between gap-2.5 pt-3 border-t border-border">
-                <div className="flex gap-2.5">
-                  {/* Names which fixes are on file rather than a flat "GPS
-                      captured" — a meeting with only a start fix can't be
-                      validated the way ADR-019 assumes, and the chip is where
-                      that shows before the admin goes looking for the pair. */}
-                  {selected.gps_lat && (
-                    <div className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground bg-muted/40 rounded-full px-3 py-1.5">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" />
-                      {selected.end_gps_lat != null ? 'Start & end GPS' : 'Start GPS only'}
-                    </div>
-                  )}
-                  {selected.photo_url && (
-                    <div className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground bg-muted/40 rounded-full px-3 py-1.5">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" /> Photo taken
-                    </div>
-                  )}
-                </div>
-                <Badge variant="tone" className={`shrink-0 text-sm px-3 py-1 ${TONE_CLASS[OUTCOME_TONE[selected.outcome]]}`}>
-                  {OUTCOME_LABEL[selected.outcome]}
-                </Badge>
+              <div className="flex items-center gap-2.5 pt-3 border-t border-border">
+                {/* Names which fixes are on file rather than a flat "GPS
+                    captured" — a meeting with only a start fix can't be
+                    validated the way ADR-019 assumes, and the chip is where
+                    that shows before the admin goes looking for the pair. */}
+                {selected.gps_lat && (
+                  <div className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground bg-muted/40 rounded-full px-3 py-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" />
+                    {selected.end_gps_lat != null ? 'Start & end GPS' : 'Start GPS only'}
+                  </div>
+                )}
+                {selected.photo_url && (
+                  <div className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground bg-muted/40 rounded-full px-3 py-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" /> Photo taken
+                  </div>
+                )}
               </div>
             </div>
-          )}
+            </>
+            )
+          })()}
         </DialogContent>
       </Dialog>
     </div>
