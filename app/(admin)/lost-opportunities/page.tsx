@@ -13,6 +13,7 @@ import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
 import { useClients } from '@/lib/hooks/use-clients'
+import { REASSIGN_COOLDOWN_LABEL } from '@/lib/lost-opportunity'
 import { useMeetings } from '@/lib/hooks/use-meetings'
 import { AlertTriangle, Building2, User, Calendar, Clock, Unlock, Search, Loader2 } from 'lucide-react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
@@ -56,7 +57,7 @@ export default function LostOpportunitiesPage() {
           <div className="text-xs text-muted-foreground">
             <p className="font-medium text-foreground mb-0.5">Lost Opportunity Rules</p>
             When a meeting is marked &ldquo;Lost Opportunity,&rdquo; the client is automatically removed from the agent&apos;s list and archived here.
-            After <span className="text-foreground font-medium">14 days</span>, the client becomes available for reassignment to a different agent.
+            After <span className="text-foreground font-medium">{REASSIGN_COOLDOWN_LABEL}</span>, the client becomes available for reassignment to a different agent.
             The original agent cannot re-approach.
           </div>
         </div>
