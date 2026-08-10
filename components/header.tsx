@@ -5,7 +5,16 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useNotifications } from '@/lib/hooks/use-notifications'
+import type { NotificationModule } from '@/types'
 import { format } from 'date-fns'
+
+/** Short tag shown per notification so the unrestricted admin can tell feeds apart. */
+const NOTIFICATION_MODULE_LABEL: Record<NotificationModule, string> = {
+  sales: 'Sales',
+  collection: 'Collection',
+  delivery: 'Delivery',
+  system: 'System',
+}
 
 interface ViewSwitcherOption {
   id: string
@@ -35,7 +44,8 @@ interface HeaderProps {
 }
 
 export function Header({ title, subtitle, pendingApprovals = 0, viewSwitcher, action }: HeaderProps) {
-  const { notifications, unreadCount, markAllRead } = useNotifications()
+  const { notifications, unreadCount, seenAt, markAllRead } = useNotifications()
+  const isUnread = (createdAt: string) => !seenAt || new Date(createdAt) > new Date(seenAt)
 
   return (
     <header className="flex items-center justify-between px-6 h-[61px] border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
@@ -84,9 +94,14 @@ export function Header({ title, subtitle, pendingApprovals = 0, viewSwitcher, ac
                 notifications.map(n => (
                   <div
                     key={n.id}
-                    className={`px-3 py-2.5 border-b border-border last:border-0 ${!n.read_at ? 'bg-primary/5' : ''}`}
+                    className={`px-3 py-2.5 border-b border-border last:border-0 ${isUnread(n.created_at) ? 'bg-primary/5' : ''}`}
                   >
-                    <p className="text-sm font-medium text-foreground">{n.title}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-foreground">{n.title}</p>
+                      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground border border-border rounded px-1.5 py-0.5">
+                        {NOTIFICATION_MODULE_LABEL[n.module]}
+                      </span>
+                    </div>
                     <p className="text-xs text-muted-foreground mt-0.5">{n.message}</p>
                     <p className="text-[11px] text-muted-foreground mt-1">
                       {format(new Date(n.created_at), 'MMM d, yyyy h:mm a')}
