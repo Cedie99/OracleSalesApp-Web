@@ -676,14 +676,24 @@ export interface Client {
   normalized_company_name?: string | null
 }
 
+/** Which admin function a notification belongs to — see migration 083. */
+export type NotificationModule = 'sales' | 'collection' | 'delivery' | 'system'
+
 export interface Notification {
   id: string
-  /** Free-form event key, e.g. 'prospect_auto_deleted'. */
+  /** Free-form event key, e.g. 'prospect_auto_deleted', 'remittance_submitted'. */
   type: string
   title: string
   message: string
+  /** Segregates the feed by admin scope; 'system' is visible to every admin. */
+  module: NotificationModule
+  /** The row that spawned this (remittance, edit request, payment…). No FK. */
+  entity_id: string | null
   client_id: string | null
-  /** Global read state — set once any admin has opened the panel, not per-admin. */
+  /**
+   * Vestigial global read flag from 047. Read state is now per-admin via the
+   * notification_reads watermark (083); this column is no longer written.
+   */
   read_at: string | null
   created_at: string
 }
