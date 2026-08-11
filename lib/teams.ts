@@ -1,19 +1,10 @@
 import type { Profile, Team, TeamKind, UserRole } from '@/types'
 
-/**
- * Fixed team IDs from the seed migrations (004_seed_teams.sql,
- * 007_seed_rsr_teams.sql), kept so `lib/mock/data.ts` can hand its demo
- * profiles a `team_id` that matches a real row.
- *
- * These are NOT the list of teams. Teams are rows, and which ones are sales or
- * RSR is `teams.kind` (migration 075) — the arrays that used to live here made
- * every hand-created team invisible to the app, since the Users picker filtered
- * against them by id.
- */
-export const TEAM_1_ID = '00000000-0000-0000-0000-000000000001'
-export const TEAM_2_ID = '00000000-0000-0000-0000-000000000002'
-export const TEAM_RSR_1_ID = '00000000-0000-0000-0000-000000000003'
-export const TEAM_RSR_2_ID = '00000000-0000-0000-0000-000000000004'
+// No team ids live in this file any more. The four seeded UUIDs that used to
+// sit here were deleted from every environment by migration 089: a team is now
+// created when you create the manager who runs it, so there is no fixed row for
+// code to name. Teams are rows, and which ones are sales or RSR is `teams.kind`
+// (migration 075) — read them with `useTeams()`.
 
 /**
  * The kind of team a role belongs to, or null for roles that have no team at
