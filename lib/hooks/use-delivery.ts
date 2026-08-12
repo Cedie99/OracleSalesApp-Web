@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { recordAuditLog } from '@/lib/audit/actions'
+import { singleChange } from '@/lib/audit/entries'
+import { peso } from '@/lib/money'
+import { REMITTANCE_STATUS_LABEL } from '@/lib/status-styles'
 import type {
   Client, CodPayment, CodRemittance, Profile, PurchaseOrder, RemittanceStatus,
 } from '@/types'
@@ -187,7 +191,7 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
   const createOrder = useCallback(
     async (draft: NewPurchaseOrder): Promise<string | null> => {
       const supabase = createClient()
-      const { error: insertError } = await supabase.from('purchase_orders').insert({
+      const { data: inserted, error: insertError } = await supabase.from('purchase_orders').insert({
         po_number: draft.poNumber,
         client_id: draft.clientId,
         // Denormalized at publish time — see migration 045.
@@ -201,8 +205,31 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
         // must be null rather than 0 when the toggle is off.
         cod_due: draft.cod ? draft.codDue : null,
       })
+        .select('id')
+        .single()
 
       if (insertError) return insertError.message
+
+      // The CHECK constraint keeps codDue null on a non-COD order, so the two
+      // flags always agree — but the log renders both from one value rather
+      // than trusting that, since a mismatch would print "COD ₱null".
+      const codLabel = draft.cod && draft.codDue != null ? peso(draft.codDue) : null
+
+      void recordAuditLog({
+        action: 'purchase_order.listed',
+        entityTable: 'purchase_orders',
+        entityId: inserted?.id ?? null,
+        entityLabel: `PO ${draft.poNumber} — ${draft.clientName}`,
+        summary:
+          `Listed PO ${draft.poNumber} for ${draft.clientName} on ${draft.scheduledFor}` +
+          (codLabel ? ` (COD ${codLabel})` : ''),
+        changes: [
+          { field: 'scheduled_for', label: 'Scheduled for', from: null, to: draft.scheduledFor },
+          { field: 'area', label: 'Area', from: null, to: draft.area },
+          { field: 'cod', label: 'COD', from: null, to: codLabel ?? 'No' },
+        ],
+      })
+
       await load()
       return null
     },
@@ -212,29 +239,66 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
   const removeOrder = useCallback(
     async (id: string): Promise<string | null> => {
       const supabase = createClient()
+      // Read before the delete — see the note on collection's removeVisit.
+      const target = orders.find(o => o.id === id)
+
       const { error: deleteError } = await supabase.from('purchase_orders').delete().eq('id', id)
 
       if (deleteError) return deleteError.message
+
+      void recordAuditLog({
+        action: 'purchase_order.removed',
+        entityTable: 'purchase_orders',
+        entityId: id,
+        entityLabel: target ? `PO ${target.po_number} — ${target.client_name}` : null,
+        summary: `Removed PO ${target?.po_number ?? ''} from the delivery list`.replace(/\s+/g, ' '),
+        metadata: target
+          ? {
+              po_number: target.po_number,
+              client_name: target.client_name,
+              scheduled_for: target.scheduled_for,
+              status: target.status,
+              cod_due: target.cod_due,
+              claimed_by_name: target.claimed_by_name,
+            }
+          : null,
+      })
+
       await load()
       return null
     },
-    [load]
+    [load, orders]
   )
 
   /** Release a driver's claim — the delivery twin of collection's cancelClaim. */
   const cancelClaim = useCallback(
     async (id: string): Promise<string | null> => {
       const supabase = createClient()
+      const target = orders.find(o => o.id === id)
+
       const { error: updateError } = await supabase
         .from('purchase_orders')
         .update({ claimed_by: null, claimed_at: null, claimed_by_name: null })
         .eq('id', id)
 
       if (updateError) return updateError.message
+
+      const driver = target?.claimed_by_name
+      void recordAuditLog({
+        action: 'purchase_order.claim_released',
+        entityTable: 'purchase_orders',
+        entityId: id,
+        entityLabel: target ? `PO ${target.po_number} — ${target.client_name}` : null,
+        summary:
+          `Released ${driver ? `${driver}'s` : 'the'} claim on ` +
+          `PO ${target?.po_number ?? ''}`.trimEnd(),
+        changes: singleChange('claimed_by_name', 'Claimed by', driver ?? null, null),
+      })
+
       await load()
       return null
     },
-    [load]
+    [load, orders]
   )
 
   return { orders, loading, error, refresh, createOrder, removeOrder, cancelClaim }
@@ -290,16 +354,43 @@ export function useCodRemittances(): UseCodRemittancesResult {
   const setStatus = useCallback(
     async (id: string, status: RemittanceStatus): Promise<string | null> => {
       const supabase = createClient()
+      const target = codRemittances.find(r => r.id === id)
+
       const { error: updateError } = await supabase
         .from('cod_remittances')
         .update({ status })
         .eq('id', id)
 
       if (updateError) return updateError.message
+
+      const driver = target?.driver?.full_name ?? 'a driver'
+      void recordAuditLog({
+        action: 'cod_remittance.status_changed',
+        entityTable: 'cod_remittances',
+        entityId: id,
+        entityLabel: `${driver} — ${peso(target?.amount_remitted ?? 0)}`,
+        summary:
+          `Marked ${driver}'s ${peso(target?.amount_remitted ?? 0)} COD remittance as ` +
+          `${REMITTANCE_STATUS_LABEL[status]}`,
+        changes: singleChange(
+          'status',
+          'Status',
+          target ? REMITTANCE_STATUS_LABEL[target.status] : null,
+          REMITTANCE_STATUS_LABEL[status],
+        ),
+        metadata: target
+          ? {
+              amount_remitted: target.amount_remitted,
+              amount_collected: target.amount_collected,
+              variance: target.amount_remitted - target.amount_collected,
+            }
+          : null,
+      })
+
       await load()
       return null
     },
-    [load]
+    [load, codRemittances]
   )
 
   return { codRemittances, loading, error, refresh, setStatus }

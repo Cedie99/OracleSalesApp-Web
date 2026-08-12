@@ -4,6 +4,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { canManageCollection } from '@/lib/permissions'
 import { sendSmsBatch, toE164, smsConfigured, type SmsRequest } from '@/lib/collection/busybee'
+import { recordAuditLog } from '@/lib/audit/actions'
+import { peso } from '@/lib/money'
 import type { AdminScope, UserRole } from '@/types'
 
 /**
@@ -123,6 +125,9 @@ export async function listAdditionalStore(
   if (collectorsError) {
     // The store IS listed and mobile will still badge it; only the nudge failed.
     // Report success-with-a-caveat rather than pretending the whole thing broke.
+    // Still logged — the admin's action succeeded, and this is the branch where
+    // knowing the SMS never went out matters most.
+    await logAdditionalStore(input, inserted.id, { ...empty, recipients: 0 })
     return {
       error: null,
       visitId: inserted.id,
@@ -139,6 +144,13 @@ export async function listAdditionalStore(
   const results = await sendSmsBatch(requests)
   const sent = results.filter(r => r.ok).length
 
+  await logAdditionalStore(input, inserted.id, {
+    configured: smsConfigured(),
+    recipients: requests.length,
+    sent,
+    failed: requests.length - sent,
+  })
+
   return {
     error: null,
     visitId: inserted.id,
@@ -149,4 +161,35 @@ export async function listAdditionalStore(
       failed: requests.length - sent,
     },
   }
+}
+
+/**
+ * The audit entry for an additional store.
+ *
+ * Separate from the plain `collection_visit.listed` that `createVisit` writes,
+ * because the two are different acts: this one interrupts collectors mid-day
+ * with an SMS. Whether that fan-out actually reached anyone is the part someone
+ * asks about afterwards ("we listed it, why did nobody go?"), so the delivery
+ * counts ride along in `metadata` — the SMS result is not stored anywhere else.
+ */
+async function logAdditionalStore(
+  input: ListAdditionalStoreInput,
+  visitId: string,
+  sms: ListAdditionalStoreResult['sms'],
+): Promise<void> {
+  await recordAuditLog({
+    action: 'collection_visit.listed_additional',
+    entityTable: 'collection_visits',
+    entityId: visitId,
+    entityLabel: input.clientName,
+    summary:
+      `Listed ${input.clientName} as an additional collection for ${input.scheduledFor}` +
+      (sms.configured ? ` — SMS to ${sms.sent}/${sms.recipients} collectors` : ''),
+    changes: [
+      { field: 'scheduled_for', label: 'Scheduled for', from: null, to: input.scheduledFor },
+      { field: 'amount_due', label: 'Amount due', from: null, to: peso(input.amountDue) },
+      { field: 'area', label: 'Area', from: null, to: input.area },
+    ],
+    metadata: { sms },
+  })
 }

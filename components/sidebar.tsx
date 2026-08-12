@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, Users, CalendarCheck, ClipboardCheck,
   AlertTriangle, Clock, FileBarChart2, LogOut, UserCog, Map, Wallet, Truck, Settings,
+  ScrollText,
 } from 'lucide-react'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
@@ -91,6 +92,11 @@ function buildNavGroups(pendingApprovals: number): NavGroup[] {
       // a lower role is ever granted web access.
       items: [
         { href: '/users', label: 'User Management', icon: UserCog, adminOnly: true },
+        // Who did what on the web (migration 096). Gated like the two rows
+        // around it: absent from every SCOPE_ROUTES entry, so canAccessRoute
+        // limits it to unrestricted admins and superadmins — and the table's own
+        // RLS policy says the same thing, so the nav and the data agree.
+        { href: '/logs', label: 'Activity Log', icon: ScrollText, adminOnly: true },
         // Quota configuration — the cutoff calendar and the per-client visit cap.
         // Absent from every SCOPE_ROUTES entry, so canAccessRoute already limits
         // it to unrestricted admins and superadmins, same as User Management.

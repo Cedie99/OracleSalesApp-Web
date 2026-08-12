@@ -22,6 +22,8 @@ import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { useTagAlongs } from '@/lib/hooks/use-tag-alongs'
 import { createClient as createSupabaseClient } from '@/lib/supabase/client'
+import { recordAuditLog } from '@/lib/audit/actions'
+import { buildChanges, type AuditField, type KnownAuditAction } from '@/lib/audit/entries'
 import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
 import {
   Search, Building2, Phone, MapPin, Map as MapIcon, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users,
@@ -326,6 +328,29 @@ export default function ClientsPage() {
     }
   }
 
+  /** An agent's name for the audit log — a bare UUID tells a reader nothing. */
+  function agentName(id: string | null | undefined): string | null {
+    if (!id) return null
+    return assignableAgents.find(a => a.id === id)?.full_name ?? null
+  }
+
+  /**
+   * The client fields worth a before/after line in the log, and how each one
+   * reads. Everything on the form is here: any of it can be the change someone
+   * later needs to account for.
+   */
+  const CLIENT_AUDIT_FIELDS: AuditField<Record<string, unknown>>[] = [
+    { field: 'company_name', label: 'Company' },
+    { field: 'contact_person', label: 'Contact person' },
+    { field: 'contact_position', label: 'Contact position' },
+    { field: 'contact_number', label: 'Contact number' },
+    { field: 'office_address', label: 'Office address' },
+    { field: 'customer_type', label: 'Customer type', format: v => (v ? LABEL[v as string] ?? String(v) : null) },
+    { field: 'sales_channel', label: 'Sales channel', format: v => (v ? LABEL[v as string] ?? String(v) : null) },
+    { field: 'status', label: 'Status', format: v => (v ? LABEL[v as string] ?? String(v) : null) },
+    { field: 'assigned_agent_id', label: 'Assigned agent', format: v => agentName(v as string | null) },
+  ]
+
   async function handleCreate() {
     const err = validateForm()
     if (err) { setFormError(err); return }
@@ -334,23 +359,39 @@ export default function ClientsPage() {
     setFormError('')
     const now = new Date().toISOString()
     const isLost = form.status === 'lost'
+    const columns = formColumns()
 
-    const { error: insertError } = await createSupabaseClient()
+    const { data: created, error: insertError } = await createSupabaseClient()
       .from('clients')
       .insert({
-        ...formColumns(),
+        ...columns,
         lost_at: isLost ? now : null,
         // One-month cooling-off before a lost client can be reassigned. The
         // BEFORE UPDATE trigger that normally stamps this does NOT fire on an
         // insert, so this path has to compute it — see lib/lost-opportunity.ts.
         reassignable_at: isLost ? reassignableFrom(new Date()).toISOString() : null,
       })
+      .select('id')
+      .single()
 
     setSaving(false)
     if (insertError) {
       setFormError(insertError.message)
       return
     }
+
+    // Logged after the write, and never awaited into the error path — a broken
+    // audit table must not make a saved client look unsaved. See lib/audit.
+    void recordAuditLog({
+      action: 'client.created',
+      entityTable: 'clients',
+      entityId: created?.id ?? null,
+      entityLabel: columns.company_name,
+      summary: `Created client ${columns.company_name}`,
+      // Everything is "new" on a create, so the diff is the starting values
+      // rather than a set of changes — from is null throughout.
+      changes: buildChanges(null, columns, CLIENT_AUDIT_FIELDS),
+    })
 
     setCreateOpen(false)
     toast.success('Client created successfully')
@@ -378,9 +419,11 @@ export default function ClientsPage() {
         ? { lost_at: null, reassignable_at: null }
         : {}
 
+    const columns = formColumns()
+
     const { error: updateError } = await createSupabaseClient()
       .from('clients')
-      .update({ ...formColumns(), ...lostFields, updated_at: new Date().toISOString() })
+      .update({ ...columns, ...lostFields, updated_at: new Date().toISOString() })
       .eq('id', editTarget.id)
 
     setSaving(false)
@@ -389,9 +432,64 @@ export default function ClientsPage() {
       return
     }
 
+    void recordAuditLog({
+      ...describeClientEdit(editTarget, columns, wasLost, isLost),
+      entityTable: 'clients',
+      entityId: editTarget.id,
+      entityLabel: columns.company_name,
+      changes: buildChanges(
+        editTarget as unknown as Record<string, unknown>,
+        columns,
+        CLIENT_AUDIT_FIELDS,
+      ),
+    })
+
     setEditTarget(null)
     toast.success('Client updated successfully')
     await refresh()
+  }
+
+  /**
+   * Which of the four client actions an edit actually was, and how to say it.
+   *
+   * One "Edited client" for all of them would be technically true and useless:
+   * the three that matter to a reader — declaring a lost opportunity, undoing
+   * one, and handing a client to a different agent — are exactly the ones
+   * someone opens this log to find, and they are indistinguishable from a phone
+   * number correction once flattened into a generic update. The full field diff
+   * rides along either way; this only decides the headline.
+   *
+   * Order is deliberate. A lost/active transition outranks a reassignment
+   * because it is the bigger event, and because the two travel together: moving
+   * a client to lost and off its agent in one save is one act, and it reads as
+   * the loss.
+   */
+  function describeClientEdit(
+    before: Client,
+    after: ReturnType<typeof formColumns>,
+    wasLost: boolean,
+    isLost: boolean,
+  ): { action: KnownAuditAction; summary: string } {
+    const name = after.company_name
+
+    if (!wasLost && isLost) {
+      return { action: 'client.marked_lost', summary: `Marked ${name} as a lost opportunity` }
+    }
+    if (wasLost && !isLost) {
+      return { action: 'client.reinstated', summary: `Reinstated ${name} from lost opportunities` }
+    }
+
+    if (before.assigned_agent_id !== after.assigned_agent_id) {
+      const from = agentName(before.assigned_agent_id) ?? 'nobody'
+      const to = agentName(after.assigned_agent_id) ?? 'nobody'
+      // Naming it as a lost opportunity matters here: reassigning one is
+      // governed by the cooling-off rule, so the entry should say which kind of
+      // reassignment this was without the reader cross-checking the status.
+      const what = isLost ? `lost opportunity ${name}` : name
+      return { action: 'client.reassigned', summary: `Reassigned ${what} from ${from} to ${to}` }
+    }
+
+    return { action: 'client.updated', summary: `Edited client ${name}` }
   }
 
   return (

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { createClient } from '@/lib/supabase/client'
+import { recordAuditLog } from '@/lib/audit/actions'
 import { activePeriod, workingDaysIn } from '@/lib/cutoff'
 import type { CutoffPeriod, Holiday } from '@/types'
 import { CalendarOff, Plus, Trash2, TriangleAlert, Loader2 } from 'lucide-react'
@@ -66,6 +67,16 @@ export function HolidaysCard({
           : insertError.message
       )
     } else {
+      // Holidays shift the working-day count that RSR targets are derived from,
+      // so adding or removing one silently changes everybody's number. That is
+      // exactly the kind of change a log has to be able to explain.
+      void recordAuditLog({
+        action: 'holiday.created',
+        entityTable: 'holidays',
+        entityLabel: label.trim() || date,
+        summary: `Added ${date} (${label.trim() || 'unlabelled'}) as a holiday`,
+        changes: [{ field: 'holiday_date', label: 'Date', from: null, to: date }],
+      })
       setDate('')
       setLabel('')
       await onChanged()
@@ -77,13 +88,23 @@ export function HolidaysCard({
     setBusy(true)
     setError('')
     const supabase = createClient()
+    const target = holidays.find(h => h.holiday_date === holidayDate)
     const { error: deleteError } = await supabase
       .from('holidays')
       .delete()
       .eq('holiday_date', holidayDate)
 
     if (deleteError) setError(deleteError.message)
-    else await onChanged()
+    else {
+      void recordAuditLog({
+        action: 'holiday.removed',
+        entityTable: 'holidays',
+        entityLabel: target?.label || holidayDate,
+        summary: `Removed ${holidayDate}${target?.label ? ` (${target.label})` : ''} from the holiday list`,
+        changes: [{ field: 'holiday_date', label: 'Date', from: holidayDate, to: null }],
+      })
+      await onChanged()
+    }
     setBusy(false)
   }
 

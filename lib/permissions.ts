@@ -35,6 +35,25 @@ export function canManageCollection(
 }
 
 /**
+ * True when this admin may read the activity log (migration 096) — a superadmin
+ * or an unrestricted admin, matching the table's own SELECT policy.
+ *
+ * A scoped admin is deliberately excluded even for their own module: letting a
+ * Collection Admin read collection entries also lets them read every other
+ * Collection Admin's, and the log is an oversight surface rather than a
+ * self-service one. `canAccessRoute` reaches the same answer for '/logs' by way
+ * of it being absent from every SCOPE_ROUTES entry; this states it directly for
+ * the places that are asking about the log rather than about a route.
+ */
+export function canViewAuditLog(
+  role: UserRole | null | undefined,
+  scope: AdminScope | null | undefined
+): boolean {
+  if (role === 'superadmin') return true
+  return role === 'admin' && adminScope(role, scope) === 'all'
+}
+
+/**
  * Shortest password a superadmin may issue, on both create and reset. Lives
  * here rather than beside the actions because a 'use server' module can only
  * export async functions, and the form validates against the same number.

@@ -4,8 +4,9 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { canManageUsers, PASSWORD_MIN_LENGTH } from '@/lib/permissions'
 import { AVATAR_ACCEPTED_TYPES } from '@/lib/avatar'
-import { adminScope } from '@/lib/permissions'
-import type { AdminScope, Team, TeamKind, UserRole } from '@/types'
+import { adminScope, roleScopeLabel } from '@/lib/permissions'
+import { recordAuditLog } from '@/lib/audit/actions'
+import { TEAM_KIND_LABEL, type AdminScope, type AuditChange, type Team, type TeamKind, type UserRole } from '@/types'
 
 const AVATAR_BUCKET = 'avatars'
 
@@ -119,6 +120,15 @@ export async function createTeam(
     return { error: error.message, team: null }
   }
 
+  await recordAuditLog({
+    action: 'team.created',
+    entityTable: 'teams',
+    entityId: team.id,
+    entityLabel: trimmed,
+    summary: `Created the ${TEAM_KIND_LABEL[kind]} team "${trimmed}"`,
+    changes: [{ field: 'kind', label: 'Kind', from: null, to: TEAM_KIND_LABEL[kind] }],
+  })
+
   return { error: null, team: team as Team }
 }
 
@@ -161,7 +171,39 @@ export async function createUser(
     return { error: profileError.message, profileId: null }
   }
 
+  const scope = adminScope(data.role, data.admin_scope)
+  await recordAuditLog({
+    action: 'user.created',
+    entityTable: 'profiles',
+    entityId: profile.id,
+    entityLabel: data.full_name,
+    summary: `Created the ${roleScopeLabel(data.role, scope)} account for ${data.full_name}`,
+    changes: [
+      { field: 'email', label: 'Email', from: null, to: data.email },
+      { field: 'role', label: 'Role', from: null, to: roleScopeLabel(data.role, scope) },
+      { field: 'team_id', label: 'Team', from: null, to: await teamName(supabase, data.team_id) },
+    ],
+    // The password is never recorded, here or in resetUserPassword. The log
+    // needs to show that credentials were issued, not what they are — an audit
+    // table readable by every unrestricted admin is the last place a working
+    // password should sit.
+  })
+
   return { error: null, profileId: profile.id }
+}
+
+/**
+ * A team's name for the log, since a bare UUID says nothing to a reader.
+ * Returns null for the unassigned case and for a lookup that fails — a missing
+ * team name must never be the thing that stops an entry being written.
+ */
+async function teamName(
+  supabase: ReturnType<typeof createAdminClient>,
+  teamId: string | null,
+): Promise<string | null> {
+  if (!teamId) return null
+  const { data } = await supabase.from('teams').select('name').eq('id', teamId).single()
+  return (data?.name as string | undefined) ?? null
 }
 
 export async function updateUser(profileId: string, data: UpdateUserPayload): Promise<{ error: string | null }> {
@@ -173,9 +215,12 @@ export async function updateUser(profileId: string, data: UpdateUserPayload): Pr
   // profiles.email is only a display copy — the address someone actually signs
   // in with lives in auth.users, so an edit has to move both or the account
   // silently keeps accepting the old address.
+  // The extra columns beyond user_id/email are read for the audit diff: this is
+  // the only moment the previous values still exist, and re-reading after the
+  // update would compare the row against itself.
   const { data: existing, error: lookupError } = await supabase
     .from('profiles')
-    .select('user_id, email')
+    .select('user_id, email, full_name, role, admin_scope, team_id')
     .eq('id', profileId)
     .single()
 
@@ -207,7 +252,46 @@ export async function updateUser(profileId: string, data: UpdateUserPayload): Pr
     })
     .eq('id', profileId)
 
-  return { error: error?.message ?? null }
+  if (error) return { error: error.message }
+
+  const wasRole = existing.role as UserRole
+  const wasScope = adminScope(wasRole, existing.admin_scope as AdminScope | null)
+  const nowScope = adminScope(data.role, data.admin_scope)
+
+  await recordAuditLog({
+    action: 'user.updated',
+    entityTable: 'profiles',
+    entityId: profileId,
+    entityLabel: data.full_name,
+    summary: `Edited the account for ${data.full_name}`,
+    changes: [
+      changeLine('full_name', 'Name', existing.full_name as string | null, data.full_name),
+      changeLine('email', 'Email', existing.email as string | null, data.email),
+      // Role and scope collapse into one line because that is how they read to
+      // a person: "Admin -> Collection Admin" is one promotion, not two edits.
+      changeLine('role', 'Role', roleScopeLabel(wasRole, wasScope), roleScopeLabel(data.role, nowScope)),
+      changeLine(
+        'team_id',
+        'Team',
+        await teamName(supabase, existing.team_id as string | null),
+        await teamName(supabase, data.team_id || null),
+      ),
+    ].filter(c => c !== null),
+  })
+
+  return { error: null }
+}
+
+/** One diff line, or null when the value did not actually move. */
+function changeLine(
+  field: string,
+  label: string,
+  from: string | null,
+  to: string | null,
+): AuditChange | null {
+  const before = from === '' ? null : from
+  const after = to === '' ? null : to
+  return before === after ? null : { field, label, from: before, to: after }
 }
 
 /**
@@ -234,7 +318,7 @@ export async function resetUserPassword(
 
   const { data: profile, error: lookupError } = await supabase
     .from('profiles')
-    .select('user_id')
+    .select('user_id, full_name')
     .eq('id', profileId)
     .single()
 
@@ -244,7 +328,20 @@ export async function resetUserPassword(
 
   const { error } = await supabase.auth.admin.updateUserById(profile.user_id, { password })
 
-  return { error: error?.message ?? null }
+  if (error) return { error: error.message }
+
+  // No `changes` — there is nothing here that may be written down. The entry
+  // records that someone's credentials were replaced and by whom, which is the
+  // whole of what an audit reader is entitled to.
+  await recordAuditLog({
+    action: 'user.password_reset',
+    entityTable: 'profiles',
+    entityId: profileId,
+    entityLabel: profile.full_name as string | null,
+    summary: `Reset the password for ${profile.full_name ?? 'a user'}`,
+  })
+
+  return { error: null }
 }
 
 /**
@@ -283,7 +380,7 @@ export async function uploadUserAvatar(
 
   const { data: profile, error: lookupError } = await supabase
     .from('profiles')
-    .select('user_id')
+    .select('user_id, full_name')
     .eq('id', profileId)
     .single()
 
@@ -311,6 +408,14 @@ export async function uploadUserAvatar(
     .eq('id', profileId)
   if (updateError) return { error: updateError.message, avatarUrl: null }
 
+  await recordAuditLog({
+    action: 'user.avatar_updated',
+    entityTable: 'profiles',
+    entityId: profileId,
+    entityLabel: profile.full_name as string | null,
+    summary: `Changed the profile photo for ${profile.full_name ?? 'a user'}`,
+  })
+
   return { error: null, avatarUrl }
 }
 
@@ -322,7 +427,7 @@ export async function removeUserAvatar(profileId: string): Promise<{ error: stri
 
   const { data: profile, error: lookupError } = await supabase
     .from('profiles')
-    .select('user_id')
+    .select('user_id, full_name')
     .eq('id', profileId)
     .single()
 
@@ -344,7 +449,17 @@ export async function removeUserAvatar(profileId: string): Promise<{ error: stri
     .update({ avatar_url: null })
     .eq('id', profileId)
 
-  return { error: error?.message ?? null }
+  if (error) return { error: error.message }
+
+  await recordAuditLog({
+    action: 'user.avatar_removed',
+    entityTable: 'profiles',
+    entityId: profileId,
+    entityLabel: profile.full_name as string | null,
+    summary: `Removed the profile photo for ${profile.full_name ?? 'a user'}`,
+  })
+
+  return { error: null }
 }
 
 /**
@@ -372,7 +487,7 @@ export async function toggleUserStatus(profileId: string, isActive: boolean): Pr
 
     const { data: target, error: targetError } = await supabase
       .from('profiles')
-      .select('role')
+      .select('role, full_name')
       .eq('id', profileId)
       .single()
 
@@ -399,5 +514,31 @@ export async function toggleUserStatus(profileId: string, isActive: boolean): Pr
     .update({ is_active: isActive })
     .eq('id', profileId)
 
-  return { error: error?.message ?? null }
+  if (error) return { error: error.message }
+
+  // The name is only in hand on the deactivate branch (the guards above fetched
+  // it); reactivating skips those checks entirely, so look it up rather than
+  // widen that query for both paths.
+  const { data: named } = await supabase
+    .from('profiles')
+    .select('full_name')
+    .eq('id', profileId)
+    .single()
+  const name = (named?.full_name as string | undefined) ?? 'a user'
+
+  await recordAuditLog({
+    action: isActive ? 'user.activated' : 'user.deactivated',
+    entityTable: 'profiles',
+    entityId: profileId,
+    entityLabel: name,
+    summary: `${isActive ? 'Activated' : 'Deactivated'} the account for ${name}`,
+    changes: [{
+      field: 'is_active',
+      label: 'Account',
+      from: isActive ? 'Deactivated' : 'Active',
+      to: isActive ? 'Active' : 'Deactivated',
+    }],
+  })
+
+  return { error: null }
 }
