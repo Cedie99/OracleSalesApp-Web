@@ -21,14 +21,37 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
     const supabase = createClient()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    setLoading(false)
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+
     if (error) {
+      setLoading(false)
       toast.error(error.message)
-    } else {
-      router.push('/dashboard')
-      router.refresh()
+      return
     }
+
+    // Mirrors the mobile app's login block (app/(auth)/login.tsx) down to the
+    // wording. The proxy would catch a deactivated account on the next
+    // navigation anyway, but stopping here means no live session is ever handed
+    // out, and the reader gets the real reason instead of a silent bounce.
+    //
+    // `=== false` and not `!is_active`: a lookup that comes back null must not
+    // read as deactivated and lock out a valid admin.
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_active')
+      .eq('user_id', data.user.id)
+      .maybeSingle()
+
+    if (profile?.is_active === false) {
+      await supabase.auth.signOut()
+      setLoading(false)
+      toast.error('This account has been deactivated. Contact your admin.')
+      return
+    }
+
+    setLoading(false)
+    router.push('/dashboard')
+    router.refresh()
   }
 
   return (

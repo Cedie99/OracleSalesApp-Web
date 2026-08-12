@@ -33,22 +33,39 @@ interface UpdateUserPayload {
   team_id: string | null
 }
 
-/** Only a superadmin may create/edit/deactivate any user. Admins are view-only. */
-async function requireCallerIsSuperadmin(): Promise<string | null> {
+interface CallerProfile {
+  id: string
+  role: UserRole
+}
+
+/**
+ * Authorizes the caller and hands back who they are.
+ *
+ * Most actions here only need the yes/no and use requireCallerIsSuperadmin
+ * below; toggleUserStatus also needs the caller's own profile id, to stop a
+ * superadmin deactivating themselves. Both share this single lookup rather than
+ * querying profiles twice for the same row.
+ */
+async function loadCallerProfile(): Promise<{ error: string | null; caller: CallerProfile | null }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return 'Not authenticated.'
+  if (!user) return { error: 'Not authenticated.', caller: null }
 
   const { data: callerProfile } = await supabase
     .from('profiles')
-    .select('role')
+    .select('id, role')
     .eq('user_id', user.id)
     .single()
 
   if (!canManageUsers(callerProfile?.role as UserRole | undefined)) {
-    return 'Only a superadmin can manage users.'
+    return { error: 'Only a superadmin can manage users.', caller: null }
   }
-  return null
+  return { error: null, caller: { id: callerProfile!.id, role: callerProfile!.role as UserRole } }
+}
+
+/** Only a superadmin may create/edit/deactivate any user. Admins are view-only. */
+async function requireCallerIsSuperadmin(): Promise<string | null> {
+  return (await loadCallerProfile()).error
 }
 
 /** Long enough to be recognisable in a dropdown, short enough not to break it. */
@@ -330,11 +347,52 @@ export async function removeUserAvatar(profileId: string): Promise<{ error: stri
   return { error: error?.message ?? null }
 }
 
+/**
+ * Activates or deactivates an account.
+ *
+ * `deactivated_at` is deliberately NOT set here — migration 095 stamps it from
+ * a trigger, so the archive clock is correct no matter who flips the flag (this
+ * action, the mobile repo, or a hand-edit in the SQL editor).
+ *
+ * The two guards below only became load-bearing once deactivation started
+ * enforcing on web. Before that this was a cosmetic badge and locking yourself
+ * out was impossible; now the same click can end your own session, or the last
+ * superadmin's, with no way back in through the UI that would fix it.
+ */
 export async function toggleUserStatus(profileId: string, isActive: boolean): Promise<{ error: string | null }> {
-  const authError = await requireCallerIsSuperadmin()
-  if (authError) return { error: authError }
+  const { error: authError, caller } = await loadCallerProfile()
+  if (authError || !caller) return { error: authError ?? 'Only a superadmin can manage users.' }
 
   const supabase = createAdminClient()
+
+  if (!isActive) {
+    if (caller.id === profileId) {
+      return { error: 'You cannot deactivate your own account. Ask another super admin to do it.' }
+    }
+
+    const { data: target, error: targetError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', profileId)
+      .single()
+
+    if (targetError || !target) return { error: targetError?.message ?? 'User not found.' }
+
+    // Losing the last active superadmin means nobody can create users, reset
+    // passwords, or reactivate anyone — and no path through the app to undo it.
+    if (target.role === 'superadmin') {
+      const { count, error: countError } = await supabase
+        .from('profiles')
+        .select('id', { count: 'exact', head: true })
+        .eq('role', 'superadmin')
+        .eq('is_active', true)
+
+      if (countError) return { error: countError.message }
+      if ((count ?? 0) <= 1) {
+        return { error: 'This is the only active super admin. Promote another one before deactivating this account.' }
+      }
+    }
+  }
 
   const { error } = await supabase
     .from('profiles')

@@ -607,6 +607,11 @@ export interface Profile {
   admin_scope?: AdminScope
   team_id: string | null
   is_active?: boolean
+  /**
+   * When is_active last went false; null while active. Stamped by trigger
+   * (migration 095), never written by callers. See lib/users.ts.
+   */
+  deactivated_at?: string | null
   avatar_url?: string | null
   created_at: string
 }
