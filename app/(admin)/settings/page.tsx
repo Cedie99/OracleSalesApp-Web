@@ -34,6 +34,7 @@ import {
   type PeriodPhase,
 } from '@/lib/cutoff'
 import { createClient } from '@/lib/supabase/client'
+import { recordAuditLog } from '@/lib/audit/actions'
 import { TONE_CLASS } from '@/lib/status-styles'
 import type { CutoffPeriod, CutoffPeriodStatus } from '@/types'
 import { CalendarRange, Info, TriangleAlert, Plus, Loader2, Repeat } from 'lucide-react'
@@ -342,6 +343,18 @@ export default function SettingsPage() {
           : insertError.message
       )
     } else {
+      // One entry for the batch, not one per period — the admin performed a
+      // single act ("generate a year"), and 24 near-identical rows would bury
+      // everything around them in the log.
+      void recordAuditLog({
+        action: 'cutoff_period.created',
+        entityTable: 'cutoff_periods',
+        entityLabel: `${toCreate.length} periods`,
+        summary:
+          `Generated ${toCreate.length} cutoff period${toCreate.length === 1 ? '' : 's'} ` +
+          `(${toCreate[0]?.label} – ${toCreate[toCreate.length - 1]?.label})`,
+        metadata: { labels: toCreate.map(r => r.label) },
+      })
       await refresh()
     }
     setGenerating(false)
@@ -387,6 +400,20 @@ export default function SettingsPage() {
           : insertError.message
       )
     } else {
+      void recordAuditLog({
+        action: 'cutoff_period.created',
+        entityTable: 'cutoff_periods',
+        entityLabel: draft.label.trim(),
+        summary: `Created the cutoff period "${draft.label.trim()}" as ${status}`,
+        changes: [
+          { field: 'dates', label: 'Dates', from: null, to: `${draft.starts_on} – ${draft.ends_on}` },
+          { field: 'status', label: 'Status', from: null, to: status },
+          { field: 'sales_client_meeting_cap', label: 'Sales visit cap', from: null, to: String(draft.sales_client_meeting_cap) },
+          { field: 'rsr_client_meeting_cap', label: 'RSR visit cap', from: null, to: String(draft.rsr_client_meeting_cap) },
+          { field: 'sales_target', label: 'Sales target', from: null, to: draft.sales_target === '' ? null : String(draft.sales_target) },
+          { field: 'rsr_daily_target', label: 'RSR daily target', from: null, to: draft.rsr_target === '' ? null : String(draft.rsr_target) },
+        ],
+      })
       setDraft(EMPTY_DRAFT)
       await refresh()
     }
@@ -410,6 +437,17 @@ export default function SettingsPage() {
           : updateError.message
       )
     } else {
+      // Worth its own action rather than folding into a generic update: closing
+      // or activating a period is what decides which meetings get attributed to
+      // which quota, so it is the settings change most likely to be questioned.
+      void recordAuditLog({
+        action: 'cutoff_period.status_changed',
+        entityTable: 'cutoff_periods',
+        entityId: period.id,
+        entityLabel: period.label,
+        summary: `Changed cutoff period "${period.label}" from ${period.status} to ${status}`,
+        changes: [{ field: 'status', label: 'Status', from: period.status, to: status }],
+      })
       await refresh()
     }
     setBusyId(null)

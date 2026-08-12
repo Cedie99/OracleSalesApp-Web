@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { recordAuditLog } from '@/lib/audit/actions'
+import { singleChange } from '@/lib/audit/entries'
+import { peso } from '@/lib/money'
+import { REMITTANCE_STATUS_LABEL } from '@/lib/status-styles'
 import type {
   Client, CollectionPayment, CollectionVisit, Profile, Remittance, RemittanceStatus,
 } from '@/types'
@@ -254,7 +258,7 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   const createVisit = useCallback(
     async (draft: NewCollectionVisit): Promise<string | null> => {
       const supabase = createClient()
-      const { error: insertError } = await supabase.from('collection_visits').insert({
+      const { data: inserted, error: insertError } = await supabase.from('collection_visits').insert({
         client_id: draft.clientId,
         // Denormalized at publish time — the phone can't resolve client_id
         // itself. See migration 045.
@@ -269,8 +273,24 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
         // Everything the collector fills in stays null: the store belongs to
         // nobody until someone actually works it.
       })
+        .select('id')
+        .single()
 
       if (insertError) return insertError.message
+
+      void recordAuditLog({
+        action: 'collection_visit.listed',
+        entityTable: 'collection_visits',
+        entityId: inserted?.id ?? null,
+        entityLabel: draft.clientName,
+        summary: `Listed ${draft.clientName} for collection on ${draft.scheduledFor}`,
+        changes: [
+          { field: 'scheduled_for', label: 'Scheduled for', from: null, to: draft.scheduledFor },
+          { field: 'amount_due', label: 'Amount due', from: null, to: peso(draft.amountDue) },
+          { field: 'area', label: 'Area', from: null, to: draft.area },
+        ],
+      })
+
       await load()
       return null
     },
@@ -280,16 +300,40 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   const removeVisit = useCallback(
     async (id: string): Promise<string | null> => {
       const supabase = createClient()
+      // Read before the delete: once the row is gone the log has no way back to
+      // which store this was, and "removed a collection visit" without a name
+      // is not worth recording.
+      const target = visits.find(v => v.id === id)
+
       const { error: deleteError } = await supabase
         .from('collection_visits')
         .delete()
         .eq('id', id)
 
       if (deleteError) return deleteError.message
+
+      void recordAuditLog({
+        action: 'collection_visit.removed',
+        entityTable: 'collection_visits',
+        entityId: id,
+        entityLabel: target?.client_name ?? null,
+        summary: `Removed ${target?.client_name ?? 'a store'} from the collection list`,
+        // The row is gone, so the whole thing is the "before" — this is the only
+        // surviving record of what was removed.
+        metadata: target
+          ? {
+              scheduled_for: target.scheduled_for,
+              amount_due: target.amount_due,
+              status: target.status,
+              claimed_by_name: target.claimed_by_name,
+            }
+          : null,
+      })
+
       await load()
       return null
     },
-    [load]
+    [load, visits]
   )
 
   /**
@@ -304,6 +348,8 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   const cancelClaim = useCallback(
     async (id: string): Promise<string | null> => {
       const supabase = createClient()
+      const target = visits.find(v => v.id === id)
+
       // All three together — `collection_visits_claim_complete` rejects a
       // partial claim.
       const { error: updateError } = await supabase
@@ -312,10 +358,23 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
         .eq('id', id)
 
       if (updateError) return updateError.message
+
+      const collector = target?.claimed_by_name
+      void recordAuditLog({
+        action: 'collection_visit.claim_released',
+        entityTable: 'collection_visits',
+        entityId: id,
+        entityLabel: target?.client_name ?? null,
+        summary:
+          `Released ${collector ? `${collector}'s` : 'the'} claim on ` +
+          `${target?.client_name ?? 'a store'}`,
+        changes: singleChange('claimed_by_name', 'Claimed by', collector ?? null, null),
+      })
+
       await load()
       return null
     },
-    [load]
+    [load, visits]
   )
 
   return { visits, loading, error, refresh, createVisit, removeVisit, cancelClaim }
@@ -379,16 +438,45 @@ export function useRemittances(): UseRemittancesResult {
   const setStatus = useCallback(
     async (id: string, status: RemittanceStatus): Promise<string | null> => {
       const supabase = createClient()
+      const target = remittances.find(r => r.id === id)
+
       const { error: updateError } = await supabase
         .from('remittances')
         .update({ status })
         .eq('id', id)
 
       if (updateError) return updateError.message
+
+      const collector = target?.collector?.full_name ?? 'a collector'
+      void recordAuditLog({
+        action: 'remittance.status_changed',
+        entityTable: 'remittances',
+        entityId: id,
+        entityLabel: `${collector} — ${peso(target?.amount_remitted ?? 0)}`,
+        summary:
+          `Marked ${collector}'s ${peso(target?.amount_remitted ?? 0)} remittance as ` +
+          `${REMITTANCE_STATUS_LABEL[status]}`,
+        changes: singleChange(
+          'status',
+          'Status',
+          target ? REMITTANCE_STATUS_LABEL[target.status] : null,
+          REMITTANCE_STATUS_LABEL[status],
+        ),
+        // The variance is the reason anyone revisits one of these decisions, so
+        // it belongs on the entry rather than being recomputed from two tables.
+        metadata: target
+          ? {
+              amount_remitted: target.amount_remitted,
+              amount_collected: target.amount_collected,
+              variance: target.amount_remitted - target.amount_collected,
+            }
+          : null,
+      })
+
       await load()
       return null
     },
-    [load]
+    [load, remittances]
   )
 
   return { remittances, loading, error, refresh, setStatus }
