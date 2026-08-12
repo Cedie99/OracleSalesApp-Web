@@ -75,6 +75,70 @@ When it's verified on staging:
 
 ---
 
+## Local development
+
+Your local dev server points at **staging**. You do not have to remember this or
+configure anything per session — it is the default, and every run prints a
+banner telling you which database you are about to touch.
+
+```bash
+npm run dev        # → STAGING  (green banner)   ← everyday work
+npm run dev:prod   # → PRODUCTION (red banner)   ← read-only debugging
+npm run env:check  # validate both env files, start nothing
+```
+
+### First-time setup
+
+Two files, one per environment. Neither is committed. Copy `.env.example` twice
+and fill each from the matching Supabase project (**Project Settings → API
+Keys**):
+
+| File | Environment | Supabase project |
+|---|---|---|
+| `.env.local` | staging | `xhxjbzesuzprwdelrdwh` |
+| `.env.prod.local` | production | `itpskcyojtpcpjwolieb` |
+
+Staging deliberately lives in `.env.local`, because that is the file Next.js
+loads implicitly for `next build`, `next start` and `next lint` — so any command
+that doesn't name an environment gets the harmless one.
+
+You also need a login on staging. Staging has its own `auth.users`; your
+production account does not exist there. Ask whoever holds the staging super
+admin to create you one from the app's **Users** page, or bootstrap one via
+*Rebuilding staging from scratch* below.
+
+### Why `npm run dev` isn't just `next dev`
+
+`next dev` has no `--env-file` flag, so there is no built-in way to say "this run
+targets staging" — the database you hit depends on whatever was last pasted into
+`.env.local`, and you find out only after you've written to it. Production has
+real users, so that guess is not acceptable.
+
+`scripts/dev-env.mjs` closes that gap: it loads the file for the environment you
+named, injects it through `process.env` (which outranks every `.env*` file, so a
+prod run can't fall through to a staging value or the reverse), and **refuses to
+start** if a file's URL or keys don't belong to the environment it claims —
+wrong project ref, a key from the other project, or the anon and service-role
+keys swapped. A bad paste fails loudly instead of quietly writing to prod.
+
+> **`npm run dev:prod` is for reading, not writing.** Point it at production to
+> reproduce a bug against real data, then stop it. It runs with the production
+> service-role key, which bypasses RLS entirely — any write you trigger is a real
+> write to the live system.
+
+### Local Supabase CLI
+
+If you run `supabase` commands by hand, link to **staging** and leave it linked:
+
+```bash
+npx supabase link --project-ref xhxjbzesuzprwdelrdwh
+```
+
+Migrations reach both databases through CI (see below). Don't hand-apply to
+production.
+
+---
+
 ## Migrations (database changes)
 
 If your change adds a file under `supabase/migrations/`:
@@ -121,6 +185,8 @@ The web app reads exactly three values, set **per Vercel project**:
 
 - **Staging Vercel project** → staging Supabase values (Production + Preview envs).
 - **Production Vercel project** → production Supabase values.
+- **Locally** → the same three values, in `.env.local` (staging) and
+  `.env.prod.local` (production). See *Local development* above.
 
 GitHub Actions secrets used by the migrations workflow:
 
