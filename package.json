@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev-env.mjs staging -- dev",
+    "dev:prod": "node scripts/dev-env.mjs prod -- dev",
+    "env:check": "node scripts/dev-env.mjs staging --check && node scripts/dev-env.mjs prod --check",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

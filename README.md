@@ -41,12 +41,13 @@ npm install
 
 ### 3. Configure Environment Variables
 
-Create a `.env.local` file in the project root and ask the project lead for the values:
+Copy `.env.example` to `.env.local` and fill it with the **staging** Supabase
+values (ask the project lead). Local dev runs against staging by default —
+production has real users, so you never point at it by accident.
 
-```env
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-```
+If you also need to debug against production, copy `.env.example` to
+`.env.prod.local` with the production values. See [STAGING.md](STAGING.md) →
+*Local development* for the full explanation.
 
 ### 4. Start the Development Server
 
@@ -54,7 +55,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3000](http://localhost:3000) in your browser. The server
+prints a banner on startup naming the database it is connected to.
 
 ---
 
@@ -62,7 +64,9 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 | Command | Description |
 |---|---|
-| `npm run dev` | Start development server at `http://localhost:3000` |
+| `npm run dev` | Start development server at `http://localhost:3000`, against **staging** |
+| `npm run dev:prod` | Same, but against **production** — read-only debugging |
+| `npm run env:check` | Validate both env files without starting a server |
 | `npm run build` | Build for production |
 | `npm start` | Run the production build |
 | `npm run lint` | Run ESLint |
@@ -88,12 +92,20 @@ The file is updated on demand — it only reflects the mobile repo's state as of
 
 ## Git Workflow
 
-This project follows **GitHub Flow** — a lightweight branch-based workflow suited for a small team with continuous deployment.
+Work flows through **`staging` first, then `main`**. `main` is the live app real
+staff use, so nothing reaches it that hasn't run on staging first.
+
+```
+feature branch  →  PR into staging  →  test on staging  →  PR staging into main  →  production
+```
+
+[STAGING.md](STAGING.md) is the full guide, including how to run local dev
+against staging. This section is the short version.
 
 ### Core Rules
 
-1. **`main` is always deployable.** Never push directly to it.
-2. **One branch per task or feature.** Always branch off `main`.
+1. **`main` is production.** It only ever receives merges from `staging`.
+2. **One branch per task or feature.** Always branch off `staging`, not `main`.
 3. **Keep branches short-lived.** Aim to merge within 1–3 days to avoid drift.
 4. **All merges go through a Pull Request.** At least one teammate must review before merging.
 5. **Delete the branch after it is merged.**
@@ -109,9 +121,9 @@ This project follows **GitHub Flow** — a lightweight branch-based workflow sui
 ### Day-to-Day Flow
 
 ```bash
-# 1. Start from an up-to-date main
-git checkout main
-git pull origin main
+# 1. Start from an up-to-date staging
+git checkout staging
+git pull origin staging
 
 # 2. Create your branch
 git checkout -b feature/your-feature
@@ -120,12 +132,16 @@ git checkout -b feature/your-feature
 git add <files>
 git commit -m "feat: add GPS field to meeting form"
 
-# 4. Push and open a Pull Request
+# 4. Push and open a Pull Request with base = staging
 git push origin feature/your-feature
 # → open PR on GitHub, assign at least 1 reviewer
+# → ⚠️ GitHub defaults the base to `main` — change it to `staging`
 
-# 5. After approval, merge to main (squash merge recommended)
-# → delete the branch
+# 5. After approval, merge to staging (squash merge recommended)
+# → delete the branch, then verify on the staging site
+
+# 6. Promote: open a PR with base = main, compare = staging, and merge it
+# → production deploys, and any new migrations apply to the prod database
 ```
 
 ### Commit Message Format
@@ -150,8 +166,9 @@ refactor: extract meeting form into shared component
 
 Before requesting a review, make sure:
 
-- [ ] The branch is up to date with `main` (`git pull origin main`)
+- [ ] The PR's base is **`staging`**, not `main`
+- [ ] The branch is up to date with `staging` (`git pull origin staging`)
 - [ ] `npm run build` passes with no errors
 - [ ] `npm run lint` passes with no warnings
 - [ ] The feature works as expected in the browser
-- [ ] No `.env.local` or secrets are committed
+- [ ] No `.env.local`, `.env.prod.local`, or other secrets are committed
