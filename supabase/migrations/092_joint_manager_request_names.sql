@@ -1,6 +1,12 @@
 -- Manager inbox must not call the Sales/RSR-only directory RPC. Return the
 -- authorized participant names alongside each inbox request instead.
-create or replace function public.get_manager_joint_requests() returns table (
+--
+-- Postgres refuses `create or replace function` when the OUT-parameter row
+-- type changes (SQLSTATE 42P13, "cannot change return type of existing
+-- function") — adding manager_names counts as a row-type change even though
+-- every other column is untouched. The function must be dropped first.
+drop function if exists public.get_manager_joint_requests();
+create function public.get_manager_joint_requests() returns table (
   id uuid, client_id uuid, requester_id uuid, origin_team_id uuid, manager_ids uuid[], manager_names text[], status text,
   required_count smallint, approved_count bigint, declined_count bigint, created_at timestamptz, updated_at timestamptz, applied_at timestamptz
 ) language sql security definer stable set search_path = public as $$
