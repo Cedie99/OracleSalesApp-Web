@@ -42,6 +42,7 @@ import {
   VALUE_LABEL as LABEL,
 } from '@/lib/status-styles'
 import { managerForTeam } from '@/lib/teams'
+import { PSGC_LOCALITIES } from '@/lib/data/psgc-localities'
 
 const ASSIGNABLE_ROLES = ['sales_specialist', 'sales_manager', 'rsr']
 
@@ -51,6 +52,7 @@ interface ClientFormData {
   contact_position: string
   contact_number: string
   office_address: string
+  city: string
   customer_type: CustomerType
   sales_channel: SalesChannel
   status: ClientStatus
@@ -63,6 +65,7 @@ const EMPTY_CLIENT_FORM: ClientFormData = {
   contact_position: '',
   contact_number: '',
   office_address: '',
+  city: '',
   customer_type: 'new',
   sales_channel: 'distributor',
   status: 'active',
@@ -115,45 +118,58 @@ export default function ClientsPage() {
   // the header's notification bell.
   const visibleClients = clients.filter(c => c.status !== 'deleted')
 
+  /**
+   * Clients each person was actually invited along to, from the tag-along
+   * ledger — both contexts, since a companion can be picked when the client is
+   * created as well as per meeting. Read straight off `related_client_id`; no
+   * detour through meetings, which would miss the client-creation rows entirely.
+   */
+  const tagAlongClientIds = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const [inviteeId, requests] of tagAlongsByInviteeId) {
+      const ids = new Set(
+        requests
+          .filter(r => r.related_client_id && (r.status === 'accepted' || r.status === 'pending'))
+          .map(r => r.related_client_id as string)
+      )
+      if (ids.size > 0) map.set(inviteeId, ids)
+    }
+    return map
+  }, [tagAlongsByInviteeId])
+
   // Every visible client's manager, computed once regardless of this page's
   // own search/type/channel/status filters — so scoping the stat row to a
   // manager below doesn't inherit those filters either, same convention as
-  // the unscoped totals previously had.
+  // the unscoped totals previously had. A client also lands in a manager's
+  // own bucket when they recorded a meeting for it or were tagged along on
+  // it — otherwise a manager who only holds clients directly (no agents, or
+  // clients their agents don't own) shows an all-zero stat row for clients
+  // that very much involve them.
   const clientsByManagerKey = useMemo(() => {
-    const map = new Map<string, Client[]>()
+    const byId = new Map(visibleClients.map(c => [c.id, c]))
+    const idsByKey = new Map<string, Set<string>>()
+    const add = (key: string, id: string) => {
+      let set = idsByKey.get(key)
+      if (!set) { set = new Set(); idsByKey.set(key, set) }
+      set.add(id)
+    }
     for (const c of visibleClients) {
-      const key = managerForTeam(c.agent?.team_id, managers)?.id ?? 'unassigned'
-      const bucket = map.get(key)
-      if (bucket) bucket.push(c)
-      else map.set(key, [c])
+      add(managerForTeam(c.agent?.team_id, managers)?.id ?? 'unassigned', c.id)
     }
-    return map
-  }, [visibleClients, managers])
+    for (const mt of meetings) {
+      if (mt.agent_id) add(mt.agent_id, mt.client_id)
+      if (mt.recorded_by) add(mt.recorded_by, mt.client_id)
+    }
+    for (const [inviteeId, ids] of tagAlongClientIds) {
+      for (const id of ids) add(inviteeId, id)
+    }
+    const result = new Map<string, Client[]>()
+    for (const [key, ids] of idsByKey) {
+      result.set(key, [...ids].map(id => byId.get(id)).filter((c): c is Client => !!c))
+    }
+    return result
+  }, [visibleClients, managers, meetings, tagAlongClientIds])
 
-  // Whichever manager/agent is currently drilled into (accordion-expanded or
-  // fully selected) narrows the stat row to their own clients; otherwise it's
-  // the global total. Priority: a selected agent is the most specific scope,
-  // then a selected/expanded manager, then everyone.
-  const statsClients = useMemo(() => {
-    if (selectedAgentId) {
-      return visibleClients.filter(c => (c.assigned_agent_id ?? 'unassigned') === selectedAgentId)
-    }
-    const managerKey = selectedManagerKey ?? expandedManagerKey
-    if (managerKey) {
-      return clientsByManagerKey.get(managerKey) ?? []
-    }
-    return visibleClients
-  }, [selectedAgentId, selectedManagerKey, expandedManagerKey, clientsByManagerKey, visibleClients])
-
-  const counts = {
-    total: statsClients.length,
-    existing: statsClients.filter(c => c.customer_type === 'existing').length,
-    new: statsClients.filter(c => c.customer_type === 'new').length,
-    inProgress: statsClients.filter(c => c.customer_type === 'in_progress').length,
-    prospect: statsClients.filter(c => c.customer_type === 'prospect').length,
-    active: statsClients.filter(c => c.status === 'active').length,
-    lost: statsClients.filter(c => c.status === 'lost').length,
-  }
 
   const filtered = visibleClients.filter(c => {
     const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
@@ -193,30 +209,10 @@ export default function ClientsPage() {
     return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
   }, [filtered, managers])
 
-  /**
-   * Clients each person was actually invited along to, from the tag-along
-   * ledger — both contexts, since a companion can be picked when the client is
-   * created as well as per meeting. Read straight off `related_client_id`; no
-   * detour through meetings, which would miss the client-creation rows entirely.
-   */
-  const tagAlongClientIds = useMemo(() => {
-    const map = new Map<string, Set<string>>()
-    for (const [inviteeId, requests] of tagAlongsByInviteeId) {
-      const ids = new Set(
-        requests
-          .filter(r => r.related_client_id && (r.status === 'accepted' || r.status === 'pending'))
-          .map(r => r.related_client_id as string)
-      )
-      if (ids.size > 0) map.set(inviteeId, ids)
-    }
-    return map
-  }, [tagAlongsByInviteeId])
-
   // Level 0: one bucket per real manager, plus "Unassigned" only if it has anyone in it.
   const managerBuckets = useMemo(() => {
     const buckets = managers.map(m => {
       const managerGroups = groups.filter(g => g.managerKey === m.id)
-      const clientCount = managerGroups.reduce((sum, g) => sum + g.clients.length, 0)
       // Two figures, not one. `recorded_by` means the manager filled in the
       // meeting form — it had been standing in for "tagged along", which it is
       // not: a manager invited along on an agent's visit records nothing and
@@ -228,6 +224,14 @@ export default function ClientsPage() {
       const invited = tagAlongClientIds.get(m.id)
       const tagAlongCount = invited ? filtered.filter(c => invited.has(c.id)).length : 0
       const managerClientCount = filtered.filter(c => ownClientIds.has(c.id) || (invited?.has(c.id) ?? false)).length
+      // Team total: clients reached via an agent under this manager, unioned
+      // with the manager's own direct clients — a manager with no agents (or
+      // whose agents have none) still has their own clients counted here, and
+      // a client who's both agent-assigned and directly held isn't double-counted.
+      const teamClientIds = new Set(managerGroups.flatMap(g => g.clients.map(c => c.id)))
+      const clientCount = filtered.filter(
+        c => teamClientIds.has(c.id) || ownClientIds.has(c.id) || (invited?.has(c.id) ?? false)
+      ).length
       return {
         key: m.id,
         label: m.full_name,
@@ -273,6 +277,24 @@ export default function ClientsPage() {
   }, [selectedManagerKey, meetings, filtered, tagAlongClientIds])
   const activeClients = selectedGroup?.clients ?? (selectedManagerBucket ? managerClients : null)
 
+  // The stat row must match whatever the table below it actually shows — a
+  // fully selected agent or manager uses their own footprint (activeClients,
+  // the exact set the table renders), so the two numbers never disagree. A
+  // manager who's only expanded in the list (previewing, not yet drilled in)
+  // uses the team-wide total instead; otherwise it's the global total.
+  const statsClients =
+    activeClients ?? (expandedManagerKey ? clientsByManagerKey.get(expandedManagerKey) ?? [] : visibleClients)
+
+  const counts = {
+    total: statsClients.length,
+    existing: statsClients.filter(c => c.customer_type === 'existing').length,
+    new: statsClients.filter(c => c.customer_type === 'new').length,
+    inProgress: statsClients.filter(c => c.customer_type === 'in_progress').length,
+    prospect: statsClients.filter(c => c.customer_type === 'prospect').length,
+    active: statsClients.filter(c => c.status === 'active').length,
+    lost: statsClients.filter(c => c.status === 'lost').length,
+  }
+
   const { pageItems: pageClients, page: clientPage, pageCount: clientPageCount, from: clientFrom, to: clientTo, total: clientTotal, setPage: setClientPage } = usePagination(
     activeClients ?? [], 9, `${selectedAgentId}|${selectedManagerKey}|${search}|${typeFilter}|${channelFilter}|${statusFilter}`,
   )
@@ -291,6 +313,7 @@ export default function ClientsPage() {
       contact_position: client.contact_position ?? '',
       contact_number: client.contact_number,
       office_address: client.office_address,
+      city: client.city ?? '',
       customer_type: client.customer_type,
       sales_channel: client.sales_channel,
       status: client.status === 'deleted' ? 'active' : client.status,
@@ -321,6 +344,7 @@ export default function ClientsPage() {
       contact_position: form.contact_position.trim() || null,
       contact_number: form.contact_number.trim(),
       office_address: form.office_address.trim(),
+      city: form.city.trim() || null,
       customer_type: form.customer_type,
       sales_channel: form.sales_channel,
       assigned_agent_id: form.assigned_agent_id,
@@ -345,6 +369,7 @@ export default function ClientsPage() {
     { field: 'contact_position', label: 'Contact position' },
     { field: 'contact_number', label: 'Contact number' },
     { field: 'office_address', label: 'Office address' },
+    { field: 'city', label: 'Municipality/City' },
     { field: 'customer_type', label: 'Customer type', format: v => (v ? LABEL[v as string] ?? String(v) : null) },
     { field: 'sales_channel', label: 'Sales channel', format: v => (v ? LABEL[v as string] ?? String(v) : null) },
     { field: 'status', label: 'Status', format: v => (v ? LABEL[v as string] ?? String(v) : null) },
@@ -581,16 +606,19 @@ export default function ClientsPage() {
 
         {!selectedGroup && !selectedManagerBucket ? (
           <>
-            {/* Managers — click one to drop down their team's agents right below it */}
+            {/* Teams — click one to drop down their team's agents right below it */}
             <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-              Managers
+              Teams
             </p>
             <div className="space-y-3">
               {managerBuckets.map(({ key, label, agentCount, clientCount, managerClientCount }) => {
                 const isOpen = expandedManagerKey === key
                 const bucketGroups = groups.filter(g => g.managerKey === key)
                 return (
-                  <div key={key} className="rounded-lg border border-border bg-card overflow-hidden">
+                  <div
+                    key={key}
+                    className={`rounded-lg border bg-card overflow-hidden transition-colors ${isOpen ? 'border-primary/50 shadow-sm' : 'border-border'}`}
+                  >
                     <button
                       type="button"
                       onClick={() => setExpandedManagerKey(isOpen ? null : key)}
@@ -898,6 +926,13 @@ interface ClientFormProps {
   onPhoneBlur: () => void
 }
 
+// Suggestions for the Municipality/City field's native autocomplete — same
+// PSGC dataset the mobile app bundles, so "Quezon" surfaces "Quezon City"
+// with the same spelling on both platforms. Deduped by name: the dataset
+// carries province too, but a <datalist> has no way to show it, and repeat
+// names (Santa Maria, San Fernando...) would otherwise appear several times.
+const CITY_SUGGESTIONS = Array.from(new Set(PSGC_LOCALITIES.map(l => l.name))).sort((a, b) => a.localeCompare(b))
+
 function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: ClientFormProps) {
   function set<K extends keyof ClientFormData>(field: K, value: ClientFormData[K]) {
     setForm(prev => ({ ...prev, [field]: value }))
@@ -974,6 +1009,26 @@ function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: Client
               onChange={e => set('office_address', e.target.value)}
             />
           </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="city" className="flex items-center gap-1.5 text-xs">
+            <MapPin className="w-3.5 h-3.5 text-muted-foreground" />
+            Municipality/City
+          </Label>
+          <Input
+            id="city"
+            list="city-suggestions"
+            placeholder="e.g. Makati City"
+            value={form.city}
+            onChange={e => set('city', e.target.value)}
+            autoComplete="off"
+          />
+          <datalist id="city-suggestions">
+            {CITY_SUGGESTIONS.map(name => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         </div>
       </div>
 
