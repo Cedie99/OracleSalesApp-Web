@@ -17,7 +17,7 @@ import {
   Search, UserPlus, Users, ShieldCheck, ShieldEllipsis, Briefcase, User,
   MoreHorizontal, Pencil, Ban, Eye, EyeOff, Store, Wallet, RefreshCw,
   Monitor, Smartphone, Truck, CircleHelp, ImagePlus, Trash2, KeyRound,
-  ArrowUp, ArrowDown, ArrowUpDown, LineChart,
+  ArrowUp, ArrowDown, ArrowUpDown, LineChart, UserCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -35,6 +35,10 @@ import {
   ADMIN_SCOPES, ADMIN_SCOPE_DESCRIPTION, ADMIN_SCOPE_LABEL, adminScope,
   canManageUsers, platformForRole, roleScopeLabel, PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD,
 } from '@/lib/permissions'
+import {
+  ARCHIVE_AFTER_DAYS, ACCOUNT_STATUS_LABEL, accountStatus, deactivatedSinceLabel,
+  type AccountStatus,
+} from '@/lib/users'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { teamsForRole, teamKindForRole, roleHasTeam, managerForTeam } from '@/lib/teams'
 import type { AdminScope, TeamKind, UserRole } from '@/types'
@@ -97,6 +101,7 @@ interface UserRow {
   admin_scope: AdminScope
   team_id: string | null
   is_active: boolean
+  deactivated_at: string | null
   avatar_url: string | null
   created_at: string
 }
@@ -111,6 +116,30 @@ interface UserFormData {
 }
 
 type SortKey = 'user' | 'role' | 'platform' | 'team' | 'created' | 'status'
+
+/** 'current' is everything that is not archived — see the statusFilter state. */
+type StatusFilter = 'current' | AccountStatus
+
+const STATUS_FILTER_LABEL: Record<StatusFilter, string> = {
+  current: 'Active & Inactive',
+  active: 'Active only',
+  inactive: 'Inactive only',
+  archived: `Archived (${ARCHIVE_AFTER_DAYS}+ days)`,
+}
+
+/** Active reads as live, inactive as a state someone should act on, archived as dormant. */
+const STATUS_TONE: Record<AccountStatus, 'brand' | 'amber' | 'neutral'> = {
+  active: 'brand',
+  inactive: 'amber',
+  archived: 'neutral',
+}
+
+/** Archived sorts last: it is the furthest from "in use". */
+const STATUS_RANK: Record<AccountStatus, number> = {
+  active: 0,
+  inactive: 1,
+  archived: 2,
+}
 
 interface SortState {
   key: SortKey
@@ -149,6 +178,9 @@ const DEFAULT_SORT_DIR: Record<SortKey, SortState['dir']> = {
   status: 'asc',
 }
 
+/** Split out so the deactivated_at fallback in loadUsers can reuse the list verbatim. */
+const USER_COLUMNS = 'id, user_id, full_name, email, role, admin_scope, team_id, is_active, avatar_url, created_at'
+
 const EMPTY_FORM: UserFormData = {
   full_name: '',
   email: '',
@@ -169,6 +201,10 @@ export default function UsersPage() {
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState<string>('all')
   const [platformFilter, setPlatformFilter] = useState<string>('all')
+  // Defaults to 'current' (active + inactive), NOT 'all' — an account inactive
+  // for a year drops off this list, and that hiding is the whole point of the
+  // archive rule. 'archived' is how you get them back.
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('current')
   const [teams, setTeams] = useState<TeamRow[]>([])
   // Matches the query's own .order('created_at', desc), so the first paint is
   // sorted the same way with or without a click.
@@ -181,6 +217,10 @@ export default function UsersPage() {
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
+
+  const [deactivateTarget, setDeactivateTarget] = useState<UserRow | null>(null)
+  const [deactivateError, setDeactivateError] = useState('')
+  const [deactivating, setDeactivating] = useState(false)
 
   // Password reset keeps its own state: it is a separate dialog from the
   // create/edit form and must not inherit a half-filled UserFormData.
@@ -270,10 +310,31 @@ export default function UsersPage() {
     setLoading(true)
     setFetchError('')
     const supabase = createClient()
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('profiles')
-      .select('id, user_id, full_name, email, role, admin_scope, team_id, is_active, avatar_url, created_at')
+      .select(`${USER_COLUMNS}, deactivated_at`)
       .order('created_at', { ascending: false })
+
+    // Retry without deactivated_at if migration 095 hasn't landed yet.
+    //
+    // The migrations workflow and the Vercel deploy both fire on the same push
+    // and race, so there is a window where this build is live against the older
+    // schema — and PostgREST rejects the ENTIRE select on one unknown column,
+    // which would blank the whole page rather than lose one field. Same
+    // fallback shape proxy.ts uses for admin_scope/024.
+    //
+    // Degrades safely: with no timestamp, accountStatus() reports 'inactive'
+    // and never 'archived', which is exactly the pre-095 behaviour.
+    if (error) {
+      const fallback = await supabase
+        .from('profiles')
+        .select(USER_COLUMNS)
+        .order('created_at', { ascending: false })
+      if (!fallback.error) {
+        data = fallback.data as typeof data
+        error = null
+      }
+    }
 
     if (error) {
       setFetchError(error.message)
@@ -283,6 +344,7 @@ export default function UsersPage() {
           ...p,
           email: p.email ?? '',
           is_active: p.is_active ?? true,
+          deactivated_at: p.deactivated_at ?? null,
           admin_scope: adminScope(p.role, p.admin_scope),
         }))
       )
@@ -335,7 +397,10 @@ export default function UsersPage() {
         ? u.role === 'admin' && u.admin_scope === roleFilter.slice('admin:'.length)
         : u.role === roleFilter)
     const matchPlatform = platformFilter === 'all' || platformForRole(u.role) === platformFilter
-    return matchSearch && matchRole && matchPlatform
+    const status = accountStatus(u)
+    const matchStatus =
+      statusFilter === 'current' ? status !== 'archived' : status === statusFilter
+    return matchSearch && matchRole && matchPlatform && matchStatus
   })
 
   function toggleSort(key: SortKey) {
@@ -389,15 +454,15 @@ export default function UsersPage() {
       }
 
       case 'status': {
-        // Active first when ascending.
-        const status = Number(b.is_active) - Number(a.is_active)
+        // Active → Inactive → Archived when ascending.
+        const status = STATUS_RANK[accountStatus(a)] - STATUS_RANK[accountStatus(b)]
         return status ? dir * status : byName
       }
     }
   })
 
   const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
-    sorted, 10, `${search}|${roleFilter}|${platformFilter}|${sort.key}|${sort.dir}`,
+    sorted, 10, `${search}|${roleFilter}|${platformFilter}|${statusFilter}|${sort.key}|${sort.dir}`,
   )
 
   const counts = {
@@ -411,6 +476,7 @@ export default function UsersPage() {
     collector: users.filter(u => u.role === 'collector').length,
     delivery: users.filter(u => u.role === 'delivery').length,
     active: users.filter(u => u.is_active).length,
+    archived: users.filter(u => accountStatus(u) === 'archived').length,
   }
 
   function openCreate() {
@@ -501,9 +567,40 @@ export default function UsersPage() {
     if (avatarError) setFetchError(avatarError)
   }
 
-  async function handleToggleStatus(user: UserRow) {
-    const { error } = await toggleUserStatus(user.id, !user.is_active)
-    if (!error) loadUsers()
+  function openDeactivate(user: UserRow) {
+    setDeactivateError('')
+    setDeactivateTarget(user)
+  }
+
+  /**
+   * Deactivation now ends the target's session on both web and mobile, so it
+   * gets a confirm step and its errors are shown. The server refuses two cases
+   * outright — deactivating yourself, and the last active superadmin — and the
+   * dialog is where those messages have to land, since the row itself gives no
+   * hint that either rule exists.
+   */
+  async function handleDeactivate() {
+    if (!deactivateTarget) return
+    setDeactivating(true)
+    const { error } = await toggleUserStatus(deactivateTarget.id, false)
+    setDeactivating(false)
+    if (error) {
+      setDeactivateError(error)
+      return
+    }
+    setDeactivateTarget(null)
+    await loadUsers()
+  }
+
+  /** Restoring access is not destructive, so it skips the confirm step. */
+  async function handleReactivate(user: UserRow) {
+    const { error } = await toggleUserStatus(user.id, true)
+    // Before loadUsers, which clears fetchError on entry.
+    if (error) {
+      setFetchError(error)
+      return
+    }
+    await loadUsers()
   }
 
   function openReset(user: UserRow) {
@@ -541,7 +638,16 @@ export default function UsersPage() {
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="User Management" subtitle={`${counts.active} active · ${counts.total} total users`} />
+      {/* Archived is only named once there is one — the usual case shouldn't
+          carry a "0 archived" that explains nothing. */}
+      <Header
+        title="User Management"
+        subtitle={
+          counts.archived
+            ? `${counts.active} active · ${counts.archived} archived · ${counts.total} total users`
+            : `${counts.active} active · ${counts.total} total users`
+        }
+      />
 
       <div className="flex-1 p-6 space-y-6">
 
@@ -628,6 +734,18 @@ export default function UsersPage() {
               <SelectItem value="mobile">Mobile App</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={statusFilter} onValueChange={v => setStatusFilter((v as StatusFilter) ?? 'current')}>
+            <SelectTrigger className="w-48 h-9 bg-card border-border">
+              <SelectValue placeholder="Active & Inactive" />
+            </SelectTrigger>
+            <SelectContent>
+              {(['current', 'active', 'inactive', 'archived'] as StatusFilter[]).map(value => (
+                <SelectItem key={value} value={value}>
+                  {STATUS_FILTER_LABEL[value]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button variant="outline" size="sm" className="h-9 gap-2" onClick={loadUsers} disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
@@ -686,6 +804,7 @@ export default function UsersPage() {
                         ? ADMIN_SCOPE_ICON[user.admin_scope]
                         : ROLE_ICON[user.role] ?? CircleHelp
                     const platform = PLATFORM_META[platformForRole(user.role)]
+                    const status = accountStatus(user)
                     return (
                       <tr key={user.id} className="hover:bg-muted/20 transition-colors">
                         <td className="px-5 py-3">
@@ -723,12 +842,17 @@ export default function UsersPage() {
                           </span>
                         </td>
                         <td className="px-5 py-3">
-                          <Badge
-                            variant="tone"
-                            className={TONE_CLASS[user.is_active ? 'brand' : 'neutral']}
-                          >
-                            {user.is_active ? 'Active' : 'Inactive'}
+                          <Badge variant="tone" className={TONE_CLASS[STATUS_TONE[status]]}>
+                            {ACCOUNT_STATUS_LABEL[status]}
                           </Badge>
+                          {/* The date the archive clock started — without it,
+                              "Inactive" gives no sense of how close this account
+                              is to dropping off the list. */}
+                          {status !== 'active' && (
+                            <p className="text-[11px] text-muted-foreground mt-1">
+                              {deactivatedSinceLabel(user)}
+                            </p>
+                          )}
                         </td>
                         <td className="px-5 py-3 text-right">
                           {(() => {
@@ -751,10 +875,12 @@ export default function UsersPage() {
                                     Reset Password
                                   </DropdownMenuItem>
                                   <DropdownMenuItem
-                                    onClick={() => handleToggleStatus(user)}
+                                    onClick={() => user.is_active ? openDeactivate(user) : handleReactivate(user)}
                                     className={`gap-2 ${user.is_active ? 'text-destructive focus:text-destructive' : ''}`}
                                   >
-                                    <Ban className="w-3.5 h-3.5" />
+                                    {user.is_active
+                                      ? <Ban className="w-3.5 h-3.5" />
+                                      : <UserCheck className="w-3.5 h-3.5" />}
                                     {user.is_active ? 'Deactivate' : 'Reactivate'}
                                   </DropdownMenuItem>
                                 </DropdownMenuContent>
@@ -894,6 +1020,50 @@ export default function UsersPage() {
             <Button variant="outline" onClick={() => setResetTarget(null)} disabled={saving}>Cancel</Button>
             <Button onClick={handleReset} disabled={saving}>
               {saving ? 'Resetting…' : 'Reset Password'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Deactivate Confirmation */}
+      <Dialog
+        open={!!deactivateTarget}
+        onOpenChange={open => { if (!deactivating && !open) setDeactivateTarget(null) }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Deactivate account</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              <span className="font-medium text-foreground">{deactivateTarget?.full_name}</span>{' '}
+              ({deactivateTarget?.email}) will be signed out and blocked from both the web
+              dashboard and the mobile app.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Their clients, meetings and records are untouched, and you can reactivate them at
+              any time. After {ARCHIVE_AFTER_DAYS} days the account moves to the Archived filter
+              and drops off this list.
+            </p>
+          </div>
+
+          {deactivateError && (
+            <Alert variant="destructive" className="py-2">
+              <AlertDescription className="text-xs">{deactivateError}</AlertDescription>
+            </Alert>
+          )}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeactivateTarget(null)}
+              disabled={deactivating}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDeactivate} disabled={deactivating}>
+              {deactivating ? 'Deactivating…' : 'Deactivate'}
             </Button>
           </DialogFooter>
         </DialogContent>

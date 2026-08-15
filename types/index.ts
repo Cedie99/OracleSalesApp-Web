@@ -607,6 +607,11 @@ export interface Profile {
   admin_scope?: AdminScope
   team_id: string | null
   is_active?: boolean
+  /**
+   * When is_active last went false; null while active. Stamped by trigger
+   * (migration 095), never written by callers. See lib/users.ts.
+   */
+  deactivated_at?: string | null
   avatar_url?: string | null
   created_at: string
 }
@@ -1047,4 +1052,50 @@ export interface MeetingCutoffAttribution {
    */
   slot_index: number | null
   attributed_at: string
+}
+
+// --- Admin activity log (migration 096) -------------------------------------
+
+/**
+ * One before/after pair inside an entry's `changes`.
+ *
+ * `label` is stored on the row rather than looked up when rendering, so an
+ * entry still reads correctly after the UI renames the field it describes.
+ * Values are pre-formatted strings — "Lost", "₱12,400.00", "Jun Cruz" — not the
+ * raw column values, because the log is read by people who never saw the
+ * schema. `null` means the field was empty on that side.
+ */
+export interface AuditChange {
+  field: string
+  label: string
+  from: string | null
+  to: string | null
+}
+
+/**
+ * `<entity>.<verb>`. Kept as a plain string rather than a union so a row
+ * written by a newer deploy never fails to type-check against an older one —
+ * the catalog with labels and modules lives in lib/audit/entries.ts, and an
+ * action missing from it renders as a humanised fallback.
+ */
+export type AuditAction = string
+
+export interface AdminAuditLog {
+  id: string
+  actor_profile_id: string
+  /** The actor as they were AT THE TIME — see migration 096, not a live join. */
+  actor_name: string
+  actor_role: string
+  actor_scope: AdminScope | null
+  action: AuditAction
+  module: NotificationModule
+  entity_table: string | null
+  entity_id: string | null
+  entity_label: string | null
+  summary: string
+  changes: AuditChange[]
+  metadata: Record<string, unknown> | null
+  occurred_at: string
+  /** Joined for the avatar only; null once the actor's profile is archived out of view. */
+  actor?: Profile
 }

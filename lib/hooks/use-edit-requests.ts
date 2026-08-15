@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { recordAuditLog } from '@/lib/audit/actions'
 import type { ClientEditRequest, Client, Profile, ApprovalStatus } from '@/types'
 
 /** Explicit column list — see the note in use-clients.ts for why not `*`. */
@@ -69,6 +70,10 @@ export function useEditRequests() {
   /** Approve or reject a request, stamping the reviewer and review time. */
   const review = useCallback(
     async (id: string, status: Exclude<ApprovalStatus, 'pending'>, reviewerProfileId: string | null) => {
+      // Captured before the write, because `load()` below replaces the row and
+      // the log needs to name what was decided, not what it became.
+      const target = requests.find(r => r.id === id)
+
       const { error: updateError } = await createClient()
         .from('client_edit_requests')
         .update({
@@ -79,10 +84,33 @@ export function useEditRequests() {
         .eq('id', id)
 
       if (updateError) return updateError.message
+
+      const clientName = target?.client?.company_name ?? 'a client'
+      const requester = target?.requester?.full_name
+      void recordAuditLog({
+        action: status === 'approved' ? 'edit_request.approved' : 'edit_request.rejected',
+        entityTable: 'client_edit_requests',
+        entityId: id,
+        entityLabel: clientName,
+        summary:
+          `${status === 'approved' ? 'Approved' : 'Rejected'} the edit request for ${clientName}` +
+          (requester ? ` from ${requester}` : ''),
+        // The request's own `changes` are already a field-level before/after —
+        // what the agent asked to change. Rendering them as the entry's diff
+        // means the log shows what was actually approved, not just that
+        // something was.
+        changes: Object.entries(target?.changes ?? {}).map(([field, value]) => ({
+          field,
+          label: field.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()),
+          from: value.old == null || value.old === '' ? null : String(value.old),
+          to: value.new == null || value.new === '' ? null : String(value.new),
+        })),
+      })
+
       await load()
       return null
     },
-    [load]
+    [load, requests]
   )
 
   return { requests, loading, error, refresh, review }

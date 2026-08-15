@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { createClient } from '@/lib/supabase/client'
+import { recordAuditLog } from '@/lib/audit/actions'
+import { buildChanges } from '@/lib/audit/entries'
 import { activePeriod, workingDaysIn } from '@/lib/cutoff'
 import type { CutoffPeriod, Holiday, QuotaSettings } from '@/types'
 import { Target, Loader2, TriangleAlert, Check, Info } from 'lucide-react'
@@ -122,6 +124,38 @@ export function StandingTargetsCard({
     else {
       // The RPC returns a single row; supabase-js hands back an array.
       const row = (Array.isArray(data) ? data[0] : data) as ApplyResult | undefined
+
+      // Not a duplicate of the per-field rows apply_standing_targets() writes
+      // into cutoff_period_changes: those record what happened to each PERIOD,
+      // this records that a person changed the standing numbers. The first
+      // answers "why is this period's target 40", the second "who decided that".
+      //
+      // `settings` is still the pre-save state here — `onSaved()` has not run
+      // yet, so this is the last moment the old targets are in hand.
+      const was = toDraft(settings)
+      void recordAuditLog({
+        action: 'standing_targets.applied',
+        entityTable: 'quota_settings',
+        entityLabel: 'Standing targets',
+        // The RPC's own count is the point: this does not change one setting,
+        // it rewrites the targets on every open period at once.
+        summary:
+          `Applied standing targets` +
+          (row?.periods_updated != null
+            ? ` to ${row.periods_updated} open period${row.periods_updated === 1 ? '' : 's'}`
+            : ''),
+        changes: buildChanges(
+          was as unknown as Record<string, unknown>,
+          draft as unknown as Record<string, unknown>,
+          [
+            { field: 'sales_target', label: 'Sales target' },
+            { field: 'rsr_daily_target', label: 'RSR daily target' },
+            { field: 'sales_client_meeting_cap', label: 'Sales visit cap' },
+            { field: 'rsr_client_meeting_cap', label: 'RSR visit cap' },
+          ],
+        ),
+      })
+
       setResult(row ?? null)
       await onSaved()
     }

@@ -55,7 +55,11 @@ export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname
   const isAuthPage = pathname.startsWith('/login')
   const isUnauthorizedPage = pathname.startsWith('/unauthorized')
-  const isProtected = !isAuthPage && !isUnauthorizedPage && pathname !== '/'
+  // Exempt for the same reason as /unauthorized: it is the destination of a
+  // redirect made from inside this proxy, so treating it as protected would
+  // bounce it straight back to itself.
+  const isDeactivatedPage = pathname.startsWith('/deactivated')
+  const isProtected = !isAuthPage && !isUnauthorizedPage && !isDeactivatedPage && pathname !== '/'
 
   if (!user && isProtected) {
     return redirectTo('/login')
@@ -68,7 +72,7 @@ export async function proxy(request: NextRequest) {
   if (user && isProtected) {
     const { data: profile, error } = await supabase
       .from('profiles')
-      .select('role, admin_scope')
+      .select('role, admin_scope, is_active')
       .eq('user_id', user.id)
       .single()
 
@@ -79,18 +83,32 @@ export async function proxy(request: NextRequest) {
     // locking the app's own administrators out of it.
     let role = profile?.role as UserRole | undefined
     let scope = profile?.admin_scope as AdminScope | undefined
+    let isActive = profile?.is_active as boolean | undefined
     if (error) {
       const { data: fallback } = await supabase
         .from('profiles')
-        .select('role')
+        .select('role, is_active')
         .eq('user_id', user.id)
         .single()
       role = fallback?.role as UserRole | undefined
       scope = 'all'
+      isActive = fallback?.is_active as boolean | undefined
     }
 
     if (!hasWebAccess(role)) {
       return redirectTo('/unauthorized')
+    }
+
+    // Checked AFTER the role gate on purpose: a deactivated mobile role is told
+    // the stabler fact ("this role uses the mobile app"), and the mobile app
+    // then turns them away for being deactivated.
+    //
+    // Strict `=== false` so the check fails OPEN. is_active has existed since
+    // migration 002 and the select above is the same one that already worked,
+    // but a null or absent value must never lock an administrator out of the
+    // app that administers it — the same reasoning as the error fallback above.
+    if (isActive === false) {
+      return redirectTo('/deactivated')
     }
 
     // Scoped admins (migration 024) are steered back to their own function
