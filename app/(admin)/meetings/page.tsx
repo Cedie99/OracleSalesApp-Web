@@ -154,48 +154,57 @@ function MeetingsPageContent() {
     [byRole],
   )
 
+  /**
+   * Which meetings each person was genuinely invited along on, from the
+   * tag-along ledger.
+   *
+   * Accepted and pending both count — the manager was asked either way, and a
+   * pending invite is precisely the one worth seeing. Declined and cancelled do
+   * not: nobody attended those.
+   */
+  const tagAlongMeetingIds = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const [inviteeId, requests] of tagAlongsByInviteeId) {
+      const ids = new Set(
+        requests
+          .filter(r => r.related_meeting_id && (r.status === 'accepted' || r.status === 'pending'))
+          .map(r => r.related_meeting_id as string)
+      )
+      if (ids.size > 0) map.set(inviteeId, ids)
+    }
+    return map
+  }, [tagAlongsByInviteeId])
+
   // Every meeting's manager, computed once regardless of this page's own
   // search/outcome/type/date filters — so scoping the stat row to a manager
   // below doesn't inherit those filters either. Same convention as the
-  // Clients page's clientsByManagerKey.
+  // Clients page's clientsByManagerKey. A meeting also lands in a manager's
+  // own bucket when they recorded it or were tagged along on it — otherwise
+  // a manager who tagged along on another team's visit shows a stat row of
+  // all zeros for a meeting that very much involved them.
   const meetingsByManagerKey = useMemo(() => {
-    const map = new Map<string, Meeting[]>()
+    const byId = new Map(meetings.map(m => [m.id, m]))
+    const idsByKey = new Map<string, Set<string>>()
+    const add = (key: string, id: string) => {
+      let set = idsByKey.get(key)
+      if (!set) { set = new Set(); idsByKey.set(key, set) }
+      set.add(id)
+    }
     for (const m of meetings) {
-      const key = managerForTeam(m.agent?.team_id, managers)?.id ?? 'unassigned'
-      const bucket = map.get(key)
-      if (bucket) bucket.push(m)
-      else map.set(key, [m])
+      add(managerForTeam(m.agent?.team_id, managers)?.id ?? 'unassigned', m.id)
+      if (m.agent_id) add(m.agent_id, m.id)
+      if (m.recorded_by) add(m.recorded_by, m.id)
     }
-    return map
-  }, [meetings, managers])
+    for (const [inviteeId, ids] of tagAlongMeetingIds) {
+      for (const id of ids) add(inviteeId, id)
+    }
+    const result = new Map<string, Meeting[]>()
+    for (const [key, ids] of idsByKey) {
+      result.set(key, [...ids].map(id => byId.get(id)).filter((m): m is Meeting => !!m))
+    }
+    return result
+  }, [meetings, managers, tagAlongMeetingIds])
 
-  // Whichever manager/agent is currently drilled into (accordion-expanded or
-  // fully selected) narrows the stat row to their own meetings; otherwise
-  // it's the global total. Priority: a selected agent is the most specific
-  // scope, then a selected/expanded manager, then everyone.
-  const statsMeetings = useMemo(() => {
-    if (selectedAgentId) {
-      return meetings.filter(m => (m.agent_id ?? 'unassigned') === selectedAgentId)
-    }
-    const managerKey = selectedManagerKey ?? expandedManagerKey
-    if (managerKey) {
-      return meetingsByManagerKey.get(managerKey) ?? []
-    }
-    return meetings
-  }, [selectedAgentId, selectedManagerKey, expandedManagerKey, meetingsByManagerKey, meetings])
-
-  const counts = {
-    total: statsMeetings.length,
-    f2f: statsMeetings.filter(m => m.meeting_type === 'f2f').length,
-    // Mirrors the table row's own fallback (`m.online_platform === 'zoom' ? 'Zoom' : 'Google Meet'`)
-    // rather than checking for the literal 'googlemeet' value, since seeded/live rows often leave
-    // online_platform null and the rest of this page already treats "online, not Zoom" as Google Meet.
-    googleMeet: statsMeetings.filter(m => m.meeting_type === 'online' && m.online_platform !== 'zoom').length,
-    successful: statsMeetings.filter(m => m.outcome === 'successful').length,
-    followUp: statsMeetings.filter(m => m.outcome === 'follow_up').length,
-    noDecision: statsMeetings.filter(m => m.outcome === 'no_decision').length,
-    lost: statsMeetings.filter(m => m.outcome === 'lost_opportunity').length,
-  }
 
   const filtered = meetings.filter(m => {
     const matchSearch =
@@ -226,39 +235,27 @@ function MeetingsPageContent() {
     return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
   }, [filtered, managers])
 
-  /**
-   * Which meetings each person was genuinely invited along on, from the
-   * tag-along ledger.
-   *
-   * Accepted and pending both count — the manager was asked either way, and a
-   * pending invite is precisely the one worth seeing. Declined and cancelled do
-   * not: nobody attended those.
-   */
-  const tagAlongMeetingIds = useMemo(() => {
-    const map = new Map<string, Set<string>>()
-    for (const [inviteeId, requests] of tagAlongsByInviteeId) {
-      const ids = new Set(
-        requests
-          .filter(r => r.related_meeting_id && (r.status === 'accepted' || r.status === 'pending'))
-          .map(r => r.related_meeting_id as string)
-      )
-      if (ids.size > 0) map.set(inviteeId, ids)
-    }
-    return map
-  }, [tagAlongsByInviteeId])
-
   const managerBuckets = useMemo(() => {
     const buckets = managers.map(m => {
       const managerGroups = groups.filter(g => g.managerKey === m.id)
-      const meetingCount = managerGroups.reduce((sum, g) => sum + g.meetings.length, 0)
       // Two separate figures, because they were one number for a while and that
       // number was wrong. `recorded_by` means the manager filled in the form; it
       // was standing in for "tagged along", which it is not — a manager invited
       // along on twenty agent visits records none of them, and read as zero.
       // Real tag-alongs come from the ledger; this stays what it always was.
-      const ownMeetingCount = filtered.filter(mt => mt.agent_id === m.id || mt.recorded_by === m.id).length
+      const ownMeetings = filtered.filter(mt => mt.agent_id === m.id || mt.recorded_by === m.id)
+      const ownMeetingCount = ownMeetings.length
       const invited = tagAlongMeetingIds.get(m.id)
       const tagAlongCount = invited ? filtered.filter(mt => invited.has(mt.id)).length : 0
+      // Team total: meetings reached via an agent under this manager, unioned
+      // with the manager's own recorded/tagged-along meetings — a manager with
+      // no agents (or whose agents logged nothing) still shows their own
+      // meetings here, without double-counting one that's both.
+      const teamMeetingIds = new Set(managerGroups.flatMap(g => g.meetings.map(mt => mt.id)))
+      const ownMeetingIds = new Set(ownMeetings.map(mt => mt.id))
+      const meetingCount = filtered.filter(
+        mt => teamMeetingIds.has(mt.id) || ownMeetingIds.has(mt.id) || (invited?.has(mt.id) ?? false)
+      ).length
       return {
         key: m.id,
         label: m.full_name,
@@ -305,6 +302,28 @@ function MeetingsPageContent() {
     [selectedManagerKey, filtered, tagAlongMeetingIds],
   )
   const activeMeetings = selectedGroup?.meetings ?? (selectedManagerBucket ? managerMeetings : null)
+
+  // The stat row must match whatever the table below it actually shows —
+  // a fully selected agent or manager uses their own footprint
+  // (activeMeetings, the exact set the table renders), so the two numbers
+  // never disagree. A manager who's only expanded in the list (previewing,
+  // not yet drilled in) uses the team-wide total instead; otherwise it's the
+  // global total.
+  const statsMeetings =
+    activeMeetings ?? (expandedManagerKey ? meetingsByManagerKey.get(expandedManagerKey) ?? [] : meetings)
+
+  const counts = {
+    total: statsMeetings.length,
+    f2f: statsMeetings.filter(m => m.meeting_type === 'f2f').length,
+    // Mirrors the table row's own fallback (`m.online_platform === 'zoom' ? 'Zoom' : 'Google Meet'`)
+    // rather than checking for the literal 'googlemeet' value, since seeded/live rows often leave
+    // online_platform null and the rest of this page already treats "online, not Zoom" as Google Meet.
+    googleMeet: statsMeetings.filter(m => m.meeting_type === 'online' && m.online_platform !== 'zoom').length,
+    successful: statsMeetings.filter(m => m.outcome === 'successful').length,
+    followUp: statsMeetings.filter(m => m.outcome === 'follow_up').length,
+    noDecision: statsMeetings.filter(m => m.outcome === 'no_decision').length,
+    lost: statsMeetings.filter(m => m.outcome === 'lost_opportunity').length,
+  }
 
   // How many of the selected agent's OWN meetings had someone else tag along
   // with them — the reverse direction from the manager bucket's tagAlongCount
@@ -462,16 +481,19 @@ function MeetingsPageContent() {
 
         {!loading && !error && !selectedGroup && !selectedManagerBucket && (
           <>
-            {/* Managers — click one to drop down their team's agents right below it */}
+            {/* Teams — click one to drop down their team's agents right below it */}
             <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-              Managers
+              Teams
             </p>
             <div className="space-y-3">
               {managerBuckets.map(({ key, label, agentCount, meetingCount, ownMeetingCount, tagAlongCount }) => {
                 const isOpen = expandedManagerKey === key
                 const bucketGroups = groups.filter(g => g.managerKey === key)
                 return (
-                  <div key={key} className="rounded-lg border border-border bg-card overflow-hidden">
+                  <div
+                    key={key}
+                    className={`rounded-lg border bg-card overflow-hidden transition-colors ${isOpen ? 'border-primary/50 shadow-sm' : 'border-border'}`}
+                  >
                     <button
                       type="button"
                       onClick={() => setExpandedManagerKey(isOpen ? null : key)}
@@ -515,9 +537,14 @@ function MeetingsPageContent() {
                                   {/* Recorded and tagged along are counted apart
                                       on purpose — they answer different
                                       questions, and one manager can be busy on
-                                      one and absent on the other. */}
+                                      one and absent on the other. Either segment
+                                      is dropped when it's zero, so a manager
+                                      who's only tagged along isn't shown "0
+                                      recorded" as if that were news. */}
                                   <p className="text-xs text-muted-foreground">
-                                    {ownMeetingCount} recorded · {tagAlongCount} tagged along
+                                    {ownMeetingCount + tagAlongCount} meeting{ownMeetingCount + tagAlongCount === 1 ? '' : 's'}
+                                    {ownMeetingCount > 0 && <> · {ownMeetingCount} recorded</>}
+                                    {tagAlongCount > 0 && <> · {tagAlongCount} tagged along</>}
                                   </p>
                                 </div>
                               </div>
@@ -600,7 +627,8 @@ function MeetingsPageContent() {
                     {selectedManagerBucket ? (
                       <>
                         {selectedManagerBucket.ownMeetingCount + selectedManagerBucket.tagAlongCount} meeting{selectedManagerBucket.ownMeetingCount + selectedManagerBucket.tagAlongCount === 1 ? '' : 's'}
-                        {' '}· {selectedManagerBucket.ownMeetingCount} recorded · {selectedManagerBucket.tagAlongCount} tagged along
+                        {selectedManagerBucket.ownMeetingCount > 0 && <> · {selectedManagerBucket.ownMeetingCount} recorded</>}
+                        {selectedManagerBucket.tagAlongCount > 0 && <> · {selectedManagerBucket.tagAlongCount} tagged along</>}
                       </>
                     ) : (
                       // No separate "recorded" segment here: every one of an
