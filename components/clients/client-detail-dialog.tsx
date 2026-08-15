@@ -402,6 +402,11 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                               Landmark: {clientAddress(client).landmark}
                             </p>
                           )}
+                          {clientAddress(client).locality && (
+                            <p className="text-xs text-muted-foreground mt-1 pl-6">
+                              Municipality/City: {clientAddress(client).locality}
+                            </p>
+                          )}
                         </div>
 
                         {/* The client's own office pin (migration 052), for the
