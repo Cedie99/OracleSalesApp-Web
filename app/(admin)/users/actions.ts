@@ -2,9 +2,10 @@
 
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
-import { canManageUsers, PASSWORD_MIN_LENGTH } from '@/lib/permissions'
+import { canManageUsers, phoneRequiredForRole, PASSWORD_MIN_LENGTH } from '@/lib/permissions'
 import { AVATAR_ACCEPTED_TYPES } from '@/lib/avatar'
 import { adminScope, roleScopeLabel } from '@/lib/permissions'
+import { toE164 } from '@/lib/collection/busybee'
 import { recordAuditLog } from '@/lib/audit/actions'
 import { TEAM_KIND_LABEL, type AdminScope, type AuditChange, type Team, type TeamKind, type UserRole } from '@/types'
 
@@ -24,6 +25,8 @@ interface CreateUserPayload {
   role: UserRole
   admin_scope: AdminScope
   team_id: string | null
+  /** May be blank for roles that don't receive SMS; see normalizeContactNumber. */
+  contact_number: string | null
 }
 
 interface UpdateUserPayload {
@@ -32,6 +35,35 @@ interface UpdateUserPayload {
   role: UserRole
   admin_scope: AdminScope
   team_id: string | null
+  contact_number: string | null
+}
+
+/**
+ * Validates and normalises a phone number for storage, mirroring the form's own
+ * rule server-side (the actions are reachable without going through it).
+ *
+ * Required only for the roles that get SMS (phoneRequiredForRole); optional for
+ * everyone else, where an empty value stores NULL. Any value that is present —
+ * required or not — must be a dialable PH mobile, so a typo is caught here
+ * rather than surfacing later as a silently-undelivered SMS. Stored in E.164 so
+ * every row is one shape, regardless of how it was typed.
+ */
+function normalizeContactNumber(
+  raw: string | null,
+  role: UserRole,
+): { value: string | null; error: string | null } {
+  const trimmed = raw?.trim() ?? ''
+  if (!trimmed) {
+    if (phoneRequiredForRole(role)) {
+      return { value: null, error: 'A mobile number is required for collectors and delivery staff.' }
+    }
+    return { value: null, error: null }
+  }
+  const e164 = toE164(trimmed)
+  if (!e164) {
+    return { value: null, error: 'Enter a valid mobile number, e.g. 09XX XXX XXXX.' }
+  }
+  return { value: e164, error: null }
 }
 
 interface CallerProfile {
@@ -138,6 +170,9 @@ export async function createUser(
   const permError = await requireCallerIsSuperadmin()
   if (permError) return { error: permError, profileId: null }
 
+  const { value: contactNumber, error: phoneError } = normalizeContactNumber(data.contact_number, data.role)
+  if (phoneError) return { error: phoneError, profileId: null }
+
   const supabase = createAdminClient()
 
   const { data: authData, error: authError } = await supabase.auth.admin.createUser({
@@ -161,6 +196,7 @@ export async function createUser(
       // (profiles_admin_scope_role_check), so don't rely on the form for it.
       admin_scope: adminScope(data.role, data.admin_scope),
       team_id: data.team_id || null,
+      contact_number: contactNumber,
       is_active: true,
     })
     .select('id')
@@ -182,6 +218,7 @@ export async function createUser(
       { field: 'email', label: 'Email', from: null, to: data.email },
       { field: 'role', label: 'Role', from: null, to: roleScopeLabel(data.role, scope) },
       { field: 'team_id', label: 'Team', from: null, to: await teamName(supabase, data.team_id) },
+      { field: 'contact_number', label: 'Mobile number', from: null, to: contactNumber },
     ],
     // The password is never recorded, here or in resetUserPassword. The log
     // needs to show that credentials were issued, not what they are — an audit
@@ -210,6 +247,9 @@ export async function updateUser(profileId: string, data: UpdateUserPayload): Pr
   const authError = await requireCallerIsSuperadmin()
   if (authError) return { error: authError }
 
+  const { value: contactNumber, error: phoneError } = normalizeContactNumber(data.contact_number, data.role)
+  if (phoneError) return { error: phoneError }
+
   const supabase = createAdminClient()
 
   // profiles.email is only a display copy — the address someone actually signs
@@ -220,7 +260,7 @@ export async function updateUser(profileId: string, data: UpdateUserPayload): Pr
   // update would compare the row against itself.
   const { data: existing, error: lookupError } = await supabase
     .from('profiles')
-    .select('user_id, email, full_name, role, admin_scope, team_id')
+    .select('user_id, email, full_name, role, admin_scope, team_id, contact_number')
     .eq('id', profileId)
     .single()
 
@@ -249,6 +289,7 @@ export async function updateUser(profileId: string, data: UpdateUserPayload): Pr
       role: data.role,
       admin_scope: adminScope(data.role, data.admin_scope),
       team_id: data.team_id || null,
+      contact_number: contactNumber,
     })
     .eq('id', profileId)
 
@@ -276,6 +317,7 @@ export async function updateUser(profileId: string, data: UpdateUserPayload): Pr
         await teamName(supabase, existing.team_id as string | null),
         await teamName(supabase, data.team_id || null),
       ),
+      changeLine('contact_number', 'Mobile number', existing.contact_number as string | null, contactNumber),
     ].filter(c => c !== null),
   })
 
