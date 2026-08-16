@@ -53,7 +53,7 @@ export function smsConfigured(): boolean {
  * Best-effort E.164 for PH mobiles: `09XXXXXXXXX` → `+639XXXXXXXXX`, and pass an
  * already-`+`-prefixed number through. Returns null for anything that doesn't
  * look dialable, so the caller can record a clean "no usable number" rather than
- * handing the provider garbage. `profiles.contact_number` (migration 102) is
+ * handing the provider garbage. `profiles.contact_number` (migration 104) is
  * nullable and only required for collector/delivery, so a null or odd value here
  * is expected, not exceptional. Also used by the Users action to validate input.
  */

@@ -234,7 +234,7 @@ export function isKnownRole(role: string | null | undefined): role is UserRole {
  * Roles that must have a `contact_number` on file, because the app sends them
  * SMS: collectors are notified of additional collection stores today, and
  * delivery is the built-out twin that follows. Every other role may leave it
- * blank — the column is nullable (migration 102) and this is the only place the
+ * blank — the column is nullable (migration 104) and this is the only place the
  * "who is required" rule lives, so both the Users form and the server action
  * that writes the row agree without duplicating the list.
  */

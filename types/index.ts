@@ -614,9 +614,9 @@ export interface Profile {
   deactivated_at?: string | null
   avatar_url?: string | null
   /**
-   * Mobile number the account is reached on for SMS (migration 102). Required in
+   * Mobile number the account is reached on for SMS (migration 104). Required in
    * the Users form for collector and delivery (see phoneRequiredForRole),
-   * nullable for everyone else and absent on rows written before 102.
+   * nullable for everyone else and absent on rows written before 104.
    */
   contact_number?: string | null
   created_at: string

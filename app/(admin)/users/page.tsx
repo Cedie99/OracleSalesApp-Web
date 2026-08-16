@@ -325,7 +325,7 @@ export default function UsersPage() {
       .select(`${USER_COLUMNS}, deactivated_at, contact_number`)
       .order('created_at', { ascending: false })
 
-    // Retry without deactivated_at (095) / contact_number (102) if a migration
+    // Retry without deactivated_at (095) / contact_number (104) if a migration
     // hasn't landed yet — USER_COLUMNS holds neither, so this survives the
     // deploy/migration race for both.
     //
