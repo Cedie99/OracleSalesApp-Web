@@ -1,5 +1,6 @@
 -- ============================================================================
--- 099 - Org-wide prospect map markers
+-- 100 (originally numbered 099, renumbered — 099 was already occupied/out
+-- of order on remote by the time this deployed) - Org-wide prospect map markers
 --
 -- Vince direction (2026-08-16): every role with a Maps screen (Sales/RSR,
 -- Manager, Executive) should be able to see a NEW, opt-in layer of
