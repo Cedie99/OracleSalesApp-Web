@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh, LIVE_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { fetchPoConfirmations } from '@/lib/po-confirmation/actions'
 import { recordAuditLog } from '@/lib/audit/actions'
 import type { PoConfirmationRequest, ApprovalStatus } from '@/types'
@@ -63,6 +64,16 @@ export function usePoConfirmations() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // Same cadence as useEditRequests, because this hook feeds the same
+  // always-mounted sidebar pill and the two counts must not drift apart.
+  //
+  // Deliberately NO `watch`: the change-stamp probe goes through the browser's
+  // Supabase client, and 039's SELECT policy hides this table from admins — the
+  // probe would read an empty set forever and the stamp would never move. This
+  // is the "reads through a Server Function" case the hook's own options doc
+  // calls out, so it falls back to a plain interval re-fetch.
+  useAutoRefresh(load, { intervalMs: LIVE_INTERVAL_MS })
 
   /**
    * Approve or reject a PO confirmation.

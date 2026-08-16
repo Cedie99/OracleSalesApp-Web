@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh } from '@/lib/hooks/use-auto-refresh'
 import type { Meeting, Profile, Client } from '@/types'
 
 /** Explicit column list — see the note in use-clients.ts for why not `*`. */
@@ -125,6 +126,12 @@ export function useMeetings(clientId?: string): UseMeetingsResult {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // The probe carries the same client filter as the query, so a detail dialog
+  // open on one client is not woken by every meeting logged company-wide.
+  useAutoRefresh(load, {
+    watch: [{ table: 'meetings', ...(clientId ? { match: { client_id: clientId } } : {}) }],
+  })
 
   return { meetings, loading, error, refresh }
 }
