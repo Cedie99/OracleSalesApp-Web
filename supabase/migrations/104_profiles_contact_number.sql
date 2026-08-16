@@ -1,0 +1,14 @@
+-- profiles.contact_number — the mobile number field staff are reached on.
+--
+-- Despite older code comments, this column never existed: the `NOT NULL`
+-- contact_number in migration 001 is on `clients`, not `profiles`. The
+-- Additional Collection SMS (lib/collection/busybee.ts, via
+-- app/(admin)/collection/actions.ts) reads `profiles.contact_number` to find
+-- collectors to notify — so until now that read errored and the fan-out
+-- silently reached no one.
+--
+-- Nullable on purpose. Office, sales, and admin roles may have no mobile on
+-- file; only the roles that actually receive SMS (collector and delivery) are
+-- required to have one, and that rule is enforced in the web Users form rather
+-- than by the schema, so creating any other account never blocks on it.
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS contact_number TEXT;
