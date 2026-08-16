@@ -16,6 +16,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { TONE_CLASS, roleTone } from '@/lib/status-styles'
 import { useEditRequests } from '@/lib/hooks/use-edit-requests'
+import { usePoConfirmations } from '@/lib/hooks/use-po-confirmations'
 
 interface NavItem {
   href: string
@@ -118,8 +119,14 @@ export function Sidebar() {
     .join('')
     .toUpperCase()
     .slice(0, 2)
+  // Must count exactly what the Approvals page's Pending tab counts, or the
+  // pill and the page disagree — which is what shipped: the pill read 3 while
+  // the page said 5, because PO confirmations were only ever in the page's sum.
   const { requests: editRequests } = useEditRequests()
-  const pendingApprovals = editRequests.filter(r => r.status === 'pending').length
+  const { requests: poRequests } = usePoConfirmations()
+  const pendingApprovals =
+    editRequests.filter(r => r.status === 'pending').length +
+    poRequests.filter(r => r.status === 'pending').length
 
   // Filter items first, then drop any group left empty so its header doesn't orphan.
   // A scoped admin (Sales/Collection/Delivery) only sees their own function's

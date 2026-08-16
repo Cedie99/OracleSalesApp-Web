@@ -739,6 +739,8 @@ export interface ClientEditRequest {
   status: ApprovalStatus
   reviewed_by: string | null
   reviewed_at: string | null
+  /** Why it was decided that way (migration 053). Mobile's manager detail screen shows this. */
+  review_note: string | null
   created_at: string
   client?: Client
   requester?: Profile
@@ -837,6 +839,51 @@ export interface TagAlongRequest {
   requester_name?: string | null
   invitee_name?: string | null
   invitee_role?: UserRole | null
+}
+
+/**
+ * A close-deal PO photo awaiting the requester's manager (migration 039).
+ *
+ * This is the last gate on `in_progress -> new`: `advance_in_progress_to_new()`
+ * requires an *approved* row for the client's current cycle, so while one sits
+ * pending the client cannot reach New no matter what else is satisfied.
+ * Decisions belong to the manager on mobile — `decide_po_confirmation()` gates
+ * on `is_manager_of_profile()` — so web only ever reads these.
+ */
+export interface PoConfirmationRequest {
+  id: string
+  client_id: string
+  cycle_id: string
+  meeting_id: string
+  requester_id: string
+  po_photo_path: string
+  status: ApprovalStatus | 'cancelled'
+  decided_by: string | null
+  decided_at: string | null
+  decision_note: string | null
+  created_at: string
+  updated_at: string
+  /** Resolved server-side; the FKs target `profiles.id`, not an auth uid. */
+  requester_name?: string | null
+  requester_role?: UserRole | null
+  requester_team_id?: string | null
+  /**
+   * Who approved or rejected it. The only cross-platform record of that: a
+   * manager deciding on mobile writes `decided_by` but never reaches
+   * `admin_audit_logs`, which is web-only by design.
+   */
+  decider_name?: string | null
+  decider_role?: UserRole | null
+  company_name?: string | null
+  customer_type?: CustomerType | null
+  office_address?: string | null
+  /**
+   * The close-deal meeting this PO came out of. Mobile's manager screen shows
+   * the bare `meeting_id`; these are the same reference in checkable form.
+   */
+  meeting_date?: string | null
+  meeting_outcome?: MeetingOutcome | null
+  meeting_contact_person?: string | null
 }
 
 export interface ClockRecord {

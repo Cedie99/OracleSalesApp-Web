@@ -21,6 +21,10 @@ export const AUDIT_ACTIONS = {
   'client.reassigned': { label: 'Reassigned client', module: 'sales' },
   'edit_request.approved': { label: 'Approved edit request', module: 'sales' },
   'edit_request.rejected': { label: 'Rejected edit request', module: 'sales' },
+  // Normally a manager's call on mobile; an admin deciding one here is the
+  // fallback path, so it is worth having in the history explicitly.
+  'po_confirmation.approved': { label: 'Approved PO confirmation', module: 'sales' },
+  'po_confirmation.rejected': { label: 'Rejected PO confirmation', module: 'sales' },
 
   // --- Collection ----------------------------------------------------------
   'collection_visit.listed': { label: 'Listed store for collection', module: 'collection' },
