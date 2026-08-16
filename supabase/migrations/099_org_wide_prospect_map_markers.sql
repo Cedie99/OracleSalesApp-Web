@@ -20,22 +20,28 @@
 -- records (mirrors the `status not in ('lost','deleted')` guard used
 -- throughout the lifecycle RPCs, e.g. 040_four_stage_lifecycle_split_promotion.sql).
 --
--- Security note (read before merging): `public.clients`/`public.meetings`
--- SELECT RLS is already the broad "Authenticated read" policy from the
--- never-numbered 2026-07-16 changes (captured in
--- 022_capture_adhoc_rls_and_storage.sql) — USING (auth.role() = 'authenticated'),
--- with NO team or role scoping at the table level. That policy already lets
--- any authenticated user read every clients/meetings row directly; the
--- team-boundary this feature "bypasses" is enforced only in the mobile app's
--- own queries (e.g. lib/manager-team-map-service.ts scoping by
--- assigned_agent_id), not by RLS. SECURITY DEFINER is used here anyway,
--- deliberately, to add the one restriction the table-level RLS does NOT
--- provide: a role check limited to the roles that actually have a Maps
--- screen. It also narrows the returned columns to pin-rendering fields only
--- (id/lat/lng/label), a stricter surface than "select * from clients" even
--- though RLS alone wouldn't stop that today. Vince: please review whether the
--- broad clients/meetings SELECT policy itself should also be tightened in a
--- follow-up — out of scope for this migration.
+-- Security note (read before merging): the 2026-07-16 broad "Authenticated
+-- read" policy on `clients`/`meetings` (auth.role() = 'authenticated', no
+-- team/role scoping — captured as backfill in
+-- 022_capture_adhoc_rls_and_storage.sql) is NOT the live state. Migration
+-- 030 (030_rls_scoped_read_policies.sql, live 2026-07-26) added real scoped
+-- SELECT policies, and Migration 031 (031_drop_broad_read_policies.sql, live
+-- the same day, "THE FLIP") dropped the broad ones. The CURRENT live RLS on
+-- `clients`/`meetings` SELECT is:
+--   - sales_specialist/rsr: own rows only (assigned_agent_id / agent_id)
+--   - sales_manager: own team's rows only (is_manager_of_profile())
+--   - executive: ALL rows, org-wide, already unrestricted (is_executive())
+-- So for sales_specialist/rsr/sales_manager this RPC is a genuine,
+-- deliberate bypass of a real per-team RLS boundary — exactly the narrow
+-- exception Vince asked for, and exactly why SECURITY DEFINER + an explicit
+-- role check are used instead of SECURITY INVOKER. For executive, RLS
+-- already permits full org-wide reads of clients directly (`Executives read
+-- all clients` policy), so this RPC adds no NEW access for that role — its
+-- only value there is the narrower column set (id/lat/lng/label only, vs.
+-- the full client row `Executives read all clients` already permits).
+-- Please review this characterization directly against the live
+-- `pg_policies` dump before merging — it's transcribed from the migration
+-- history, not re-verified against production from this sandbox.
 --
 -- Convention followed: matches 042_manager_approval_feed_rpcs.sql's shape
 -- (create or replace function ... language sql ... set search_path = public,
