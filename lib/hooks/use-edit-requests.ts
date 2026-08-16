@@ -9,7 +9,7 @@ import type { ClientEditRequest, Client, Profile, ApprovalStatus } from '@/types
 
 /** Explicit column list — see the note in use-clients.ts for why not `*`. */
 const EDIT_REQUEST_COLUMNS = `
-  id, client_id, requested_by, changes, status, reviewed_by, reviewed_at, created_at,
+  id, client_id, requested_by, changes, status, reviewed_by, reviewed_at, review_note, created_at,
   client:clients!client_id ( id, company_name, customer_type, sales_channel, status ),
   requester:profiles!requested_by ( id, user_id, full_name, role, team_id, avatar_url, created_at ),
   reviewer:profiles!reviewed_by ( id, user_id, full_name, role, team_id, avatar_url, created_at )
@@ -17,6 +17,21 @@ const EDIT_REQUEST_COLUMNS = `
 
 const one = <T,>(v: unknown): T | undefined =>
   (Array.isArray(v) ? v[0] : v) as T | undefined
+
+/**
+ * `decide_client_edit_request()` reports refusals as a returned string rather
+ * than an error, so each one needs copy an admin can act on. Anything not
+ * listed here falls back to showing the raw code — better a code than a
+ * swallowed failure.
+ */
+const DECISION_FAILURE_MESSAGE: Record<string, string> = {
+  base_conflict:
+    'This client changed since the request was made — the agent should resubmit against the current details.',
+  already_decided: 'Someone already reviewed this request.',
+  not_found: 'That request no longer exists.',
+  role_not_eligible: 'Your account is not permitted to review this request.',
+  invalid_decision: 'Unrecognised decision.',
+}
 
 function normalizeRequest(row: Record<string, unknown>): ClientEditRequest {
   return {
@@ -31,10 +46,15 @@ function normalizeRequest(row: Record<string, unknown>): ClientEditRequest {
 /**
  * Client detail-change requests awaiting review.
  *
- * The table is real but currently empty (0 rows as of 2026-07-24) — mobile has
- * not shipped the flow that writes to it. So the Approvals page, its sidebar
- * badge, and the dashboard's "Pending Approvals" card will all legitimately
- * read zero. That is the true state, not a wiring failure.
+ * Mobile has since shipped the flow that writes here (ADR-052), so an empty
+ * queue is no longer automatically "the true state" the way the 2026-07-24
+ * note used to say. It is still often correct, though, and for a reason worth
+ * knowing before chasing a wiring bug: only an ALREADY-SET field that changes
+ * needs approval. A prospect's first Complete Info fills blank fields, which
+ * mobile applies directly and never files a request for
+ * (lib/complete-info-branch.ts, 'direct_first_time'). Lifecycle movement —
+ * prospect -> in_progress -> new — is server-side triggers (040) and never
+ * appears here at all.
  */
 export function useEditRequests() {
   const [requests, setRequests] = useState<ClientEditRequest[]>([])
@@ -102,23 +122,51 @@ export function useEditRequests() {
     })
   }, [load])
 
-  /** Approve or reject a request, stamping the reviewer and review time. */
+  /**
+   * Approve or reject a request.
+   *
+   * Goes through `decide_client_edit_request()` (migrations 056/080/102) and
+   * NOT a direct UPDATE on the table. That RPC is the only thing that applies
+   * an approved request's values onto `public.clients` — no trigger does it —
+   * so the direct UPDATE this used to issue flipped the badge to "Approved"
+   * and silently dropped the actual edit. It also skipped the reassignment,
+   * lost-client and per-field `base_conflict` guards.
+   *
+   * RLS is not what was stopping it: 009's admin policy is FOR ALL, so the
+   * write was permitted. 055 denies managers that same UPDATE precisely so
+   * every decision is forced through this function; web was the one caller
+   * bypassing it.
+   *
+   * The RPC signals failure by RETURN VALUE, not by raising — a returned
+   * 'base_conflict' arrives with `rpcError == null`. Both have to be checked
+   * before this counts as decided, which is also why the audit entry is
+   * written after that check rather than after the round-trip.
+   *
+   * No reviewer id is passed: the RPC stamps `reviewed_by` from
+   * `current_profile_id()` server-side, which is why the old one-line summary
+   * here ("stamping the reviewer and review time") no longer describes it.
+   */
   const review = useCallback(
-    async (id: string, status: Exclude<ApprovalStatus, 'pending'>, reviewerProfileId: string | null) => {
+    async (id: string, status: Exclude<ApprovalStatus, 'pending'>) => {
       // Captured before the write, because `load()` below replaces the row and
       // the log needs to name what was decided, not what it became.
       const target = requests.find(r => r.id === id)
 
-      const { error: updateError } = await createClient()
-        .from('client_edit_requests')
-        .update({
-          status,
-          reviewed_by: reviewerProfileId,
-          reviewed_at: new Date().toISOString(),
+      const { data: outcome, error: rpcError } = await createClient()
+        .rpc('decide_client_edit_request', {
+          p_request_id: id,
+          p_decision: status,
+          // The web page has no note field; managers on mobile supply one.
+          p_note: null,
         })
-        .eq('id', id)
 
-      if (updateError) return updateError.message
+      if (rpcError) return rpcError.message
+      if (outcome !== status) {
+        // Reload regardless: 'already_decided' means someone else got there
+        // first, and the queue is now showing a stale row.
+        await load()
+        return DECISION_FAILURE_MESSAGE[outcome as string] ?? `Decision failed (${outcome}).`
+      }
 
       const clientName = target?.client?.company_name ?? 'a client'
       const requester = target?.requester?.full_name
