@@ -41,8 +41,22 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ github.ref_name == 'staging' && secrets.STAGING_SUPABASE_ACCESS_TOKEN || secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_ID: ${{ github.ref_name == 'staging' && secrets.STAGING_SUPABASE_PROJECT_ID || secrets.SUPABASE_PROJECT_ID }}
 
+      # `--include-all` is required because this repo mixes two migration
+      # naming styles: sequential (001..100) and Supabase-CLI-generated
+      # timestamps (e.g. 20260812144913_normalize_company_name_without_separators.sql).
+      # Supabase orders migrations by version STRING, so any "2026..."-prefixed
+      # migration sorts after every sequential number — once one of those is
+      # applied, every later sequential migration looks "out of order" and
+      # plain `db push` refuses it with:
+      #   "Found local migration files to be inserted before the last migration
+      #    on remote database."
+      # That is exactly what blocked 099/100_org_wide_prospect_map_markers.sql
+      # on 2026-08-16. Renaming the already-applied timestamp migration is NOT
+      # a fix: the remote `supabase_migrations.schema_migrations` table still
+      # holds its version, so the ordering conflict persists and the old
+      # migration would be re-run against prod data.
       - name: Push migrations
-        run: supabase db push
+        run: supabase db push --include-all
         env:
           SUPABASE_ACCESS_TOKEN: ${{ github.ref_name == 'staging' && secrets.STAGING_SUPABASE_ACCESS_TOKEN || secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ github.ref_name == 'staging' && secrets.STAGING_SUPABASE_DB_PASSWORD || secrets.SUPABASE_DB_PASSWORD }}
