@@ -6,6 +6,7 @@ import { canManageCollection } from '@/lib/permissions'
 import { sendSmsBatch, toE164, smsConfigured, type SmsRequest } from '@/lib/collection/busybee'
 import { recordAuditLog } from '@/lib/audit/actions'
 import { peso } from '@/lib/money'
+import { format } from 'date-fns'
 import type { AdminScope, UserRole } from '@/types'
 
 /**
@@ -71,15 +72,56 @@ async function requireCollectionAdmin(): Promise<string | null> {
   return null
 }
 
+/** Store fields the SMS draws on, read from the client row at send time. */
+interface AdditionalStoreDetails {
+  companyName: string
+  contactPerson: string | null
+  contactPosition: string | null
+  /** The STORE's number (for calling ahead), not the collector's. */
+  contactNumber: string | null
+  officeAddress: string | null
+  landmark: string | null
+  city: string | null
+  province: string | null
+  /** `yyyy-MM-dd` collection day. */
+  scheduledFor: string
+}
+
 /**
- * The SMS copy. PLACEHOLDER until the final wording is confirmed with the
- * business — kept to one 160-char segment and naming the store so a collector
- * glancing at a lock screen knows where to go. Change the text here, in one
- * place, when the copy is signed off.
+ * The SMS copy for an additional store, broadcast to every active collector.
+ *
+ * Two hard constraints shape it:
+ *
+ *  1. GSM-7 only. A single non-GSM character (₱, an em dash, a smart quote) flips
+ *     the whole message to UCS-2, which more than halves the per-segment budget
+ *     (70 vs 160) and multiplies cost. So amounts read `PHP` not `₱`, separators
+ *     are plain `-`, and nothing here is smart-punctuated. It runs to a few
+ *     segments now that it carries the full store detail — that is the trade the
+ *     business asked for (informative over one-segment).
+ *
+ *  2. No amount due. The figure the store owes is deliberately kept from
+ *     collectors (2026-07-25 anchoring-bias decision — they were matching the
+ *     shown number instead of counting the cash) and must not leak through this
+ *     side channel. Everything else identifying and locating the store is fair
+ *     game; the money is not.
+ *
+ * Fields that come back null (no landmark, no store number) are skipped rather
+ * than printed empty, so the message stays clean for sparse client rows.
  */
-function additionalSmsBody(storeName: string): string {
-  const base = `Oracle: additional collection added — ${storeName}. Open the app for details.`
-  return base.length <= 160 ? base : `${base.slice(0, 157)}…`
+function additionalSmsBody(d: AdditionalStoreDetails): string {
+  const lines: string[] = ['Oracle Collection - new additional store to collect:', d.companyName]
+
+  const who = [d.contactPerson, d.contactPosition].filter(Boolean).join(', ')
+  const contact = [who, d.contactNumber].filter(Boolean).join(' - ')
+  if (contact) lines.push(`Contact: ${contact}`)
+
+  const location = [d.officeAddress, d.landmark, d.city, d.province].filter(Boolean).join(', ')
+  if (location) lines.push(`Location: ${location}`)
+
+  lines.push(`Collect on: ${format(new Date(`${d.scheduledFor}T12:00:00`), 'EEE, dd MMM yyyy')}`)
+  lines.push('Open the app to take this store off the list.')
+
+  return lines.join('\n')
 }
 
 export async function listAdditionalStore(
@@ -135,10 +177,32 @@ export async function listAdditionalStore(
     }
   }
 
+  // The message is the same for every collector, so build it once. Pull the
+  // store's full detail from the client row — the input carries only name and
+  // area, and the SMS now names the contact and full location too. A failed or
+  // missing lookup falls back to the input, so the text still goes out named.
+  const { data: client } = await admin
+    .from('clients')
+    .select('company_name, contact_person, contact_position, contact_number, office_address, landmark, city, province')
+    .eq('id', input.clientId)
+    .single()
+
+  const body = additionalSmsBody({
+    companyName: (client?.company_name as string | null) ?? input.clientName,
+    contactPerson: (client?.contact_person as string | null) ?? null,
+    contactPosition: (client?.contact_position as string | null) ?? null,
+    contactNumber: (client?.contact_number as string | null) ?? null,
+    officeAddress: (client?.office_address as string | null) ?? null,
+    landmark: (client?.landmark as string | null) ?? null,
+    city: (client?.city as string | null) ?? input.area,
+    province: (client?.province as string | null) ?? null,
+    scheduledFor: input.scheduledFor,
+  })
+
   const requests: SmsRequest[] = []
   for (const c of collectors ?? []) {
     const to = toE164(c.contact_number as string | null)
-    if (to) requests.push({ to, body: additionalSmsBody(input.clientName) })
+    if (to) requests.push({ to, body })
   }
 
   const results = await sendSmsBatch(requests)
