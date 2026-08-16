@@ -300,31 +300,33 @@ export const mockEditRequests: ClientEditRequest[] = [
   {
     id: 'req-1', client_id: 'client-1', requested_by: 'agent-1',
     changes: { sales_channel: { old: 'distributor', new: 'dealer' } },
-    status: 'pending', reviewed_by: null, reviewed_at: null, created_at: '2024-06-25T11:00:00Z',
+    status: 'pending', reviewed_by: null, reviewed_at: null, review_note: null, created_at: '2024-06-25T11:00:00Z',
     client: mockClients[0], requester: mockProfiles[0],
   },
   {
     id: 'req-2', client_id: 'client-5', requested_by: 'agent-2',
     changes: { customer_type: { old: 'new', new: 'existing' }, contact_number: { old: '09561237890', new: '09561237891' } },
-    status: 'approved', reviewed_by: 'mgr-1', reviewed_at: '2024-06-24T10:00:00Z', created_at: '2024-06-23T09:00:00Z',
+    status: 'approved', reviewed_by: 'mgr-1', reviewed_at: '2024-06-24T10:00:00Z', review_note: null, created_at: '2024-06-23T09:00:00Z',
     client: mockClients[4], requester: mockProfiles[1], reviewer: mockProfiles[3],
   },
   {
     id: 'req-3', client_id: 'client-3', requested_by: 'agent-2',
     changes: { contact_person: { old: 'Ramon Cruz', new: 'Ramon C. Cruz Jr.' } },
-    status: 'rejected', reviewed_by: 'mgr-1', reviewed_at: '2024-06-22T14:00:00Z', created_at: '2024-06-22T08:00:00Z',
+    status: 'rejected', reviewed_by: 'mgr-1', reviewed_at: '2024-06-22T14:00:00Z',
+    review_note: 'Confirm the spelling on the signed PO first — this does not match the contract.',
+    created_at: '2024-06-22T08:00:00Z',
     client: mockClients[2], requester: mockProfiles[1], reviewer: mockProfiles[3],
   },
   {
     id: 'req-4', client_id: 'client-6', requested_by: 'agent-3',
     changes: { contact_number: { old: '09671110000', new: '09671110001' } },
-    status: 'pending', reviewed_by: null, reviewed_at: null, created_at: '2024-06-21T16:00:00Z',
+    status: 'pending', reviewed_by: null, reviewed_at: null, review_note: null, created_at: '2024-06-21T16:00:00Z',
     client: mockClients[5], requester: mockProfiles[2],
   },
   {
     id: 'req-5', client_id: 'client-10', requested_by: 'agent-4',
     changes: { customer_type: { old: 'new', new: 'existing' } },
-    status: 'approved', reviewed_by: 'mgr-2', reviewed_at: '2024-06-17T09:00:00Z', created_at: '2024-06-16T11:00:00Z',
+    status: 'approved', reviewed_by: 'mgr-2', reviewed_at: '2024-06-17T09:00:00Z', review_note: null, created_at: '2024-06-16T11:00:00Z',
     client: mockClients[9], requester: mockProfiles[9], reviewer: mockProfiles[4],
   },
 ]

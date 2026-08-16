@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh, SLOW_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { reviewablePeriods } from '@/lib/cutoff'
 import type {
   CutoffPeriod,
@@ -80,6 +81,13 @@ export function useCutoffPeriods(): UseCutoffPeriodsResult {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // Quota configuration, changed by one admin on the Settings page perhaps once
+  // a fortnight — the slow lane exists for exactly this. Note this does NOT
+  // invalidate the module-scope option cache below; only an explicit refresh
+  // after a write does, because that is the one caller that knows a write
+  // happened.
+  useAutoRefresh(load, { watch: [{ table: 'cutoff_periods' }], intervalMs: SLOW_INTERVAL_MS })
 
   return { periods, loading, error, refresh }
 }
@@ -220,6 +228,14 @@ export function useCutoffAttributions(): UseCutoffAttributionsResult {
     load()
   }, [load])
 
+  // Meetings is watched alongside the ledger because the count this hook
+  // reports is `meetings - ledger`: a meeting logged but not yet attributed
+  // moves the number without touching the ledger at all.
+  useAutoRefresh(load, {
+    watch: [{ table: 'meeting_cutoff_attributions', column: 'attributed_at' }, { table: 'meetings' }],
+    intervalMs: SLOW_INTERVAL_MS,
+  })
+
   return { attributions, unattributedMeetingCount, loading, error, refresh }
 }
 
@@ -279,6 +295,11 @@ export function useQuotaSettings(): UseQuotaSettingsResult {
     load()
   }, [load])
 
+  useAutoRefresh(load, {
+    watch: [{ table: 'quota_settings' }, { table: 'holidays', column: 'created_at' }],
+    intervalMs: SLOW_INTERVAL_MS,
+  })
+
   return { settings, holidays, loading, error, refresh }
 }
 
@@ -320,6 +341,11 @@ export function usePeriodChanges(limit = 100): UsePeriodChangesResult {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  useAutoRefresh(load, {
+    watch: [{ table: 'cutoff_period_changes', column: 'changed_at' }],
+    intervalMs: SLOW_INTERVAL_MS,
+  })
 
   return { changes, loading, error, refresh }
 }

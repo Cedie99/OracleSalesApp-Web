@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh } from '@/lib/hooks/use-auto-refresh'
 import type { Client, CustomerType, Profile } from '@/types'
 
 /**
@@ -102,6 +103,12 @@ export function useClients(): UseClientsResult {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // Mobile writes this table all day — new prospects, phase-B detail fills,
+  // lifecycle promotions. The probe is what keeps that affordable: the full
+  // query above joins profiles and is unpaginated, so it only re-runs when the
+  // clients table has genuinely moved.
+  useAutoRefresh(load, { watch: [{ table: 'clients' }] })
 
   return { clients, loading, error, refresh, setClients }
 }

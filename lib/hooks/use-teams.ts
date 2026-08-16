@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh, SLOW_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import type { Team } from '@/types'
 
 /**
@@ -46,6 +47,9 @@ export function useTeams() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // Reference data, like profiles — slow lane.
+  useAutoRefresh(load, { watch: [{ table: 'teams' }], intervalMs: SLOW_INTERVAL_MS })
 
   /** Display name for a team id, falling back to an em-dash. */
   const teamName = useCallback(

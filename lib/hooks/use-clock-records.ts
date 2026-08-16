@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh } from '@/lib/hooks/use-auto-refresh'
 import type { ClockRecord, Profile } from '@/types'
 
 /** Explicit column list — see the note in use-clients.ts for why not `*`. */
@@ -59,6 +60,11 @@ export function useClockRecords() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // Append-only from the phone, but not immutable: the clock-in photo arrives
+  // later through the deferred-upload lane, so the stamp is `updated_at` (101)
+  // rather than the row's own creation time.
+  useAutoRefresh(load, { watch: [{ table: 'clock_records' }] })
 
   return { records, loading, error, refresh }
 }
