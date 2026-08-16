@@ -35,7 +35,11 @@ import { format } from 'date-fns'
 
 /** Schema field names are not admin words. */
 const FIELD_LABEL: Record<string, string> = {
-  sales_target: 'Sales target',
+  // Named with its unit because the unit CHANGED (105) without the field name
+  // changing: rows written before then recorded a per-cutoff number, and the
+  // history is exactly where someone will compare a 35 across that boundary.
+  sales_target: 'Sales target (per month)',
+  manager_target: 'Manager target (per month)',
   rsr_daily_target: 'RSR target (per working day)',
   sales_client_meeting_cap: 'Sales visit limit per client',
   rsr_client_meeting_cap: 'RSR visit limit per client',

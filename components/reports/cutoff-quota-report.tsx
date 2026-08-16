@@ -11,17 +11,21 @@ import { useTeams } from '@/lib/hooks/use-teams'
 import {
   ATTRIBUTION_LABEL,
   ATTRIBUTION_ORDER,
-  agentPeriodUsage,
+  agentMonthUsage,
   attributionBuckets,
   capForRole,
   capsDiffer,
   clientQuotaUsage,
   dailyUsage,
+  monthAttributions,
+  monthLabel,
+  monthOf,
   periodDateLabel,
   periodPhase,
   reviewablePeriods,
-  teamPeriodUsage,
-  workingDaysIn,
+  targetSourceForMonth,
+  teamMonthUsage,
+  workingDaysInMonth,
 } from '@/lib/cutoff'
 import { downloadSheet } from '@/components/reports/report-grid'
 import type { Client, Meeting, Profile } from '@/types'
@@ -44,6 +48,19 @@ import {
  * toolbar's arbitrary date range: a period is the unit the rules are written in,
  * and letting someone report on "last 7 days" of a quota measured in fortnights
  * would produce a number that answers no question anyone asked.
+ *
+ * TWO WINDOWS since migration 105, and the panel has to keep them apart:
+ *
+ *   per CUTOFF   attribution buckets, and every per-client visit-limit figure —
+ *                a slot is allocated against the period, so over-cap is a fact
+ *                about the period and nothing else
+ *   per MONTH    every TARGET, and the agent/team progress measured against one
+ *
+ * The selector still picks a cutoff. The month reported is the one the selected
+ * cutoff ENDS in, which is the payroll convention here — the cutoff running Jul
+ * 24 to Aug 8 belongs to August. Every monthly figure below is captioned with
+ * the month by name, because a reader looking at a fortnight's row of buckets
+ * needs to see that the target beside it covers something wider.
  *
  * Everything here reads the server's attribution ledger. Web never recounts from
  * `meetings` — see the note at the top of lib/cutoff.ts.
@@ -98,7 +115,7 @@ interface CutoffQuotaReportProps {
 export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaReportProps) {
   const { periods, loading: periodsLoading } = useCutoffPeriods()
   const { attributions, unattributedMeetingCount, loading: ledgerLoading } = useCutoffAttributions()
-  const { teams, teamName } = useTeams()
+  const { teamName } = useTeams()
   const { holidays } = useQuotaSettings()
   const [periodId, setPeriodId] = useState<string>('')
   const [showBreakdown, setShowBreakdown] = useState(false)
@@ -117,49 +134,74 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
     return (id: string) => map.get(id)
   }, [agents])
 
+  // No team-kind lookup here any more. It existed only to resolve a manager's
+  // target, which since 105 is a flat monthly number that does not vary by the
+  // kind of team they run. The per-client pools still split by team kind, but
+  // they read it off `captured_team_kind` on the ledger row rather than from
+  // the roster — see `clientQuotaUsage`.
+
+  /** meeting_id -> its date, so daily counts sit on the day the visit happened. */
+  const meetingDates = useMemo(
+    () => new Map(meetings.map(m => [m.id, m.meeting_date.slice(0, 10)])),
+    [meetings]
+  )
+
+  /** The month the selected cutoff ends in — the window every target covers. */
+  const month = useMemo(() => (period ? monthOf(period.ends_on) : null), [period])
+
   /**
-   * A team's kind, and an agent's by way of their team. Only managers need it —
-   * they inherit their team's target and ceiling, and `sales_manager` covers
-   * both kinds, so the role alone cannot say which applies.
+   * Where the month's target numbers come from — NOT necessarily the selected
+   * period. Both of a month's cutoffs end in it, and an admin editing targets
+   * mid-month updates only the one that has not ended, so the two rows can
+   * disagree. `targetSourceForMonth` picks deterministically; without it the
+   * same month would report two different targets depending on the dropdown.
    */
-  const kindOfTeam = useMemo(() => {
-    const map = new Map(teams.map(t => [t.id, t.kind]))
-    return (teamId: string | null) => (teamId ? map.get(teamId) ?? null : null)
-  }, [teams])
-
-  const kindOfAgent = useMemo(() => {
-    const map = new Map(agents.map(a => [a.id, a.team_id]))
-    return (agentId: string) => kindOfTeam(map.get(agentId) ?? null)
-  }, [agents, kindOfTeam])
+  const targetSource = useMemo(
+    () => (month ? targetSourceForMonth(periods, month) : null),
+    [periods, month]
+  )
 
   /**
-   * Working days in the visible period. The denominator for every RSR figure
-   * below — their target is per day, so the period expectation only exists once
-   * this is known.
+   * Working days in that MONTH. The denominator for every RSR figure below —
+   * their target is per day, so the month expectation only exists once this is
+   * known. A period's `working_days_override` is deliberately not consulted: it
+   * corrects one cutoff and a month holds two, which is the same call migration
+   * 105 makes server-side.
    */
   const workingDays = useMemo(
-    () => (period ? workingDaysIn(period, holidays.map(h => h.holiday_date)) : 0),
-    [period, holidays]
+    () => (month ? workingDaysInMonth(month, holidays.map(h => h.holiday_date)) : 0),
+    [month, holidays]
+  )
+
+  /**
+   * Ledger rows for the month, dated by the meeting rather than by period.
+   *
+   * This, not `period.id`, is what the target-bearing rollups below are counted
+   * over — the whole point of 105 is that a target spans both of the month's
+   * cutoffs.
+   */
+  const monthRows = useMemo(
+    () => (month ? monthAttributions(attributions, meetingDates, month) : []),
+    [attributions, meetingDates, month]
   )
 
   const byAgent = useMemo(
-    () => (period ? agentPeriodUsage(attributions, period, roleOf, workingDays, kindOfAgent) : new Map()),
-    [attributions, period, roleOf, workingDays, kindOfAgent]
+    () => (targetSource ? agentMonthUsage(monthRows, targetSource, roleOf, workingDays) : new Map()),
+    [monthRows, targetSource, roleOf, workingDays]
   )
+
+  // Still the PERIOD, and deliberately: a visit limit is allocated per cutoff,
+  // so counting a client's slots over a month would report two cutoffs' worth
+  // of allowance as one and hide every over-cap.
   const byClient = useMemo(
     () => (period ? clientQuotaUsage(attributions, period) : new Map()),
     [attributions, period]
   )
 
   const byTeam = useMemo(
-    () => (period ? teamPeriodUsage(attributions, period, agents, workingDays, kindOfTeam) : new Map()),
-    [attributions, period, agents, workingDays, kindOfTeam]
-  )
-
-  /** meeting_id -> its date, so daily counts sit on the day the visit happened. */
-  const meetingDates = useMemo(
-    () => new Map(meetings.map(m => [m.id, m.meeting_date.slice(0, 10)])),
-    [meetings]
+    () =>
+      targetSource ? teamMonthUsage(monthRows, targetSource, agents, workingDays) : new Map(),
+    [monthRows, targetSource, agents, workingDays]
   )
 
   const days = useMemo(
@@ -244,10 +286,13 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
         'Team': teamOfAgent(u.agentId),
         'Role': roleOf(u.agentId) ?? '',
         'Period': period.label,
+        // The month is its own column because it is the window the target and
+        // "Toward Target" both cover, and it is NOT the period beside it.
+        'Target Month': month ? monthLabel(month) : '',
         // The unit and its inputs, so the target can be re-derived in the sheet
-        // rather than taken on trust — 176 is meaningless without "16 x 11".
-        'Target Basis': u.role === 'rsr' ? 'per working day' : u.role ? 'per cutoff' : '',
-        'Daily Target': u.role === 'rsr' ? period.rsr_daily_target ?? '' : '',
+        // rather than taken on trust — 336 is meaningless without "16 x 21".
+        'Target Basis': u.role === 'rsr' ? 'per working day' : u.role ? 'per month' : '',
+        'Daily Target': u.role === 'rsr' ? targetSource?.rsr_daily_target ?? '' : '',
         'Working Days': u.role === 'rsr' ? workingDays : '',
         'Toward Target': u.towardTarget,
         // Blank, never 0 — an unconfigured target is not a target of nothing
@@ -354,11 +399,11 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
               {headline.target != null ? (
                 <>
                   of <span className="font-medium text-foreground">{headline.target}</span> meetings
-                  targeted this cutoff
+                  targeted in {month ? monthLabel(month) : 'the month'}
                 </>
               ) : (
                 <>
-                  meetings counted this cutoff ·{' '}
+                  meetings counted in {month ? monthLabel(month) : 'the month'} ·{' '}
                   {/* Never a zero or an invented denominator — O-6. */}
                   <span className="text-amber-600 dark:text-amber-500">no target set</span>
                 </>
@@ -376,7 +421,8 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
           )}
 
           <p className="text-xs text-muted-foreground mt-2">
-            {period.label} · {workingDays} working {workingDays === 1 ? 'day' : 'days'} ·{' '}
+            {period.label} · targets measured over {month ? monthLabel(month) : 'the month'},{' '}
+            {workingDays} working {workingDays === 1 ? 'day' : 'days'} ·{' '}
             {capsDiffer(period) ? (
               <>
                 each client may be visited {capForRole('sales_specialist', period)}{' '}
@@ -395,23 +441,33 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
             )}
           </p>
 
-          {/* Sales is a per-cutoff number and RSR a per-day one, so the single
-              bar above is a blend of two different questions. Spelling both out
-              stops it being read as one. */}
+          {/* Three roles in two units, so the single bar above is a blend of
+              three different questions. Spelling them out stops it being read
+              as one — and each says "a month" explicitly, because the buckets
+              directly beneath cover a fortnight. */}
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px] text-muted-foreground">
             <span>
               Sales{' '}
-              <span className="text-foreground font-medium">{period.sales_target ?? '—'}</span> per
-              cutoff
+              <span className="text-foreground font-medium">
+                {targetSource?.sales_target ?? '—'}
+              </span>{' '}
+              a month
+            </span>
+            <span>
+              Manager{' '}
+              <span className="text-foreground font-medium">
+                {targetSource?.manager_target ?? '—'}
+              </span>{' '}
+              a month
             </span>
             <span>
               RSR{' '}
               <span className="text-foreground font-medium">
-                {period.rsr_daily_target ?? '—'}
+                {targetSource?.rsr_daily_target ?? '—'}
               </span>{' '}
               per working day
-              {period.rsr_daily_target != null && (
-                <> ({period.rsr_daily_target * workingDays} this cutoff)</>
+              {targetSource?.rsr_daily_target != null && (
+                <> ({targetSource.rsr_daily_target * workingDays} this month)</>
               )}
             </span>
           </div>
@@ -476,9 +532,14 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
                   </div>
                 </div>
               ))}
+              {/* rsr_daily_target, not the deprecated rsr_target this line used
+                  to print — 064 stopped writing that column, so it showed a
+                  frozen pre-064 number or "not set" however the target moved. */}
               <p className="px-3 py-2 text-[11px] text-muted-foreground">
-                Sales target {period.sales_target ?? 'not set'} · RSR target{' '}
-                {period.rsr_target ?? 'not set'} · spreadsheet exports use the same categories.
+                Sales {targetSource?.sales_target ?? 'not set'} · Manager{' '}
+                {targetSource?.manager_target ?? 'not set'} a month · RSR{' '}
+                {targetSource?.rsr_daily_target ?? 'not set'} per working day · spreadsheet
+                exports use the same categories.
               </p>
             </div>
           )}
@@ -507,16 +568,16 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
             thing that matters: which days had nothing. Non-working days are
             drawn but greyed — they are not misses, and omitting them entirely
             would make a fortnight look like a continuous run of work. */}
-        {period.rsr_daily_target != null && days.length > 0 && (
+        {targetSource?.rsr_daily_target != null && days.length > 0 && (
           <div className="rounded-lg border border-border p-3">
             <p className="text-xs font-medium text-foreground">
-              Each day against the RSR target of {period.rsr_daily_target}
+              Each day against the RSR target of {targetSource.rsr_daily_target}
             </p>
             <div className="flex items-end gap-1 mt-2.5 h-16">
               {days.map(d => {
                 const pctOfDay = Math.min(
                   100,
-                  Math.round((d.count / period.rsr_daily_target!) * 100)
+                  Math.round((d.count / targetSource.rsr_daily_target!) * 100)
                 )
                 return (
                   <div
