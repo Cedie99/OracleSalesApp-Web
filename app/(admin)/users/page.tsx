@@ -33,7 +33,8 @@ import {
 } from '@/lib/avatar'
 import {
   ADMIN_SCOPES, ADMIN_SCOPE_DESCRIPTION, ADMIN_SCOPE_LABEL, adminScope,
-  canManageUsers, platformForRole, roleScopeLabel, PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD,
+  canManageUsers, platformForRole, roleScopeLabel, phoneRequiredForRole,
+  PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD,
 } from '@/lib/permissions'
 import {
   ARCHIVE_AFTER_DAYS, ACCOUNT_STATUS_LABEL, accountStatus, deactivatedSinceLabel,
@@ -104,6 +105,7 @@ interface UserRow {
   is_active: boolean
   deactivated_at: string | null
   avatar_url: string | null
+  contact_number: string | null
   created_at: string
 }
 
@@ -114,6 +116,7 @@ interface UserFormData {
   role: UserRole
   admin_scope: AdminScope
   team_id: string
+  contact_number: string
 }
 
 type SortKey = 'user' | 'role' | 'platform' | 'team' | 'created' | 'status'
@@ -190,6 +193,7 @@ const EMPTY_FORM: UserFormData = {
   role: 'sales_specialist',
   admin_scope: 'all',
   team_id: '',
+  contact_number: '',
 }
 
 export default function UsersPage() {
@@ -318,10 +322,12 @@ export default function UsersPage() {
     const supabase = createClient()
     let { data, error } = await supabase
       .from('profiles')
-      .select(`${USER_COLUMNS}, deactivated_at`)
+      .select(`${USER_COLUMNS}, deactivated_at, contact_number`)
       .order('created_at', { ascending: false })
 
-    // Retry without deactivated_at if migration 095 hasn't landed yet.
+    // Retry without deactivated_at (095) / contact_number (102) if a migration
+    // hasn't landed yet — USER_COLUMNS holds neither, so this survives the
+    // deploy/migration race for both.
     //
     // The migrations workflow and the Vercel deploy both fire on the same push
     // and race, so there is a window where this build is live against the older
@@ -351,6 +357,7 @@ export default function UsersPage() {
           email: p.email ?? '',
           is_active: p.is_active ?? true,
           deactivated_at: p.deactivated_at ?? null,
+          contact_number: p.contact_number ?? null,
           admin_scope: adminScope(p.role, p.admin_scope),
         }))
       )
@@ -513,6 +520,7 @@ export default function UsersPage() {
       role: user.role,
       admin_scope: user.admin_scope,
       team_id: user.team_id ?? '',
+      contact_number: user.contact_number ?? '',
     } satisfies UserFormData)
     setFormError('')
     setShowPassword(false)
@@ -538,6 +546,13 @@ export default function UsersPage() {
     if (form.role === 'sales_manager' && !form.team_id) {
       return 'A manager must be assigned to a team. Pick one, or create it here.'
     }
+    // Required only for the roles the app sends SMS to (collector, delivery);
+    // the server re-checks and also validates the format. Optional here for
+    // everyone else, so editing an office account doesn't block on a number
+    // that role never needed.
+    if (phoneRequiredForRole(form.role) && !form.contact_number.trim()) {
+      return 'A mobile number is required for collectors and delivery staff.'
+    }
     return ''
   }
 
@@ -552,6 +567,7 @@ export default function UsersPage() {
       role: form.role,
       admin_scope: form.admin_scope,
       team_id: form.team_id || null,
+      contact_number: form.contact_number.trim() || null,
     })
     if (error) { setSaving(false); setFormError(error); return }
 
@@ -574,6 +590,7 @@ export default function UsersPage() {
       role: form.role,
       admin_scope: form.admin_scope,
       team_id: form.team_id || null,
+      contact_number: form.contact_number.trim() || null,
     })
     if (error) { setSaving(false); setFormError(error); return }
 
@@ -1305,6 +1322,28 @@ function UserForm({
           value={form.email}
           onChange={e => set('email', e.target.value)}
         />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="contact_number">
+          Mobile Number
+          {phoneRequiredForRole(form.role)
+            ? <span className="ml-1 text-destructive">*</span>
+            : <span className="ml-1 text-muted-foreground font-normal">(optional)</span>}
+        </Label>
+        <Input
+          id="contact_number"
+          type="tel"
+          inputMode="tel"
+          placeholder="e.g. 0917 123 4567"
+          value={form.contact_number}
+          onChange={e => set('contact_number', e.target.value)}
+        />
+        {phoneRequiredForRole(form.role) && (
+          <p className="text-xs text-muted-foreground">
+            Collectors and delivery staff receive SMS notifications on this number.
+          </p>
+        )}
       </div>
 
       {isCreate && (
