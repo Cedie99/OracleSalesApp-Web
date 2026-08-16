@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fetchTagAlongs } from '@/lib/tag-along/actions'
+import { useAutoRefresh, SLOW_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { tagAlongsByClient, tagAlongsByInvitee, tagAlongsByMeeting } from '@/lib/tag-along'
 import type { TagAlongRequest } from '@/types'
 
@@ -59,6 +60,14 @@ export function useTagAlongs(): UseTagAlongsResult {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // No `watch` here, and it must stay that way: RLS hides `tag_along_requests`
+  // from admins entirely (which is why this hook goes through a Server Function
+  // at all), so a probe from the browser would count zero rows forever and
+  // cheerfully report "nothing has changed" until the end of time. Unprobed
+  // means every tick is a real fetch, so it runs on the slow lane — the
+  // refresh-on-return-to-tab path is what makes this feel current in practice.
+  useAutoRefresh(load, { intervalMs: SLOW_INTERVAL_MS })
 
   const byMeeting = useMemo(() => tagAlongsByMeeting(requests), [requests])
   const byClient = useMemo(() => tagAlongsByClient(requests), [requests])

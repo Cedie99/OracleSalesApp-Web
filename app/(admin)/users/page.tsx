@@ -40,6 +40,7 @@ import {
   type AccountStatus,
 } from '@/lib/users'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
+import { useAutoRefresh } from '@/lib/hooks/use-auto-refresh'
 import { teamsForRole, teamKindForRole, roleHasTeam, managerForTeam } from '@/lib/teams'
 import type { AdminScope, TeamKind, UserRole } from '@/types'
 import { TEAM_KIND_LABEL } from '@/types'
@@ -306,8 +307,13 @@ export default function UsersPage() {
     return ''
   }
 
-  async function loadUsers() {
-    setLoading(true)
+  /**
+   * `silent` skips the spinner: the background refresh below re-reads the same
+   * rows on a timer, and raising `loading` for that would blank the table under
+   * an admin who is only reading it.
+   */
+  async function loadUsers(options?: { silent?: boolean }) {
+    if (!options?.silent) setLoading(true)
     setFetchError('')
     const supabase = createClient()
     let { data, error } = await supabase
@@ -383,6 +389,18 @@ export default function UsersPage() {
     loadUsers()
     loadTeams()
   }, [])
+
+  // This page reads its rows inline rather than through use-profiles.ts (it
+  // needs `deactivated_at` and the pre-095 fallback), so it wires the background
+  // refresh up itself. Two admins managing accounts at once is the case it
+  // covers: a deactivation done on one screen shows up on the other.
+  useAutoRefresh(
+    async () => {
+      await loadUsers({ silent: true })
+      await loadTeams()
+    },
+    { watch: [{ table: 'profiles' }, { table: 'teams' }] }
+  )
 
   const teamName = (teamId: string | null) => teams.find(t => t.id === teamId)?.name ?? '—'
 
@@ -746,7 +764,9 @@ export default function UsersPage() {
               ))}
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" className="h-9 gap-2" onClick={loadUsers} disabled={loading}>
+          {/* Wrapped, not passed directly: loadUsers now takes options, and the
+              click event would arrive as one. */}
+          <Button variant="outline" size="sm" className="h-9 gap-2" onClick={() => loadUsers()} disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>

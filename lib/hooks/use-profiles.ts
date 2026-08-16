@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh, SLOW_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import type { Profile, UserRole } from '@/types'
 
 /**
@@ -46,6 +47,11 @@ export function useProfiles() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // People and their roles change on the scale of weeks, and this list is
+  // mounted almost everywhere as a lookup for names — so it takes the slow lane.
+  // The probe still catches a deactivation the same tick it happens.
+  useAutoRefresh(load, { watch: [{ table: 'profiles' }], intervalMs: SLOW_INTERVAL_MS })
 
   /** Active profiles holding any of the given roles. */
   const byRole = useCallback(

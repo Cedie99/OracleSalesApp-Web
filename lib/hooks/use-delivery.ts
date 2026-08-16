@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh, LIVE_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { recordAuditLog } from '@/lib/audit/actions'
 import { singleChange } from '@/lib/audit/entries'
 import { peso } from '@/lib/money'
@@ -188,6 +189,14 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
     load()
   }, [load])
 
+  // The delivery twin of the collection board — same reasoning, same cadence.
+  // COD payments are watched beside the orders for the same reason payments are
+  // beside visits: the money arrives as its own row.
+  useAutoRefresh(load, {
+    watch: [{ table: 'purchase_orders' }, { table: 'cod_payments' }],
+    intervalMs: LIVE_INTERVAL_MS,
+  })
+
   const createOrder = useCallback(
     async (draft: NewPurchaseOrder): Promise<string | null> => {
       const supabase = createClient()
@@ -345,6 +354,11 @@ export function useCodRemittances(): UseCodRemittancesResult {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  useAutoRefresh(load, {
+    watch: [{ table: 'cod_remittances' }],
+    intervalMs: LIVE_INTERVAL_MS,
+  })
 
   /**
    * The collection twin's `setStatus`, against `cod_remittances` — see the note

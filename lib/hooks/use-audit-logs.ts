@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh } from '@/lib/hooks/use-auto-refresh'
 import { adminScope, hasWebAccess } from '@/lib/permissions'
 import type { AdminAuditLog, AdminScope, AuditChange, NotificationModule, Profile, UserRole } from '@/types'
 
@@ -121,6 +122,13 @@ export function useAuditLogs(filters: AuditLogFilters): UseAuditLogsResult {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // Deliberately probed unfiltered, unlike useMeetings: the page's filters are a
+  // view onto one table, and any new entry can change what a filtered view
+  // should show (a fresh row that matches, or one that pushes the 500-row cap
+  // past an older one). Over-refreshing a log page costs a query; missing an
+  // entry costs the answer to "who did this, and when".
+  useAutoRefresh(load, { watch: [{ table: 'admin_audit_logs', column: 'occurred_at' }] })
 
   return { logs, loading, error, truncated, refresh }
 }
