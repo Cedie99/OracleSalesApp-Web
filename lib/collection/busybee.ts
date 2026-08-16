@@ -4,17 +4,27 @@
  * Imported only by the collection server action, so it never reaches the client
  * bundle (no `server-only` guard needed — that package isn't a dependency here).
  *
- * ⚠️ STUB. The real BusyBee endpoint, auth, and response shape are not wired yet
- * (blocked on the provider's API details + final SMS copy). Everything around it
- * — the server action, the recipient resolution, the admin's success/failure
- * feedback — is built against THIS interface, so when the details arrive only the
- * body of `sendSms` changes. Do not scatter fetch calls elsewhere; keep the
- * provider behind this file.
+ * Wired against BusyBee's SMSC HTTP API (`POST /api/v2/SendSMS`). Auth is a pair
+ * of server-only credentials — an ApiKey AND a ClientId — plus an approved
+ * SenderId and the gateway's base URL. All four are required; `smsConfigured()`
+ * is false unless every one is set, so the feature never claims it can notify
+ * when it can't. Do not scatter fetch calls elsewhere; keep the provider behind
+ * this file.
  *
- * The key is server-only (`BUSYBEE_API_KEY`), which is the whole reason marking a
- * store "additional" goes through a server action instead of the client-side
- * insert every other store uses.
+ * The credentials being server-only is the whole reason marking a store
+ * "additional" goes through a server action instead of the client-side insert
+ * every other store uses.
  */
+
+/** Reads the four BusyBee settings from the environment. */
+function config() {
+  return {
+    baseUrl: process.env.BUSYBEE_BASE_URL,
+    apiKey: process.env.BUSYBEE_API_KEY,
+    clientId: process.env.BUSYBEE_CLIENT_ID,
+    senderId: process.env.BUSYBEE_SENDER_ID,
+  }
+}
 
 /** A phone number is not sent until we have a plausible one — see toE164. */
 export interface SmsRequest {
@@ -35,15 +45,17 @@ export interface SmsResult {
 
 /** Whether the SMS path is actually wired. False keeps the feature honest. */
 export function smsConfigured(): boolean {
-  return !!process.env.BUSYBEE_API_KEY
+  const { baseUrl, apiKey, clientId, senderId } = config()
+  return !!(baseUrl && apiKey && clientId && senderId)
 }
 
 /**
  * Best-effort E.164 for PH mobiles: `09XXXXXXXXX` → `+639XXXXXXXXX`, and pass an
  * already-`+`-prefixed number through. Returns null for anything that doesn't
  * look dialable, so the caller can record a clean "no usable number" rather than
- * handing the provider garbage. contact_number is NOT NULL (migration 001) but
- * nothing guarantees its shape, since mobile writes it.
+ * handing the provider garbage. `profiles.contact_number` (migration 102) is
+ * nullable and only required for collector/delivery, so a null or odd value here
+ * is expected, not exceptional. Also used by the Users action to validate input.
  */
 export function toE164(raw: string | null | undefined): string | null {
   if (!raw) return null
@@ -55,26 +67,109 @@ export function toE164(raw: string | null | undefined): string | null {
 }
 
 /**
- * Send one SMS. STUBBED: logs and reports a synthetic success so the rest of the
- * flow can be exercised end-to-end without a live provider. When BusyBee is
- * wired, replace the body below with the real call and map its response onto
- * `SmsResult` — nothing that calls this needs to change.
+ * The number shape BusyBee's gateway expects: country-code digits with no `+`
+ * (e.g. `639XXXXXXXXX`). Callers hand us E.164 from `toE164`, so we just drop the
+ * leading plus.
+ */
+function toGatewayNumber(e164: string): string {
+  return e164.replace(/^\+/, '')
+}
+
+/**
+ * The provider's response to a send. There are TWO error layers, confirmed
+ * against a live send:
+ *
+ *  - `ErrorCode` at the top is whether the request was *accepted* (auth, sender
+ *    id, credits). Non-zero here means nothing was queued.
+ *  - each `Data[]` entry then carries its own `MessageErrorCode` /
+ *    `MessageErrorDescription` for that specific number — so the request can be
+ *    accepted (top-level `ErrorCode: 0`) while an individual number still fails
+ *    (e.g. blacklisted / invalid). A message id only exists when both are 0.
+ */
+interface SendSmsResponse {
+  ErrorCode: number
+  ErrorDescription?: string
+  Data?: Array<{
+    MobileNumber?: string
+    MessageId?: string
+    MessageErrorCode?: number
+    MessageErrorDescription?: string
+  }>
+}
+
+/**
+ * Send one SMS through BusyBee's `POST /api/v2/SendSMS`. A send counts as
+ * delivered-to-gateway only when the HTTP call succeeds, the top-level
+ * `ErrorCode === 0` (request accepted) AND the per-number `MessageErrorCode` is
+ * 0 (this number accepted); the provider message id then comes back in
+ * `Data[0].MessageId`. A failure at any layer — bad credentials, no credits, an
+ * invalid/blacklisted number, or a network error — maps to `ok: false` with a
+ * reason, so the caller can tally and report it without ever throwing
+ * mid-fan-out.
  */
 export async function sendSms(req: SmsRequest): Promise<SmsResult> {
-  if (!smsConfigured()) {
+  const { baseUrl, apiKey, clientId, senderId } = config()
+  if (!baseUrl || !apiKey || !clientId || !senderId) {
     // Not an error the admin must fix mid-task — the store is still listed and
     // mobile still badges it. Surface it as "not sent" so the UI can say so.
-    console.warn('[busybee] BUSYBEE_API_KEY unset — SMS not sent to', req.to)
+    console.warn('[busybee] not configured — SMS not sent to', req.to)
     return { to: req.to, ok: false, error: 'SMS not configured' }
   }
 
-  // TODO(busybee): replace with the real request once the provider's endpoint,
-  // auth header, and response body are known. Expected to be a POST with the
-  // key in a header and { to, message } in the body; map the returned id/error
-  // onto SmsResult. Until then, treat a configured key as a no-op success so
-  // staging can flow through without spamming anyone.
-  console.info('[busybee] (stub) would send SMS to', req.to, '—', req.body)
-  return { to: req.to, ok: true, id: 'stub' }
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v2/SendSMS`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ApiKey: apiKey,
+        ClientId: clientId,
+        SenderId: senderId,
+        Message: req.body,
+        MobileNumbers: toGatewayNumber(req.to),
+      }),
+    })
+
+    if (!res.ok) {
+      return { to: req.to, ok: false, error: `HTTP ${res.status}` }
+    }
+
+    const data = (await res.json()) as SendSmsResponse
+    if (data.ErrorCode !== 0) {
+      return {
+        to: req.to,
+        ok: false,
+        error: data.ErrorDescription
+          ? `${data.ErrorDescription} (code ${data.ErrorCode})`
+          : `Gateway error ${data.ErrorCode}`,
+      }
+    }
+
+    // Request accepted; now check this specific number. We send one number per
+    // call, so Data[0] is it — a missing entry means the gateway accepted the
+    // request but told us nothing about the number, which we treat as a failure
+    // rather than a false success.
+    const entry = data.Data?.[0]
+    if (!entry) {
+      return { to: req.to, ok: false, error: 'Gateway returned no result for the number' }
+    }
+    if (entry.MessageErrorCode && entry.MessageErrorCode !== 0) {
+      return {
+        to: req.to,
+        ok: false,
+        error: entry.MessageErrorDescription
+          ? `${entry.MessageErrorDescription} (code ${entry.MessageErrorCode})`
+          : `Number rejected (code ${entry.MessageErrorCode})`,
+      }
+    }
+
+    return { to: req.to, ok: true, id: entry.MessageId }
+  } catch (err) {
+    return {
+      to: req.to,
+      ok: false,
+      error: err instanceof Error ? err.message : 'SMS request failed',
+    }
+  }
 }
 
 /** Send to many numbers, tolerating individual failures. Order is preserved. */
