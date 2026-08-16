@@ -119,6 +119,7 @@ interface DraftPeriod {
   rsr_client_meeting_cap: string
   sales_target: string
   rsr_target: string
+  manager_target: string
 }
 
 const EMPTY_DRAFT: DraftPeriod = {
@@ -129,6 +130,7 @@ const EMPTY_DRAFT: DraftPeriod = {
   rsr_client_meeting_cap: '2',
   sales_target: '',
   rsr_target: '',
+  manager_target: '',
 }
 
 /**
@@ -199,6 +201,7 @@ export default function SettingsPage() {
       ),
       sales_target: settings.sales_target != null ? String(settings.sales_target) : '',
       rsr_target: settings.rsr_daily_target != null ? String(settings.rsr_daily_target) : '',
+      manager_target: settings.manager_target != null ? String(settings.manager_target) : '',
     }))
   }, [settings, inherited])
   const [generating, setGenerating] = useState(false)
@@ -331,6 +334,10 @@ export default function SettingsPage() {
         // rsr_daily_target, not the deprecated rsr_target: an RSR is measured
         // per working day, and 064 moved the number to a column that says so.
         rsr_daily_target: settings.rsr_daily_target,
+        // Snapshotted like the other two. Without it a generated period carries
+        // a null manager target, which renders as "not configured" and would
+        // silently drop every manager's quota the month it starts.
+        manager_target: settings.manager_target,
         status: 'active' as const,
         created_by: profile?.id ?? null,
       }))
@@ -387,6 +394,7 @@ export default function SettingsPage() {
       // would render as a real target of nothing (contract O-6).
       sales_target: draft.sales_target === '' ? null : Number(draft.sales_target),
       rsr_daily_target: draft.rsr_target === '' ? null : Number(draft.rsr_target),
+      manager_target: draft.manager_target === '' ? null : Number(draft.manager_target),
       status,
       created_by: profile?.id ?? null,
     })
@@ -410,8 +418,9 @@ export default function SettingsPage() {
           { field: 'status', label: 'Status', from: null, to: status },
           { field: 'sales_client_meeting_cap', label: 'Sales visit cap', from: null, to: String(draft.sales_client_meeting_cap) },
           { field: 'rsr_client_meeting_cap', label: 'RSR visit cap', from: null, to: String(draft.rsr_client_meeting_cap) },
-          { field: 'sales_target', label: 'Sales target', from: null, to: draft.sales_target === '' ? null : String(draft.sales_target) },
+          { field: 'sales_target', label: 'Sales monthly target', from: null, to: draft.sales_target === '' ? null : String(draft.sales_target) },
           { field: 'rsr_daily_target', label: 'RSR daily target', from: null, to: draft.rsr_target === '' ? null : String(draft.rsr_target) },
+          { field: 'manager_target', label: 'Manager monthly target', from: null, to: draft.manager_target === '' ? null : String(draft.manager_target) },
         ],
       })
       setDraft(EMPTY_DRAFT)
@@ -946,9 +955,9 @@ export default function SettingsPage() {
                     </div>
                   </div>
 
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-3 sm:grid-cols-3">
                     <div className="grid gap-1.5">
-                      <Label htmlFor="p-sales">Sales target (per cutoff)</Label>
+                      <Label htmlFor="p-sales">Sales target (per month)</Label>
                       <Input
                         id="p-sales"
                         type="number"
@@ -956,6 +965,17 @@ export default function SettingsPage() {
                         placeholder="Not configured"
                         value={draft.sales_target}
                         onChange={e => set('sales_target', e.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="p-manager">Manager target (per month)</Label>
+                      <Input
+                        id="p-manager"
+                        type="number"
+                        min={1}
+                        placeholder="Not configured"
+                        value={draft.manager_target}
+                        onChange={e => set('manager_target', e.target.value)}
                       />
                     </div>
                     <div className="grid gap-1.5">
@@ -1004,7 +1024,6 @@ export default function SettingsPage() {
               <StandingTargetsCard
                 settings={settings}
                 holidays={holidays}
-                periods={periods}
                 canEdit={canEdit}
                 onSaved={refreshAll}
               />
