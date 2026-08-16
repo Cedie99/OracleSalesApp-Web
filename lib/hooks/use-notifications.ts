@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh, LIVE_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
+import { subscribeToNotifications } from '@/lib/realtime/notification-feed'
 import type { Notification } from '@/types'
 
 interface UseNotificationsResult {
@@ -63,27 +65,25 @@ export function useNotifications(): UseNotificationsResult {
     load()
   }, [load])
 
-  // Live updates: prepend any notification inserted while this session is open.
-  // RLS on the publication means only rows this admin may see are delivered.
-  useEffect(() => {
-    const supabase = createClient()
-    const channel = supabase
-      .channel('notifications-feed')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'notifications' },
-        payload => {
-          const row = payload.new as Notification
-          setNotifications(prev =>
-            prev.some(n => n.id === row.id) ? prev : [row, ...prev].slice(0, NOTIFICATION_LIMIT)
-          )
-        }
-      )
-      .subscribe()
+  // The bell is in the header of every page, so this is the count an admin
+  // watches without meaning to — it gets the fast cadence. The realtime channel
+  // below is the primary path; this is the one that survives a dropped socket, a
+  // laptop waking from sleep, or a row deleted rather than inserted, none of
+  // which the INSERT subscription sees.
+  useAutoRefresh(load, {
+    watch: [{ table: 'notifications', column: 'created_at' }],
+    intervalMs: LIVE_INTERVAL_MS,
+  })
 
-    return () => {
-      supabase.removeChannel(channel)
-    }
+  // Live updates: prepend any notification inserted while this session is open.
+  // The channel itself now lives in lib/realtime/notification-feed.ts, because
+  // the Approvals badge listens to the same socket — see the note there.
+  useEffect(() => {
+    return subscribeToNotifications(row => {
+      setNotifications(prev =>
+        prev.some(n => n.id === row.id) ? prev : [row, ...prev].slice(0, NOTIFICATION_LIMIT)
+      )
+    })
   }, [])
 
   const markAllRead = useCallback(async () => {

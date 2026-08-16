@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAutoRefresh, LIVE_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { recordAuditLog } from '@/lib/audit/actions'
 import { singleChange } from '@/lib/audit/entries'
 import { peso } from '@/lib/money'
@@ -254,6 +255,16 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
     load()
   }, [load])
 
+  // The board an admin leaves open while the day is being worked, so it takes
+  // the fast cadence. Payments are watched alongside the visits because a
+  // partial payment lands as its own row first — the visit's rolled-up
+  // `amount_collected` follows from a trigger, but the photo and the remarks
+  // arrive on the payment, and `loadPayments` above reads them.
+  useAutoRefresh(load, {
+    watch: [{ table: 'collection_visits' }, { table: 'collection_payments' }],
+    intervalMs: LIVE_INTERVAL_MS,
+  })
+
   /** Returns an error message, or null on success. */
   const createVisit = useCallback(
     async (draft: NewCollectionVisit): Promise<string | null> => {
@@ -419,6 +430,13 @@ export function useRemittances(): UseRemittancesResult {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
   }, [load])
+
+  // Money in transit — a collector submitting a hand-over is something the
+  // office wants to see land, not discover on reload.
+  useAutoRefresh(load, {
+    watch: [{ table: 'remittances' }],
+    intervalMs: LIVE_INTERVAL_MS,
+  })
 
   /**
    * Reconcile a remittance, or flag it as a variance. Returns an error message,
