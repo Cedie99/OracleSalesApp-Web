@@ -191,7 +191,7 @@ function MeetingDetailDialog({ meeting, companions, onOpenChange }: { meeting: M
 
             <div className="flex-1 min-h-0 overflow-y-auto">
               <div className="px-5 pt-5">
-                <div className="h-64 bg-muted/40 rounded-lg border border-border overflow-hidden">
+                <div className="h-64 bg-muted/40 rounded-lg border-2 border-border overflow-hidden shadow-sm">
                   {start || end ? (
                     <MeetingRouteMap start={start} end={end} distanceLabel={drift} />
                   ) : (
