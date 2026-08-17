@@ -220,9 +220,15 @@ function MeetingsPageContent() {
   // once — same manager -> agents -> records drill-down as the Clients page.
   interface AgentGroup { agentId: string; agentName: string; managerKey: string; meetings: Meeting[] }
   const groups = useMemo(() => {
+    const managerIds = new Set(managers.map(mgr => mgr.id))
     const map = new Map<string, AgentGroup>()
     for (const m of filtered) {
       const agentId = m.agent_id ?? 'unassigned'
+      // A manager who personally conducted a meeting (agent_id is them) is not
+      // a separate agent under themselves — skip it here so they don't show up
+      // listed as an "agent" in their own team. Their own meetings still count
+      // via ownMeetingCount/ownMeetingIds in managerBuckets below.
+      if (managerIds.has(agentId)) continue
       const agentName = m.agent?.full_name ?? 'Unassigned'
       let group = map.get(agentId)
       if (!group) {
@@ -899,7 +905,7 @@ function MeetingsPageContent() {
             </DialogHeader>
 
             <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-5 text-sm">
-              <div className="h-64 bg-muted/40 rounded-lg border border-border overflow-hidden">
+              <div className="h-64 bg-muted/40 rounded-lg border-2 border-border overflow-hidden shadow-sm">
                 {mapStart || mapEnd ? (
                   <MeetingRouteMap start={mapStart} end={mapEnd} distanceLabel={drift} />
                 ) : (

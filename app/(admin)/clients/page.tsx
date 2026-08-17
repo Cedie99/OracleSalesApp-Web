@@ -194,9 +194,15 @@ export default function ClientsPage() {
   // their team_id ('unassigned' if no manager leads that team).
   interface AgentGroup { agentId: string; agentName: string; managerKey: string; clients: Client[] }
   const groups = useMemo(() => {
+    const managerIds = new Set(managers.map(m => m.id))
     const map = new Map<string, AgentGroup>()
     for (const c of filtered) {
       const agentId = c.assigned_agent_id ?? 'unassigned'
+      // A manager can end up directly assigned_agent_id on a client (legacy
+      // data). That's the manager's own client, not a separate agent under
+      // them — skip it here so a manager never shows up listed as an "agent"
+      // under themselves. managerBuckets' directClientIds picks these up instead.
+      if (managerIds.has(agentId)) continue
       const agentName = c.agent?.full_name ?? 'Unassigned'
       let group = map.get(agentId)
       if (!group) {
@@ -223,14 +229,24 @@ export default function ClientsPage() {
       const ownClientCount = filtered.filter(c => ownClientIds.has(c.id)).length
       const invited = tagAlongClientIds.get(m.id)
       const tagAlongCount = invited ? filtered.filter(c => invited.has(c.id)).length : 0
-      const managerClientCount = filtered.filter(c => ownClientIds.has(c.id) || (invited?.has(c.id) ?? false)).length
+      // A manager can also be directly assigned_agent_id on a client (a legacy
+      // "manager as agent" record, same source that leaves them listed under
+      // their own "Agents under" section) — those clients belong to the
+      // manager's personal count too, even absent a meeting or tag-along.
+      const directClientIds = new Set(filtered.filter(c => c.assigned_agent_id === m.id).map(c => c.id))
+      const managerClientCount = filtered.filter(
+        c => ownClientIds.has(c.id) || (invited?.has(c.id) ?? false) || directClientIds.has(c.id)
+      ).length
       // Team total: clients reached via an agent under this manager, unioned
       // with the manager's own direct clients — a manager with no agents (or
       // whose agents have none) still has their own clients counted here, and
       // a client who's both agent-assigned and directly held isn't double-counted.
+      // `groups` excludes the manager's own assigned_agent_id rows (they'd
+      // otherwise show up as a fake "agent" under the manager), so directClientIds
+      // has to be unioned in here explicitly to keep them in the team total.
       const teamClientIds = new Set(managerGroups.flatMap(g => g.clients.map(c => c.id)))
       const clientCount = filtered.filter(
-        c => teamClientIds.has(c.id) || ownClientIds.has(c.id) || (invited?.has(c.id) ?? false)
+        c => teamClientIds.has(c.id) || ownClientIds.has(c.id) || (invited?.has(c.id) ?? false) || directClientIds.has(c.id)
       ).length
       return {
         key: m.id,
@@ -273,7 +289,9 @@ export default function ClientsPage() {
       meetings.filter(mt => mt.agent_id === selectedManagerKey || mt.recorded_by === selectedManagerKey).map(mt => mt.client_id)
     )
     const invited = tagAlongClientIds.get(selectedManagerKey)
-    return filtered.filter(c => ownClientIds.has(c.id) || invited?.has(c.id))
+    return filtered.filter(
+      c => ownClientIds.has(c.id) || invited?.has(c.id) || c.assigned_agent_id === selectedManagerKey
+    )
   }, [selectedManagerKey, meetings, filtered, tagAlongClientIds])
   const activeClients = selectedGroup?.clients ?? (selectedManagerBucket ? managerClients : null)
 
@@ -724,7 +742,7 @@ export default function ClientsPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                    {selectedGroup ? 'Agent' : 'Manager · Recorded and tagged along'}
+                    {selectedGroup ? 'Agent' : 'Manager · Recorded, tagged along, and assigned'}
                   </p>
                   <p className="text-base font-semibold text-foreground truncate">
                     {selectedGroup?.agentName ?? selectedManagerBucket?.label}
