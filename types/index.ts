@@ -936,8 +936,19 @@ export interface CutoffPeriod {
   label: string
   starts_on: string
   ends_on: string
-  /** Period target for sales_specialist, in meetings per CUTOFF. Null = not configured. */
+  /**
+   * Target for sales_specialist, in meetings per CALENDAR MONTH as of migration
+   * 105 — it was per cutoff from 057 until then, and with two cutoffs a month
+   * the same 35 meant twice as much work. Null = not configured.
+   */
   sales_target: number | null
+  /**
+   * Target for sales_manager, in meetings per CALENDAR MONTH (migration 105).
+   * Flat: unlike every other quota number it does not vary by team kind, which
+   * is what makes it a replacement for the target a manager used to inherit
+   * from the team they run (076). Null = not configured.
+   */
+  manager_target: number | null
   /**
    * @deprecated Migration 063. Was a per-period number for rsr, which was the
    * wrong unit — an RSR is measured per working day. Use `rsr_daily_target`.
@@ -1009,10 +1020,12 @@ export interface CutoffPeriod {
  */
 export interface QuotaSettings {
   id: boolean
-  /** Meetings per cutoff for sales_specialist. Null = not configured. */
+  /** Meetings per CALENDAR MONTH for sales_specialist (105). Null = not configured. */
   sales_target: number | null
   /** Visits per working day for rsr. Null = not configured. */
   rsr_daily_target: number | null
+  /** Meetings per CALENDAR MONTH for sales_manager (105). Null = not configured. */
+  manager_target: number | null
   /**
    * @deprecated Migration 074 — the standing visit limit is now per role. Kept
    * as the greater of the two so nothing reading it under-states an allowance.

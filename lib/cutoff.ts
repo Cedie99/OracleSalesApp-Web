@@ -525,14 +525,36 @@ export function quotaState(
 
 // --- Targets and the working calendar ----------------------------------------
 //
-// Two roles, two units. Sales is measured per CUTOFF (35 meetings); RSR is
-// measured per WORKING DAY (16 visits), so its period expectation is the daily
-// number times however many working days the period actually contains. Neither
-// number is written down here — both come from the period row, which an admin
-// edits (contract O-6, Batch-0 items 1-2).
+// Three roles, two units, ONE window (supervisor, 2026-08-16):
+//
+//   Sales    35 per calendar MONTH
+//   Manager  20 per calendar MONTH   — flat, not the team's number any more
+//   RSR      16 per WORKING DAY      — so the month expectation is 16 x working
+//                                      days in that month
+//
+// The window is the month and not the cutoff. Until migration 105 a target was
+// a per-cutoff number, and with the [8, 23] cycle running twice a month that
+// made 35 mean 70. Prorating a monthly figure back into 17/18 per cutoff was
+// asked about and explicitly rejected — the target is monthly, and the code
+// measures it over a month.
+//
+// The cutoff period keeps everything else: attribution, slot allocation, and
+// the per-client visit CAP are all still per cutoff, because those are what the
+// server's trigger reads. Targets are monthly, limits are per cutoff, and the
+// two no longer share a window — which is why the target helpers below take a
+// month while `clientQuotaUsage` still takes a period.
+//
+// No number is written down here. All three come from the period row, which an
+// admin edits (contract O-6, Batch-0 items 1-2).
 
-/** Roles that carry a quota. A manager has no personal target in this batch (O-7). */
-export type QuotaRole = 'sales_specialist' | 'rsr'
+/**
+ * Roles that carry a quota.
+ *
+ * A manager is one as of migration 105. O-7 said they had no personal target,
+ * which was true while they inherited their team's; a flat monthly number of
+ * their own supersedes both.
+ */
+export type QuotaRole = 'sales_specialist' | 'rsr' | 'sales_manager'
 
 /**
  * Working days in a period: weekdays, minus company holidays, unless the period
@@ -564,32 +586,129 @@ export function workingDaysIn(period: CutoffPeriod, holidays: string[] = []): nu
 }
 
 /**
- * What one agent of this role is expected to do across the whole period.
+ * The calendar month a 'YYYY-MM-DD' day belongs to, as 'YYYY-MM'.
  *
- * Null in, null out: an unconfigured role has no target, and must render as
- * such rather than as zero (O-6). A role with no quota at all — admin,
- * executive, collector — is also null, which is why the parameter is widened to
- * string.
- *
- * A manager inherits the target of the team they run (migration 076), which is
- * why `teamKind` is needed: `sales_manager` covers both kinds, so the role alone
- * cannot say whether the flat per-cutoff sales number or the RSR daily number
- * multiplied out applies. Without a team kind a manager falls back to null —
- * "not configured" — rather than being handed an arbitrary one of the two.
+ * String arithmetic rather than Date arithmetic throughout this section: the
+ * dates in play are already Manila-local plain dates, and parsing them into a
+ * Date only to slice a month back out is where a timezone shifts one into the
+ * month before.
  */
-export function periodTargetFor(
+export function monthOf(day: string): string {
+  return day.slice(0, 7)
+}
+
+/** The month containing today, in the business timezone. */
+export function currentMonth(today: Date = new Date()): string {
+  return monthOf(manilaIso(today))
+}
+
+/** First and last day of a 'YYYY-MM', inclusive, as 'YYYY-MM-DD'. */
+export function monthBounds(month: string): { start: string; end: string } {
+  const [year, m] = month.split('-').map(Number)
+  const last = daysInMonth(year, m)
+  return { start: `${month}-01`, end: `${month}-${String(last).padStart(2, '0')}` }
+}
+
+const MONTH_LABEL_FMT = new Intl.DateTimeFormat('en-US', {
+  month: 'long',
+  year: 'numeric',
+  timeZone: 'UTC',
+})
+
+/** "August 2026" — what a monthly target is measured over. */
+export function monthLabel(month: string): string {
+  return MONTH_LABEL_FMT.format(new Date(`${month}-01T00:00:00Z`))
+}
+
+/**
+ * Working days in a calendar month: weekdays, minus company holidays.
+ *
+ * Deliberately has no override, unlike `workingDaysIn`. That one is a per-PERIOD
+ * correction for a schedule the rule cannot express, and a month spans two
+ * periods — so there is no honest way to apply one period's override to a month.
+ * Migration 105 makes the same choice server-side, and the two must agree or an
+ * RSR's phone and the admin report will quote different targets.
+ */
+export function workingDaysInMonth(month: string, holidays: string[] = []): number {
+  const holidaySet = new Set(holidays)
+  const { start, end } = monthBounds(month)
+  let count = 0
+  const cursor = new Date(`${start}T00:00:00Z`)
+  const last = new Date(`${end}T00:00:00Z`)
+
+  while (cursor.getTime() <= last.getTime()) {
+    const day = cursor.getUTCDay()
+    const iso = cursor.toISOString().slice(0, 10)
+    if (day !== 0 && day !== 6 && !holidaySet.has(iso)) count += 1
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return count
+}
+
+/**
+ * The period whose snapshot supplies a MONTH's target numbers.
+ *
+ * Needed because the two are different shapes: targets are monthly, but the
+ * numbers are still snapshotted per period, and a month holds two of those
+ * rows. Which matters as soon as an admin edits mid-month, which they are
+ * expected to do freely — `apply_standing_targets()` reaches every cutoff that
+ * has not ENDED, so an edit on 15 August updates the 9–23 period while the
+ * 24 July–8 August one keeps the old number. Both end in August. Reading
+ * whichever the reader happened to select would answer the same question two
+ * ways depending on a dropdown that has nothing to do with the month.
+ *
+ * The LAST period ending in the month wins, so the most recently applied number
+ * is the month's number. That restates the month's target the moment it is
+ * edited, which is the intended behaviour: a target feeds no attribution
+ * decision, so nothing already recorded moves — see the note on
+ * `apply_standing_targets()`.
+ *
+ * Falls back to null when no period ends in the month at all; the caller shows
+ * "not configured" rather than borrowing a neighbouring month's numbers.
+ */
+export function targetSourceForMonth(
+  periods: CutoffPeriod[],
+  month: string
+): CutoffPeriod | null {
+  return (
+    periods
+      // Drafts excluded, matching migration 105's `source` CTE: a draft is a
+      // period nobody has committed to, and letting one supply the month's
+      // numbers would show a target the server does not agree with.
+      .filter(p => p.status !== 'draft' && monthOf(p.ends_on) === month)
+      .sort((a, b) => b.ends_on.localeCompare(a.ends_on))[0] ?? null
+  )
+}
+
+/**
+ * What one agent of this role is expected to do in a MONTH.
+ *
+ * Replaces `periodTargetFor` (migration 105). The numbers still come off a
+ * period row — that is where an admin's edit is snapshotted — but what they
+ * mean is a month's work, so the multiplier handed in is the month's working
+ * days, never a period's.
+ *
+ * Null in, null out: an unconfigured role has no target and must render as such
+ * rather than as zero (O-6). A role with no quota at all — admin, executive,
+ * collector — is also null, which is why the parameter is widened to string.
+ *
+ * A manager no longer takes their team's number and so no longer needs a team
+ * kind. That inheritance (076) is exactly what the flat `manager_target`
+ * replaces: a manager of an RSR team and a manager of a sales team are both
+ * measured against the same monthly figure.
+ */
+export function monthlyTargetFor(
   role: string | undefined,
   period: CutoffPeriod,
-  workingDays: number,
-  teamKind?: TeamKind | null
+  workingDaysInTheMonth: number
 ): number | null {
-  const perPeriodRsr = () =>
-    period.rsr_daily_target == null ? null : period.rsr_daily_target * workingDays
-
   if (role === 'sales_specialist') return period.sales_target
-  if (role === 'rsr') return perPeriodRsr()
-  if (role === 'sales_manager' && teamKind === 'sales') return period.sales_target
-  if (role === 'sales_manager' && teamKind === 'rsr') return perPeriodRsr()
+  if (role === 'sales_manager') return period.manager_target
+  if (role === 'rsr') {
+    return period.rsr_daily_target == null
+      ? null
+      : period.rsr_daily_target * workingDaysInTheMonth
+  }
   return null
 }
 
@@ -712,7 +831,7 @@ export function attributionBuckets(
   return counts
 }
 
-/** One agent's period, measured against the target for their role. */
+/** One agent's month, measured against the target for their role. */
 export interface AgentPeriodUsage {
   agentId: string
   buckets: Record<CutoffAttribution, number>
@@ -728,25 +847,29 @@ export interface AgentPeriodUsage {
 }
 
 /**
- * Per-agent rollup for one period.
+ * Per-agent rollup for one MONTH.
+ *
+ * Takes rows already scoped to the month rather than filtering by `period_id`
+ * itself, because since 105 the two are different windows: a month holds two
+ * cutoffs, so no single period id selects it. `monthAttributions()` is what
+ * does the scoping, and dates each row by its MEETING — see the note there.
+ * `period` is still passed because that is where the configured numbers are
+ * snapshotted; it names the target, it no longer bounds the window.
  *
  * `roleOf` is injected rather than joined here because the ledger stores no
  * role: the target that applies depends on who the agent is *now*, which only
  * the profiles table knows. Returning null for an unknown role is deliberate —
  * that renders as "not configured" rather than inventing a denominator.
  */
-export function agentPeriodUsage(
-  attributions: MeetingCutoffAttribution[],
+export function agentMonthUsage(
+  attributionsInMonth: MeetingCutoffAttribution[],
   period: CutoffPeriod,
   roleOf: (agentId: string) => string | undefined,
-  workingDays: number,
-  /** Needed only to resolve a manager's target — see `periodTargetFor`. */
-  teamKindOf?: (agentId: string) => TeamKind | null | undefined
+  workingDaysInTheMonth: number
 ): Map<string, AgentPeriodUsage> {
   const byAgent = new Map<string, AgentPeriodUsage>()
 
-  for (const row of attributions) {
-    if (row.period_id !== period.id) continue
+  for (const row of attributionsInMonth) {
     let entry = byAgent.get(row.agent_id)
     if (!entry) {
       const role = roleOf(row.agent_id)
@@ -757,9 +880,9 @@ export function agentPeriodUsage(
           number
         >,
         towardTarget: 0,
-        // Via periodTargetFor, so an RSR's daily number is multiplied out to a
-        // period expectation rather than compared against a fortnight's work.
-        target: periodTargetFor(role, period, workingDays, teamKindOf?.(row.agent_id)),
+        // Via monthlyTargetFor, so an RSR's daily number is multiplied out over
+        // the month rather than compared against a fortnight's work.
+        target: monthlyTargetFor(role, period, workingDaysInTheMonth),
         role,
       }
       byAgent.set(row.agent_id, entry)
@@ -771,6 +894,30 @@ export function agentPeriodUsage(
   return byAgent
 }
 
+/**
+ * The ledger rows belonging to one calendar month.
+ *
+ * Dated by the MEETING, not by `period_id` and not by `attributed_at`. Two
+ * reasons, and both matter: a month spans two cutoffs so no period id selects
+ * it, and `attributed_at` is when the trigger ran, which for anything synced
+ * late off a phone is a different day from the visit. A monthly target is about
+ * work done in the month.
+ *
+ * Rows whose meeting is unknown to the caller are dropped rather than kept — an
+ * undated row cannot be placed in a month, and guessing would put it in this
+ * one.
+ */
+export function monthAttributions(
+  attributions: MeetingCutoffAttribution[],
+  meetingDates: Map<string, string>,
+  month: string
+): MeetingCutoffAttribution[] {
+  return attributions.filter(row => {
+    const date = meetingDates.get(row.meeting_id)
+    return date != null && monthOf(date) === month
+  })
+}
+
 /** One team's period, aggregated across its roster. */
 export interface TeamPeriodUsage {
   /** Null for agents with no team — reported rather than dropped. */
@@ -780,7 +927,7 @@ export interface TeamPeriodUsage {
   /**
    * Sum of the roster's individual role targets, or null when not one member
    * has a configured target. Summed over the ROSTER, not over the agents who
-   * appear in the ledger — see `teamPeriodUsage`.
+   * appear in the ledger — see `teamMonthUsage`.
    */
   target: number | null
   memberCount: number
@@ -796,7 +943,7 @@ export interface RosterMember {
 }
 
 /**
- * Per-team rollup for one period.
+ * Per-team rollup for one MONTH. Window scoping as `agentMonthUsage`.
  *
  * Aggregated over the ROSTER rather than over the ledger, which matters for the
  * denominator: a team of six where two agents recorded nothing has six targets
@@ -805,18 +952,17 @@ export interface RosterMember {
  * would report as comfortably on quota. The idle members are counted and
  * surfaced instead, because that is the fact worth acting on.
  *
- * Only roles with a configured target contribute to the denominator. Since
- * migration 076 that includes the team's manager, who inherits their team's own
- * target — so a team of five specialists plus a manager has six targets to hit,
- * not five, and the manager's tag-alongs count toward theirs.
+ * Only roles with a configured target contribute to the denominator. That
+ * includes the team's manager, who since 105 carries a flat monthly number of
+ * their own rather than a copy of their team's — so a team of five specialists
+ * plus a manager has six targets to hit, 5 x 35 + 20, and the manager's
+ * tag-alongs count toward the 20.
  */
-export function teamPeriodUsage(
-  attributions: MeetingCutoffAttribution[],
+export function teamMonthUsage(
+  attributionsInMonth: MeetingCutoffAttribution[],
   period: CutoffPeriod,
   roster: RosterMember[],
-  workingDays: number,
-  /** Needed only to resolve a manager's target — see `periodTargetFor`. */
-  teamKindOf?: (teamId: string | null) => TeamKind | null | undefined
+  workingDaysInTheMonth: number
 ): Map<string | null, TeamPeriodUsage> {
   const blank = (teamId: string | null): TeamPeriodUsage => ({
     teamId,
@@ -839,17 +985,15 @@ export function teamPeriodUsage(
     const entry = byTeam.get(member.team_id) ?? blank(member.team_id)
     entry.memberCount += 1
     // Mixed-role teams sum correctly because each member is resolved in their
-    // own unit first: 35 per Sales head plus (16 x working days) per RSR head.
-    const memberTarget = periodTargetFor(
-      member.role, period, workingDays, teamKindOf?.(member.team_id)
-    )
+    // own unit first: 35 a month per Sales head, 20 for the manager, and
+    // (16 x the month's working days) per RSR head.
+    const memberTarget = monthlyTargetFor(member.role, period, workingDaysInTheMonth)
     if (memberTarget != null) entry.target = (entry.target ?? 0) + memberTarget
     byTeam.set(member.team_id, entry)
   }
 
   const active = new Set<string>()
-  for (const row of attributions) {
-    if (row.period_id !== period.id) continue
+  for (const row of attributionsInMonth) {
     // An agent absent from the roster (deactivated, or another module's staff)
     // still recorded a real meeting, so it is counted under whatever team the
     // roster knows — null when it knows none.

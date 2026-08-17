@@ -3,7 +3,15 @@
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { TONE_CLASS } from '@/lib/status-styles'
-import { capForRole, capsDiffer, periodDateLabel, periodTargetFor, workingDaysIn } from '@/lib/cutoff'
+import {
+  capForRole,
+  capsDiffer,
+  currentMonth,
+  monthLabel,
+  monthlyTargetFor,
+  periodDateLabel,
+  workingDaysInMonth,
+} from '@/lib/cutoff'
 import type { CutoffPeriod, Holiday } from '@/types'
 
 /**
@@ -52,11 +60,15 @@ function Stat({
 }
 
 export function CurrentCutoffSummary({ period, holidays }: CurrentCutoffSummaryProps) {
-  const workingDays = workingDaysIn(
-    period,
+  // Two windows on one card since migration 105: the cutoff names itself and
+  // its visit limit, the MONTH carries every target. Each stat below says which
+  // one it belongs to rather than letting the card's title imply the cutoff.
+  const month = currentMonth()
+  const workingDays = workingDaysInMonth(
+    month,
     holidays.map(h => h.holiday_date)
   )
-  const rsrPeriodTarget = periodTargetFor('rsr', period, workingDays)
+  const rsrMonthTarget = monthlyTargetFor('rsr', period, workingDays)
   const left = daysRemaining(period.ends_on)
 
   // The label is generated from the dates, so printing both repeats itself.
@@ -77,20 +89,32 @@ export function CurrentCutoffSummary({ period, holidays }: CurrentCutoffSummaryP
           </span>
         </div>
 
-        <div className="grid gap-4 grid-cols-2 sm:grid-cols-4 border-t border-border pt-3">
+        <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 border-t border-border pt-3">
           <Stat
             label="Sales target"
             value={period.sales_target != null ? String(period.sales_target) : '—'}
-            hint={period.sales_target != null ? 'meetings this cutoff' : 'not configured'}
+            hint={period.sales_target != null ? `meetings in ${monthLabel(month)}` : 'not configured'}
+          />
+          {/* Its own stat rather than a footnote on Sales: the whole point of
+              105 is that a manager's number is no longer a copy of their
+              team's, and a reader has to be able to see the two differ. */}
+          <Stat
+            label="Manager target"
+            value={period.manager_target != null ? String(period.manager_target) : '—'}
+            hint={
+              period.manager_target != null
+                ? `meetings in ${monthLabel(month)}`
+                : 'not configured'
+            }
           />
           {/* Both numbers, because neither alone is the answer: 16 is what an RSR
-              is told daily, 176 is what this cutoff actually expects of them. */}
+              is told daily, 336 is what the month actually expects of them. */}
           <Stat
             label="RSR target"
             value={period.rsr_daily_target != null ? String(period.rsr_daily_target) : '—'}
             hint={
-              rsrPeriodTarget != null
-                ? `per working day · ${rsrPeriodTarget} this cutoff`
+              rsrMonthTarget != null
+                ? `per working day · ${rsrMonthTarget} this month`
                 : 'not configured'
             }
           />
@@ -110,14 +134,13 @@ export function CurrentCutoffSummary({ period, holidays }: CurrentCutoffSummaryP
                 : 'per client, new + existing'
             }
           />
+          {/* The month's, because that is the number the targets above are
+              multiplied by. A period's working_days_override is deliberately
+              not consulted — it corrects one cutoff, and a month holds two. */}
           <Stat
             label="Working days"
             value={String(workingDays)}
-            hint={
-              period.working_days_override != null
-                ? 'set by hand for this cutoff'
-                : 'weekdays minus holidays'
-            }
+            hint={`in ${monthLabel(month)}, weekdays minus holidays`}
           />
         </div>
       </CardContent>

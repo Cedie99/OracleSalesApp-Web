@@ -28,7 +28,7 @@ import type {
 
 const PERIOD_COLUMNS = `
   id, label, starts_on, ends_on, sales_target, rsr_target, rsr_daily_target,
-  working_days_override, client_meeting_cap, sales_client_meeting_cap,
+  manager_target, working_days_override, client_meeting_cap, sales_client_meeting_cap,
   rsr_client_meeting_cap, status, supersedes_period_id,
   version, created_by, created_at, updated_at
 `
@@ -266,7 +266,7 @@ export function useQuotaSettings(): UseQuotaSettingsResult {
       supabase
         .from('quota_settings')
         .select(
-          'id, sales_target, rsr_daily_target, client_meeting_cap, sales_client_meeting_cap, rsr_client_meeting_cap, updated_by, updated_at'
+          'id, sales_target, rsr_daily_target, manager_target, client_meeting_cap, sales_client_meeting_cap, rsr_client_meeting_cap, updated_by, updated_at'
         )
         .maybeSingle(),
       supabase
