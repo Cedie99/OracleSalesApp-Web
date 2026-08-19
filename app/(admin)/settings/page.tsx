@@ -641,8 +641,10 @@ export default function SettingsPage() {
                     )}
 
                     {/* Units spelled out. "RSR 16" beside "Sales 35" reads as two
-                        comparable numbers, and they are not — one is a fortnight's
-                        work and the other a single day's. */}
+                        comparable numbers, and they are not — since migration 105
+                        Sales and Manager are whole-MONTH figures while RSR is a
+                        single day's, so the month a row belongs to matters more
+                        than the fortnight it runs over. */}
                     <div className="flex items-center gap-3 text-xs text-muted-foreground ml-auto">
                       {/* Collapsed to one figure while the two roles agree,
                           which is every period until an admin makes them
@@ -662,7 +664,14 @@ export default function SettingsPage() {
                         <span className="text-foreground font-medium">
                           {period.sales_target ?? '—'}
                         </span>
-                        /cutoff
+                        /month
+                      </span>
+                      <span>
+                        Manager{' '}
+                        <span className="text-foreground font-medium">
+                          {period.manager_target ?? '—'}
+                        </span>
+                        /month
                       </span>
                       <span>
                         RSR{' '}
@@ -809,8 +818,14 @@ export default function SettingsPage() {
                       New periods will use{' '}
                       <span className="font-medium text-foreground">
                         {settings?.sales_target != null
-                          ? `Sales ${settings.sales_target} per cutoff`
+                          ? `Sales ${settings.sales_target} per month`
                           : 'no Sales target'}
+                      </span>
+                      ,{' '}
+                      <span className="font-medium text-foreground">
+                        {settings?.manager_target != null
+                          ? `Manager ${settings.manager_target} per month`
+                          : 'no Manager target'}
                       </span>
                       ,{' '}
                       <span className="font-medium text-foreground">
