@@ -890,8 +890,16 @@ export interface DisqualificationBreakdown {
    * makes this a capture failure rather than a decision.
    */
   noEvidence: number
-  /** Outcome and evidence both fine, so a manager declined the tag-along. */
-  otherReason: number
+  /** A manager declined the tag-along — the only remaining arm of 098's gate. */
+  declined: number
+  /**
+   * Outcome and evidence both pass and nobody declined, so this visit would
+   * qualify if it were decided today. It is not — 098 widened the gate to admit
+   * `no_decision` but backfilled only `pending_validity` rows, and the terminal
+   * guard makes an old verdict permanent. These are visits denied credit under
+   * a rule that no longer exists.
+   */
+  staleVerdict: number
   /** Row present but its meeting is not loaded — reported, never folded away. */
   unknown: number
   total: number
@@ -908,12 +916,15 @@ export interface MeetingEvidence {
 
 export function disqualificationBreakdown(
   attributionsInPeriod: MeetingCutoffAttribution[],
-  meetingsById: Map<string, MeetingEvidence>
+  meetingsById: Map<string, MeetingEvidence>,
+  /** Whether a manager declined this meeting's tag-along — 098's first arm. */
+  wasDeclined: (meetingId: string) => boolean = () => false
 ): DisqualificationBreakdown {
   const out: DisqualificationBreakdown = {
     lost: 0,
     noEvidence: 0,
-    otherReason: 0,
+    declined: 0,
+    staleVerdict: 0,
     unknown: 0,
     total: 0,
   }
@@ -937,7 +948,9 @@ export function disqualificationBreakdown(
 
     // 098's order: outcome before evidence, so a Lost visit is reported as the
     // outcome it is rather than blamed on a photo it also happens to lack.
-    if (
+    if (wasDeclined(row.meeting_id)) {
+      out.declined += 1
+    } else if (
       meeting.outcome !== 'successful' &&
       meeting.outcome !== 'follow_up' &&
       meeting.outcome !== 'no_decision'
@@ -946,7 +959,10 @@ export function disqualificationBreakdown(
     } else if (!hasValidEvidence) {
       out.noEvidence += 1
     } else {
-      out.otherReason += 1
+      // Nothing in 098's gate refuses this visit today. Reported as its own
+      // fact rather than folded into "declined", which is what made 88 stale
+      // verdicts read as 88 managers refusing to attend.
+      out.staleVerdict += 1
     }
   }
 

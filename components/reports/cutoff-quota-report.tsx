@@ -315,8 +315,13 @@ export function CutoffQuotaReport({
     [meetings]
   )
   const disqualified = useMemo(
-    () => disqualificationBreakdown(periodRowsWithAttendees, meetingsById),
-    [periodRowsWithAttendees, meetingsById]
+    () =>
+      disqualificationBreakdown(periodRowsWithAttendees, meetingsById, meetingId =>
+        (tagAlongsByMeeting.get(meetingId) ?? []).some(
+          r => r.invitee_kind === 'manager' && r.status === 'declined'
+        )
+      ),
+    [periodRowsWithAttendees, meetingsById, tagAlongsByMeeting]
   )
 
   /**
@@ -728,8 +733,9 @@ export function CutoffQuotaReport({
                     {[
                       disqualified.lost > 0 && `${disqualified.lost} Lost`,
                       disqualified.noEvidence > 0 && `${disqualified.noEvidence} no evidence`,
-                      disqualified.otherReason > 0 &&
-                        `${disqualified.otherReason} tag-along declined`,
+                      disqualified.declined > 0 && `${disqualified.declined} tag-along declined`,
+                      disqualified.staleVerdict > 0 &&
+                        `${disqualified.staleVerdict} would qualify today`,
                       disqualified.unknown > 0 && `${disqualified.unknown} not loaded`,
                     ]
                       .filter(Boolean)
@@ -741,6 +747,15 @@ export function CutoffQuotaReport({
                     <p className="text-[11px] text-amber-700 dark:text-amber-500">
                       No photo, and no end-photo-plus-start-capture either — the visit happened
                       but couldn’t be evidenced. Worth checking whether capture is failing.
+                    </p>
+                  )}
+                  {/* Not a decision anyone made — a rule that moved underneath
+                      a verdict nothing re-ran. */}
+                  {disqualified.staleVerdict > 0 && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-500">
+                      {disqualified.staleVerdict} would qualify under today’s rule but were
+                      scored under the older one — migration 098 widened the gate and re-decided
+                      only pending rows. They need re-attributing.
                     </p>
                   )}
                 </div>

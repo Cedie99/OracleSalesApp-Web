@@ -49,3 +49,9 @@ next-env.d.ts
 # local planning / handoff notes (personal, not shared)
 /DEV2_PLAN.md
 /SUPABASE_CHANGES_FOR_MOBILE.md
+
+# Claude Code personal overrides — machine-specific paths (the mobile repo
+# checkout) that would be wrong on a teammate's box. A shared
+# .claude/settings.json is deliberately NOT ignored, so team-wide rules can
+# still be committed later.
+/.claude/settings.local.json
