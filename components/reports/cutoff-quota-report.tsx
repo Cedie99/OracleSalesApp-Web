@@ -296,7 +296,22 @@ export function CutoffQuotaReport({
    * that never uploaded.
    */
   const meetingsById = useMemo(
-    () => new Map(meetings.map(m => [m.id, { outcome: m.outcome as string, photo_url: m.photo_url }])),
+    () =>
+      new Map(
+        meetings.map(m => [
+          m.id,
+          {
+            outcome: m.outcome as string,
+            // All four, because 098's evidence test accepts an end photo plus a
+            // start capture in place of the start photo — reading `photo_url`
+            // alone reports visits as unevidenced that the server accepted.
+            photo_url: m.photo_url,
+            end_photo_url: m.end_photo_url,
+            start_captured_at: m.start_captured_at,
+            client_status_at_meeting: m.client_status_at_meeting,
+          },
+        ])
+      ),
     [meetings]
   )
   const disqualified = useMemo(
@@ -711,9 +726,8 @@ export function CutoffQuotaReport({
                       "No Decision or Lost" figure made impossible. */}
                   <p className="text-[11px] text-muted-foreground">
                     {[
-                      disqualified.noDecision > 0 && `${disqualified.noDecision} No Decision`,
                       disqualified.lost > 0 && `${disqualified.lost} Lost`,
-                      disqualified.noPhoto > 0 && `${disqualified.noPhoto} with no photo`,
+                      disqualified.noEvidence > 0 && `${disqualified.noEvidence} no evidence`,
                       disqualified.otherReason > 0 &&
                         `${disqualified.otherReason} tag-along declined`,
                       disqualified.unknown > 0 && `${disqualified.unknown} not loaded`,
@@ -723,10 +737,10 @@ export function CutoffQuotaReport({
                     = {disqualified.total}
                   </p>
                   {/* The one arm that is a defect rather than a decision. */}
-                  {disqualified.noPhoto > 0 && (
+                  {disqualified.noEvidence > 0 && (
                     <p className="text-[11px] text-amber-700 dark:text-amber-500">
-                      Visits with no photo were recorded but couldn’t be evidenced — worth
-                      checking whether the capture failed.
+                      No photo, and no end-photo-plus-start-capture either — the visit happened
+                      but couldn’t be evidenced. Worth checking whether capture is failing.
                     </p>
                   )}
                 </div>
