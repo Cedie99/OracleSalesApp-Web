@@ -19,7 +19,11 @@ export interface ReportDefinition {
   icon: React.ElementType
   count: number
   countLabel: string
-  /** Three at-a-glance figures under the description. */
+  /**
+   * At-a-glance figures under the description. Where they are a breakdown of
+   * `count`, list every category — a card that omits one reads as arithmetic
+   * that does not add up. The row is flex, so it takes four as readily as three.
+   */
   stats: { label: string; value: number | string }[]
   onDownload: () => void
 }

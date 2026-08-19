@@ -11,24 +11,28 @@ import { useTeams } from '@/lib/hooks/use-teams'
 import {
   ATTRIBUTION_LABEL,
   ATTRIBUTION_ORDER,
-  agentMonthUsage,
+  agentPeriodUsage,
   attributionBuckets,
   capForRole,
   capsDiffer,
   clientQuotaUsage,
+  cutoffTargetFor,
   dailyUsage,
-  monthAttributions,
+  disqualificationBreakdown,
+  manilaDateOf,
   monthLabel,
   monthOf,
+  periodAttributions,
   periodDateLabel,
   periodPhase,
   reviewablePeriods,
-  targetSourceForMonth,
-  teamMonthUsage,
+  rosterDailyExpectation,
+  teamPeriodUsage,
+  workingDaysIn,
   workingDaysInMonth,
 } from '@/lib/cutoff'
 import { downloadSheet } from '@/components/reports/report-grid'
-import type { Client, Meeting, Profile } from '@/types'
+import type { Client, Meeting, MeetingCutoffAttribution, Profile, TagAlongRequest } from '@/types'
 import {
   Gauge,
   FileSpreadsheet,
@@ -110,9 +114,19 @@ interface CutoffQuotaReportProps {
   agents: Profile[]
   /** Only for dating the ledger's rows — see `meetingDates`. */
   meetings: Meeting[]
+  /**
+   * meeting_id -> its tag-along requests, for the attendees the LEDGER DOES NOT
+   * HOLD — see `periodRowsWithAttendees`.
+   */
+  tagAlongsByMeeting: Map<string, TagAlongRequest[]>
 }
 
-export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaReportProps) {
+export function CutoffQuotaReport({
+  clients,
+  agents,
+  meetings,
+  tagAlongsByMeeting,
+}: CutoffQuotaReportProps) {
   const { periods, loading: periodsLoading } = useCutoffPeriods()
   const { attributions, unattributedMeetingCount, loading: ledgerLoading } = useCutoffAttributions()
   const { teamName } = useTeams()
@@ -124,9 +138,17 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
   const options = useMemo(() => reviewablePeriods(periods), [periods])
   const period = options.find(p => p.id === periodId) ?? options[0] ?? null
 
-  const buckets = useMemo(
-    () => (period ? attributionBuckets(attributions, period) : null),
-    [attributions, period]
+  /**
+   * meeting_id -> the MANILA date it happened on.
+   *
+   * Manila, not a `slice(0, 10)` of the raw timestamp. That slice is the UTC
+   * date, which for anything logged before 08:00 local names the previous day —
+   * see `manilaDateOf`. These dates place orphaned ledger rows into a cutoff and
+   * put the daily bars on a day, so the error moved real visits between periods.
+   */
+  const meetingDates = useMemo(
+    () => new Map(meetings.map(m => [m.id, manilaDateOf(m.meeting_date)])),
+    [meetings]
   )
 
   const roleOf = useMemo(() => {
@@ -140,59 +162,178 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
   // they read it off `captured_team_kind` on the ledger row rather than from
   // the roster — see `clientQuotaUsage`.
 
-  /** meeting_id -> its date, so daily counts sit on the day the visit happened. */
-  const meetingDates = useMemo(
-    () => new Map(meetings.map(m => [m.id, m.meeting_date.slice(0, 10)])),
-    [meetings]
-  )
-
   /** The month the selected cutoff ends in — the window every target covers. */
   const month = useMemo(() => (period ? monthOf(period.ends_on) : null), [period])
 
   /**
-   * Where the month's target numbers come from — NOT necessarily the selected
-   * period. Both of a month's cutoffs end in it, and an admin editing targets
-   * mid-month updates only the one that has not ended, so the two rows can
-   * disagree. `targetSourceForMonth` picks deterministically; without it the
-   * same month would report two different targets depending on the dropdown.
+   * The selected period IS the source of its own target numbers.
+   *
+   * It used to be `targetSourceForMonth`, which reached across both of a
+   * month's cutoffs to pick one row deterministically. That existed because the
+   * headline was measured over the MONTH and a month holds two snapshots. This
+   * panel now reports per CUTOFF throughout, so the question it answered no
+   * longer arises: the cutoff on screen carries the numbers its own attributions
+   * were charged against, and an admin's mid-month edit correctly shows up on
+   * the cutoff it applied to rather than being averaged across both.
    */
-  const targetSource = useMemo(
-    () => (month ? targetSourceForMonth(periods, month) : null),
-    [periods, month]
-  )
+  const targetSource = period
 
   /**
-   * Working days in that MONTH. The denominator for every RSR figure below —
-   * their target is per day, so the month expectation only exists once this is
-   * known. A period's `working_days_override` is deliberately not consulted: it
-   * corrects one cutoff and a month holds two, which is the same call migration
-   * 105 makes server-side.
+   * Working days in the CUTOFF, and in the month that contains it.
+   *
+   * Both are needed because the roles are stored in two different units. An
+   * RSR's daily rate multiplies straight out over the cutoff's own days —
+   * `working_days_override` included, which is the per-cutoff correction it
+   * exists for. Sales and Manager carry flat MONTHLY figures, so reaching a
+   * cutoff means prorating by its share of the month, which needs the month's
+   * count as the denominator. See `cutoffTargetFor`.
    */
+  const cutoffWorkingDays = useMemo(
+    () => (period ? workingDaysIn(period, holidays.map(h => h.holiday_date)) : 0),
+    [period, holidays]
+  )
   const workingDays = useMemo(
     () => (month ? workingDaysInMonth(month, holidays.map(h => h.holiday_date)) : 0),
     [month, holidays]
   )
 
   /**
-   * Ledger rows for the month, dated by the meeting rather than by period.
+   * Ledger rows for the selected CUTOFF.
    *
-   * This, not `period.id`, is what the target-bearing rollups below are counted
-   * over — the whole point of 105 is that a target spans both of the month's
-   * cutoffs.
+   * By `period_id` — the server's own record of which cutoff charged the visit —
+   * rather than by re-deriving the window from meeting dates. Everything below
+   * is counted over these rows, so the headline, the buckets, the daily bars and
+   * the team table all describe one window and reconcile with each other.
    */
-  const monthRows = useMemo(
-    () => (month ? monthAttributions(attributions, meetingDates, month) : []),
-    [attributions, meetingDates, month]
+  const periodRows = useMemo(
+    () => (period ? periodAttributions(attributions, period, meetingDates) : []),
+    [attributions, period, meetingDates]
   )
+
+  /**
+   * The period's rows, plus the attendees the ledger deliberately omits.
+   *
+   * Migration 076 stops before its participant loop for an `excluded_invalid`
+   * meeting — its comment calls a row per attendee on a disqualified visit
+   * "noise" — so a manager who tagged along on a No Decision visit has no ledger
+   * row anywhere. That is defensible for a QUOTA ledger, where they earned
+   * nothing. It is wrong for a REPORT: it made those managers vanish from this
+   * panel entirely, which is the same silent drop that hid a hundred meetings
+   * behind a `period_id` test.
+   *
+   * So they are reconstructed here, from the tag-along table, on 076's own rule
+   * (manager, accepted, never the agent). They land in `excluded_invalid` like
+   * the visit they attended, count toward no target, and make this panel's total
+   * equal the Meetings Report's record count for the same cutoff.
+   */
+  const periodRowsWithAttendees = useMemo(() => {
+    const extra: MeetingCutoffAttribution[] = []
+    for (const row of periodRows) {
+      if (row.attribution !== 'excluded_invalid') continue
+      for (const request of tagAlongsByMeeting.get(row.meeting_id) ?? []) {
+        if (
+          request.invitee_kind !== 'manager' ||
+          request.status !== 'accepted' ||
+          request.invitee_id === row.agent_id
+        ) {
+          continue
+        }
+        extra.push({ ...row, agent_id: request.invitee_id, participation: 'tag_along' })
+      }
+    }
+    return extra.length > 0 ? [...periodRows, ...extra] : periodRows
+  }, [periodRows, tagAlongsByMeeting])
+
+  /**
+   * Managers who attended a QUALIFYING visit and hold no credit for it.
+   *
+   * Not the same people as the reconstructed attendees above. Those joined a
+   * visit that earned nobody anything, so earning nothing themselves is right.
+   * These joined a visit that counted, and 076's guard simply never wrote their
+   * row — see migration 107. Surfaced until that backfill lands, and it reads
+   * zero afterwards.
+   */
+  const uncreditedManagers = useMemo(() => {
+    const credited = new Set(periodRows.map(r => `${r.meeting_id}:${r.agent_id}`))
+    let count = 0
+    for (const row of periodRows) {
+      if (row.attribution === 'excluded_invalid' || row.attribution === 'pending_validity') continue
+      for (const request of tagAlongsByMeeting.get(row.meeting_id) ?? []) {
+        if (
+          request.invitee_kind !== 'manager' ||
+          request.status !== 'accepted' ||
+          request.invitee_id === row.agent_id ||
+          credited.has(`${row.meeting_id}:${request.invitee_id}`)
+        ) {
+          continue
+        }
+        count += 1
+      }
+    }
+    return count
+  }, [periodRows, tagAlongsByMeeting])
+
+  /**
+   * The buckets, over exactly the rows every other rollup below uses.
+   *
+   * Derived from `periodRows` rather than re-scoped from `attributions`, so the
+   * breakdown, the team table and the exports can no longer disagree about what
+   * this cutoff contains.
+   */
+  const buckets = useMemo(
+    () => (period ? attributionBuckets(periodRowsWithAttendees) : null),
+    [periodRowsWithAttendees, period]
+  )
+
+  /**
+   * Why this cutoff's disqualified visits were disqualified.
+   *
+   * Reconstructed from the meetings, because the ledger stores only the verdict
+   * — see `disqualificationBreakdown`. Surfaced beside over-cap and pending
+   * rather than left inside the collapsed breakdown: a sixth of this cutoff's
+   * visits earned nothing, and an admin should not have to expand a panel to
+   * discover that, still less to learn whether the cause was policy or a photo
+   * that never uploaded.
+   */
+  const meetingsById = useMemo(
+    () => new Map(meetings.map(m => [m.id, { outcome: m.outcome as string, photo_url: m.photo_url }])),
+    [meetings]
+  )
+  const disqualified = useMemo(
+    () => disqualificationBreakdown(periodRowsWithAttendees, meetingsById),
+    [periodRowsWithAttendees, meetingsById]
+  )
+
+  /**
+   * Credits vs meetings, and the gap between them.
+   *
+   * This panel counts CREDITS — a manager who tagged along earns one of their
+   * own (076), which is how a flat monthly manager target is reachable at all.
+   * The Meetings Report card counts MEETINGS. So the two legitimately differ,
+   * and side by side with no explanation they read as a discrepancy: 555 there
+   * against 565 here, with nothing on screen accounting for the 10.
+   */
+  const creditSpread = useMemo(() => {
+    const distinctMeetings = new Set(periodRows.map(r => r.meeting_id)).size
+    return {
+      meetings: distinctMeetings,
+      // Credited off the LEDGER, so this stays the number that actually earned
+      // something — the reconstructed attendees below earned nothing.
+      credited: periodRows.length - distinctMeetings,
+      attendances: periodRowsWithAttendees.length - distinctMeetings + uncreditedManagers,
+    }
+  }, [periodRows, periodRowsWithAttendees, uncreditedManagers])
 
   const byAgent = useMemo(
-    () => (targetSource ? agentMonthUsage(monthRows, targetSource, roleOf, workingDays) : new Map()),
-    [monthRows, targetSource, roleOf, workingDays]
+    () =>
+      targetSource
+        ? agentPeriodUsage(periodRows, targetSource, roleOf, cutoffWorkingDays, workingDays)
+        : new Map(),
+    [periodRows, targetSource, roleOf, cutoffWorkingDays, workingDays]
   )
 
-  // Still the PERIOD, and deliberately: a visit limit is allocated per cutoff,
-  // so counting a client's slots over a month would report two cutoffs' worth
-  // of allowance as one and hide every over-cap.
+  // A visit limit is allocated per cutoff, so a client's slot usage was always
+  // counted this way — it is the rest of the panel that has come into line.
   const byClient = useMemo(
     () => (period ? clientQuotaUsage(attributions, period) : new Map()),
     [attributions, period]
@@ -200,8 +341,26 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
 
   const byTeam = useMemo(
     () =>
-      targetSource ? teamMonthUsage(monthRows, targetSource, agents, workingDays) : new Map(),
-    [monthRows, targetSource, agents, workingDays]
+      targetSource
+        ? teamPeriodUsage(periodRows, targetSource, agents, cutoffWorkingDays, workingDays)
+        : new Map(),
+    [periodRows, targetSource, agents, cutoffWorkingDays, workingDays]
+  )
+
+  /**
+   * What the whole roster is expected to record on one working day.
+   *
+   * The daily chart's denominator. It used to divide every agent's combined day
+   * by a single RSR's daily target, which on real data ran past 400% and was
+   * clamped to 100% on essentially every working day — the row of bars was
+   * saturated rather than informative.
+   */
+  const dailyExpectation = useMemo(
+    () =>
+      targetSource
+        ? rosterDailyExpectation(agents, targetSource, cutoffWorkingDays, workingDays)
+        : null,
+    [agents, targetSource, cutoffWorkingDays, workingDays]
   )
 
   const days = useMemo(
@@ -222,15 +381,31 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
     [byTeam, teamName]
   )
 
-  const total = buckets ? Object.values(buckets).reduce((a, b) => a + b, 0) : 0
+  /**
+   * Every record the cutoff holds, the ledger's gap included.
+   *
+   * The six buckets alone came to 566 against the Meetings Report's 577,
+   * because 11 managers attended a qualifying visit and the ledger never
+   * recorded them. A breakdown that offers to classify a cutoff and then
+   * accounts for 566 of its 577 records has the same defect this panel has been
+   * cleared of twice already, so the gap is a row rather than an omission.
+   */
+  const total =
+    (buckets ? Object.values(buckets).reduce((a, b) => a + b, 0) : 0) + uncreditedManagers
 
   /**
    * The headline figures.
    *
    * `toward` is what the contract measures agents on — counted plus prospect
-   * visits (O-3) — not the raw meeting total, which would flatter everyone by
-   * including meetings that qualified for nothing. The denominator sums the
-   * teams' roster targets, so it does not shrink when agents are idle.
+   * visits (O-3) — not the raw total, which would flatter everyone by including
+   * visits that qualified for nothing. The denominator sums the teams' roster
+   * targets, so it does not shrink when agents are idle.
+   *
+   * Because every figure in this panel now covers the same cutoff and counts the
+   * same unit, `toward` is exactly the first two rows of the breakdown below it
+   * (`counted` + `excluded_uncapped`), and the daily bars sum to it. That is the
+   * property this panel previously lacked: a month-scoped headline sat directly
+   * above cutoff-scoped buckets, and the two could not be reconciled on screen.
    */
   const headline = useMemo(() => {
     const rows = teamRows
@@ -358,7 +533,7 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
               Cutoff &amp; Quota
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              How every meeting in the period was classified by the server
+              How every visit in the cutoff was classified by the server
             </p>
           </div>
 
@@ -398,12 +573,12 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
             <span className="text-sm text-muted-foreground">
               {headline.target != null ? (
                 <>
-                  of <span className="font-medium text-foreground">{headline.target}</span> meetings
-                  targeted in {month ? monthLabel(month) : 'the month'}
+                  of <span className="font-medium text-foreground">{headline.target}</span> targeted
+                  this cutoff
                 </>
               ) : (
                 <>
-                  meetings counted in {month ? monthLabel(month) : 'the month'} ·{' '}
+                  credited this cutoff ·{' '}
                   {/* Never a zero or an invented denominator — O-6. */}
                   <span className="text-amber-600 dark:text-amber-500">no target set</span>
                 </>
@@ -421,8 +596,9 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
           )}
 
           <p className="text-xs text-muted-foreground mt-2">
-            {period.label} · targets measured over {month ? monthLabel(month) : 'the month'},{' '}
-            {workingDays} working {workingDays === 1 ? 'day' : 'days'} ·{' '}
+            {period.label} · {cutoffWorkingDays} working{' '}
+            {cutoffWorkingDays === 1 ? 'day' : 'days'} this cutoff, prorated from{' '}
+            {month ? monthLabel(month) : 'the month'}&rsquo;s {workingDays} ·{' '}
             {capsDiffer(period) ? (
               <>
                 each client may be visited {capForRole('sales_specialist', period)}{' '}
@@ -441,40 +617,43 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
             )}
           </p>
 
-          {/* Three roles in two units, so the single bar above is a blend of
-              three different questions. Spelling them out stops it being read
-              as one — and each says "a month" explicitly, because the buckets
-              directly beneath cover a fortnight. */}
+          {/* Three roles stored in two different units, so the single bar above
+              is a blend of three questions. Each is spelled out in the unit the
+              bar actually uses — this cutoff — with the stored monthly or daily
+              figure it was derived from in parentheses, so an admin can check
+              the proration rather than take it on trust. */}
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px] text-muted-foreground">
             <span>
               Sales{' '}
               <span className="text-foreground font-medium">
-                {targetSource?.sales_target ?? '—'}
+                {cutoffTargetFor('sales_specialist', period, cutoffWorkingDays, workingDays) ?? '—'}
               </span>{' '}
-              a month
+              this cutoff
+              {period.sales_target != null && <> (of {period.sales_target} a month)</>}
             </span>
             <span>
               Manager{' '}
               <span className="text-foreground font-medium">
-                {targetSource?.manager_target ?? '—'}
+                {cutoffTargetFor('sales_manager', period, cutoffWorkingDays, workingDays) ?? '—'}
               </span>{' '}
-              a month
+              this cutoff
+              {period.manager_target != null && <> (of {period.manager_target} a month)</>}
             </span>
             <span>
               RSR{' '}
               <span className="text-foreground font-medium">
-                {targetSource?.rsr_daily_target ?? '—'}
+                {cutoffTargetFor('rsr', period, cutoffWorkingDays, workingDays) ?? '—'}
               </span>{' '}
-              per working day
-              {targetSource?.rsr_daily_target != null && (
-                <> ({targetSource.rsr_daily_target * workingDays} this month)</>
+              this cutoff
+              {period.rsr_daily_target != null && (
+                <> ({period.rsr_daily_target} per working day)</>
               )}
             </span>
           </div>
         </div>
 
         {/* ---- Only what somebody has to act on --------------------------- */}
-        {(headline.overCap > 0 || headline.pending > 0) && (
+        {(headline.overCap > 0 || headline.pending > 0 || disqualified.total > 0) && (
           <div className="flex flex-wrap gap-2">
             {headline.overCap > 0 && (
               <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
@@ -493,6 +672,64 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
                   {headline.pending === 1 ? 'visit is' : 'visits are'} waiting on a manager’s
                   approval — these numbers can still change
                 </p>
+              </div>
+            )}
+
+            {/* Real work with no credit attached, and unlike the disqualified
+                visits beside it this one is a defect rather than a decision. */}
+            {uncreditedManagers > 0 && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                <TriangleAlert className="w-4 h-4 text-amber-600 dark:text-amber-500 shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-xs text-foreground">
+                    <span className="font-semibold">{uncreditedManagers}</span> manager tag-
+                    {uncreditedManagers === 1 ? 'along' : 'alongs'} earned no credit
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Late approval — they approved after the visit was scored.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Disqualified visits, split by cause. Real work that earned no
+                credit is not a footnote: it is either a policy call the business
+                should revisit or evidence that went missing, and the two need
+                telling apart. */}
+            {disqualified.total > 0 && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                <TriangleAlert className="w-4 h-4 text-amber-600 dark:text-amber-500 shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-xs text-foreground">
+                    <span className="font-semibold">{disqualified.total}</span>{' '}
+                    {disqualified.total === 1 ? 'meeting' : 'meetings'} didn’t qualify and earned
+                    no credit
+                  </p>
+                  {/* Meetings, and each cause named separately — the sum is an
+                      identity an admin can check against the Meetings Report's
+                      own No Decision and Lost tiles, which a combined
+                      "No Decision or Lost" figure made impossible. */}
+                  <p className="text-[11px] text-muted-foreground">
+                    {[
+                      disqualified.noDecision > 0 && `${disqualified.noDecision} No Decision`,
+                      disqualified.lost > 0 && `${disqualified.lost} Lost`,
+                      disqualified.noPhoto > 0 && `${disqualified.noPhoto} with no photo`,
+                      disqualified.otherReason > 0 &&
+                        `${disqualified.otherReason} tag-along declined`,
+                      disqualified.unknown > 0 && `${disqualified.unknown} not loaded`,
+                    ]
+                      .filter(Boolean)
+                      .join(' + ')}{' '}
+                    = {disqualified.total}
+                  </p>
+                  {/* The one arm that is a defect rather than a decision. */}
+                  {disqualified.noPhoto > 0 && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-500">
+                      Visits with no photo were recorded but couldn’t be evidenced — worth
+                      checking whether the capture failed.
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -514,8 +751,25 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
             ) : (
               <ChevronRight className="w-3.5 h-3.5 mr-1" />
             )}
-            How the {total} {total === 1 ? 'meeting was' : 'meetings were'} classified
+            How the {total} {total === 1 ? 'record was' : 'records were'} classified in{' '}
+            {period.label}
           </Button>
+
+          {/* Ties this total back to the Meetings Report card, which counts
+              ATTENDANCES and so reports a different number for the same cutoff.
+              Both directions are stated because the gap runs both ways and an
+              unexplained difference between two cards is what sent someone
+              looking for a bug that was not there. */}
+          {creditSpread.attendances > 0 && (
+            <p className="text-[11px] text-muted-foreground ml-2">
+              {creditSpread.meetings} meetings and {creditSpread.attendances} manager tag-
+              {creditSpread.attendances === 1 ? 'along' : 'alongs'} — the same{' '}
+              {creditSpread.meetings + creditSpread.attendances} records the Meetings Report
+              shows for this cutoff. {creditSpread.credited} of the tag-alongs earned a
+              credit; the rest either joined a visit that didn&rsquo;t qualify or are missing
+              from the ledger — both are rows below.
+            </p>
+          )}
 
           {showBreakdown && (
             <div className="mt-2 rounded-lg border border-border divide-y divide-border">
@@ -532,14 +786,41 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
                   </div>
                 </div>
               ))}
-              {/* rsr_daily_target, not the deprecated rsr_target this line used
+
+              {/* A seventh row for what the ledger does not hold. Kept visually
+                  identical to the six so it cannot be read as a footnote — it is
+                  a classification like the others, just one the server never
+                  wrote. It disappears when migration 107 backfills them. */}
+              {uncreditedManagers > 0 && (
+                <div className="flex items-start gap-3 px-3 py-2">
+                  <span className="text-sm font-semibold tabular-nums w-8 shrink-0 text-right text-amber-600 dark:text-amber-500">
+                    {uncreditedManagers}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-foreground">Late approval</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      The manager approved after the visit was scored, so it counted for nobody.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* The stored figures, in the units they are stored in — the
+                  prorated per-cutoff numbers are on the headline above.
+                  rsr_daily_target, not the deprecated rsr_target this line used
                   to print — 064 stopped writing that column, so it showed a
                   frozen pre-064 number or "not set" however the target moved. */}
               <p className="px-3 py-2 text-[11px] text-muted-foreground">
-                Sales {targetSource?.sales_target ?? 'not set'} · Manager{' '}
-                {targetSource?.manager_target ?? 'not set'} a month · RSR{' '}
-                {targetSource?.rsr_daily_target ?? 'not set'} per working day · spreadsheet
-                exports use the same categories.
+                Stored targets: Sales{' '}
+                {period.sales_target != null ? `${period.sales_target} a month` : 'not set'} ·
+                Manager{' '}
+                {period.manager_target != null ? `${period.manager_target} a month` : 'not set'} ·
+                RSR{' '}
+                {period.rsr_daily_target != null
+                  ? `${period.rsr_daily_target} per working day`
+                  : 'not set'}{' '}
+                · the first two rows above are what counts toward them · spreadsheet exports
+                use the same categories.
               </p>
             </div>
           )}
@@ -568,17 +849,14 @@ export function CutoffQuotaReport({ clients, agents, meetings }: CutoffQuotaRepo
             thing that matters: which days had nothing. Non-working days are
             drawn but greyed — they are not misses, and omitting them entirely
             would make a fortnight look like a continuous run of work. */}
-        {targetSource?.rsr_daily_target != null && days.length > 0 && (
+        {dailyExpectation != null && days.length > 0 && (
           <div className="rounded-lg border border-border p-3">
             <p className="text-xs font-medium text-foreground">
-              Each day against the RSR target of {targetSource.rsr_daily_target}
+              Each day against the roster&rsquo;s daily expectation of {dailyExpectation}
             </p>
             <div className="flex items-end gap-1 mt-2.5 h-16">
               {days.map(d => {
-                const pctOfDay = Math.min(
-                  100,
-                  Math.round((d.count / targetSource.rsr_daily_target!) * 100)
-                )
+                const pctOfDay = Math.min(100, Math.round((d.count / dailyExpectation) * 100))
                 return (
                   <div
                     key={d.date}
