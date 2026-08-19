@@ -862,53 +862,57 @@ export function periodAttributions(
 /**
  * Why the cutoff's disqualified visits were disqualified.
  *
- * The ledger records only that a visit landed in `excluded_invalid`; migration
- * 059's gate is three separate rules OR'd together and it keeps no note of
- * which one fired. So the reason is reconstructed here from the meeting itself,
- * in the gate's own precedence.
+ * The ledger records only that a visit landed in `excluded_invalid`; the gate is
+ * three rules OR'd together and keeps no note of which one fired, so the reason
+ * is reconstructed from the meeting in the gate's own precedence.
  *
- * This exists because the count alone is not actionable, and the three arms
- * mean opposite things. A No Decision visit is work the business ruled does not
- * count — a policy question. A missing photo is a visit that probably happened
- * and cannot be proved, which is an EVIDENCE FAILURE and most likely a bug on
- * the capture side: the agent travelled, met the client, and lost the credit to
- * a failed upload. Reporting both as one number leaves nobody able to tell a
- * policy decision from a defect.
+ * THE GATE IS MIGRATION 098's, not 059's or 076's. Both of those were
+ * superseded and read
  *
- * `otherReason` is the residue, and it is meaningful rather than a catch-all:
- * outcome and photo both pass, so the only remaining arm is a manager who
- * declined the tag-along. It is derived by elimination because this panel is
- * not given the tag-along table.
+ *   m.outcome not in ('successful', 'follow_up')  and  m.photo_url is null
+ *
+ * 098 widened the first to admit `no_decision` — a visit where the client did
+ * not commit is still a visit — and replaced the second with `has_valid_evidence`,
+ * which accepts an end photo plus a start capture in place of the start photo
+ * (ADR-019's trade). Reading the superseded rule reported 88 evidence failures
+ * as "No Decision", which is not merely a wrong label: it hid a capture defect
+ * affecting eighty-eight visits behind an outcome nobody can act on.
+ *
+ * So `no_decision` is NOT a disqualification reason and has no bucket here.
+ * Only `lost_opportunity` fails on outcome now.
  */
 export interface DisqualificationBreakdown {
-  /**
-   * No Decision and Lost, split rather than summed.
-   *
-   * They were one `outcome` figure, which read "91 No Decision or Lost" and so
-   * could not be checked against anything: the Meetings Report publishes the two
-   * separately, and a combined number cannot be reconciled with a pair. Split,
-   * the identity an admin actually wants to verify is visible on screen —
-   * No Decision + Lost + no photo = didn't qualify.
-   */
-  noDecision: number
+  /** Lost Opportunity — the only outcome 098 still refuses. */
   lost: number
-  /** Eligible outcome, no photo. Evidence missing, not work missing. */
-  noPhoto: number
-  /** Outcome and photo both fine, so a manager declined the tag-along. */
+  /**
+   * No usable evidence: no photo, and not the end-photo-plus-start-capture pair
+   * that 098 accepts instead. The visit happened and cannot be proved, which
+   * makes this a capture failure rather than a decision.
+   */
+  noEvidence: number
+  /** Outcome and evidence both fine, so a manager declined the tag-along. */
   otherReason: number
   /** Row present but its meeting is not loaded — reported, never folded away. */
   unknown: number
   total: number
 }
 
+/** The evidence test from migration 098, verbatim. */
+export interface MeetingEvidence {
+  outcome: string
+  photo_url: string | null
+  end_photo_url?: string | null
+  start_captured_at?: string | null
+  client_status_at_meeting?: string | null
+}
+
 export function disqualificationBreakdown(
   attributionsInPeriod: MeetingCutoffAttribution[],
-  meetingsById: Map<string, { outcome: string; photo_url: string | null }>
+  meetingsById: Map<string, MeetingEvidence>
 ): DisqualificationBreakdown {
   const out: DisqualificationBreakdown = {
-    noDecision: 0,
     lost: 0,
-    noPhoto: 0,
+    noEvidence: 0,
     otherReason: 0,
     unknown: 0,
     total: 0,
@@ -924,13 +928,26 @@ export function disqualificationBreakdown(
       continue
     }
 
-    // The gate's own order: outcome is checked before evidence, so a No
-    // Decision with no photo is reported as the outcome it is rather than
-    // being blamed on a missing upload.
-    if (meeting.outcome === 'no_decision') out.noDecision += 1
-    else if (meeting.outcome === 'lost_opportunity') out.lost += 1
-    else if (meeting.photo_url == null) out.noPhoto += 1
-    else out.otherReason += 1
+    const hasValidEvidence =
+      meeting.photo_url != null ||
+      ((meeting.client_status_at_meeting === 'new' ||
+        meeting.client_status_at_meeting === 'existing') &&
+        meeting.start_captured_at != null &&
+        meeting.end_photo_url != null)
+
+    // 098's order: outcome before evidence, so a Lost visit is reported as the
+    // outcome it is rather than blamed on a photo it also happens to lack.
+    if (
+      meeting.outcome !== 'successful' &&
+      meeting.outcome !== 'follow_up' &&
+      meeting.outcome !== 'no_decision'
+    ) {
+      out.lost += 1
+    } else if (!hasValidEvidence) {
+      out.noEvidence += 1
+    } else {
+      out.otherReason += 1
+    }
   }
 
   return out
