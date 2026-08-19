@@ -1,7 +1,24 @@
 -- 107 - Re-attribution when a meeting's outcome changes, and when a manager
 --       accepts a tag-along after the meeting was already decided.
 --
--- Two symptoms, one cause. `attribute_meeting_cutoff` opens with
+-- CORRECTION (2026-08-19, same day): the first version of this header described
+-- the gate from 076 and claimed a population of "stale counted" meetings that
+-- does not exist. It was written after reading 059 and 076 without checking for
+-- later redefinitions of `attribute_meeting_cutoff`. There are two — 079 and
+-- 098 — and 098 is the live one. Its gate reads
+--
+--   if declined
+--      or m.outcome not in ('successful', 'follow_up', 'no_decision')
+--      or not has_valid_evidence
+--
+-- so NO DECISION COUNTS TOWARD QUOTA, and evidence is satisfied by an end photo
+-- plus a start capture as well as by a start photo. No Decision meetings sitting
+-- in `excluded_uncapped` are correctly classified; there was never anything to
+-- repair there. The SQL below was always correct — it calls whichever
+-- `attribute_meeting_cutoff` is current — but the reasoning quoted the wrong
+-- rule, so it is restated here.
+--
+-- THE ACTUAL DEFECT, which stands. `attribute_meeting_cutoff` opens with
 --
 --   if exists (select 1 from meeting_cutoff_attributions
 --              where meeting_id = p_meeting_id
@@ -9,26 +26,26 @@
 --
 -- and every `on conflict do update` inside it carries
 -- `where ... attribution = 'pending_validity'`. Together those make a terminal
--- attribution permanent: nothing short of a delete can ever revise it. That is
--- right for idempotency and wrong for the two events below, which are real
--- changes to the facts the decision was made from.
+-- attribution permanent: nothing short of a delete can revise it. That is right
+-- for idempotency and wrong for two events that genuinely change the facts the
+-- decision rested on.
 --
 --   1. OUTCOME CHANGED. The meetings trigger is AFTER INSERT only (059); the
 --      update triggers that exist watch `photo_url` (071, 072, 079) and nothing
---      watches `outcome`. A meeting saved Successful is attributed `counted`,
---      and correcting it to No Decision afterwards leaves the credit standing.
---      Found on production 2026-08-19: 100 No Decision meetings in the Aug 9-23
---      cutoff, of which the ledger still classified 12 as counted.
+--      watches `outcome`. A meeting saved Successful and corrected to Lost
+--      afterwards keeps the credit it was given, and keeps consuming one of the
+--      client's visit slots. Rarer than first thought, since 098 admits three
+--      outcomes rather than two, but real: Lost is still refused.
 --
 --   2. MANAGER ACCEPTED LATE. 077 already re-runs attribution when a tag-along
---      resolves, but the guard above turns it straight back around, so no
---      `tag_along` participation row is ever written. A manager is credited
---      only if their request was already `pending` when the meeting was
---      inserted — the single status the guard admits. Same production data:
---      22 managers attended, 10 were credited.
+--      resolves, but the guard turns it straight back, so no `tag_along`
+--      participation row is ever written. A manager is credited only if their
+--      request was already `pending` when the meeting was inserted. On
+--      production 2026-08-19: 22 managers attended the Aug 9-23 cutoff and 10
+--      were credited. This backfill corrected 11 of them.
 --
 -- The fix is a re-attribution entry point that CLEARS FIRST. Re-running over
--- surviving rows is not a safe alternative: the slot arithmetic in 076 counts
+-- surviving rows is not a safe alternative: the slot arithmetic counts
 -- `counted` rows for the client, period and pool, so a meeting still holding
 -- its own row would count itself and could push itself over cap.
 
