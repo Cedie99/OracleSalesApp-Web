@@ -7,7 +7,7 @@ import { useClients } from '@/lib/hooks/use-clients'
 import { useClockRecords } from '@/lib/hooks/use-clock-records'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
-import { MANAGER_GATE_LABEL, companionParticipants, companionSummary, managerGate } from '@/lib/tag-along'
+import { MANAGER_GATE_LABEL, companionParticipants, managerGate } from '@/lib/tag-along'
 import { useTeams } from '@/lib/hooks/use-teams'
 import { teamsWithManagers } from '@/lib/teams'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
@@ -125,35 +125,109 @@ export function SalesReports() {
     [clockRecords, agentFilter, teamAgentIds, inRange]
   )
 
+  /**
+   * One row per person who was at a meeting — the Meetings Report's unit.
+   *
+   * A meeting used to be one row, which made a manager's tag-along invisible in
+   * the file and left the card reporting 555 where the quota panel reported 565
+   * for the same cutoff. Those are not a discrepancy — the panel counts CREDITS
+   * and a manager who tagged along earns one of their own (076) — but a reader
+   * had no way to see that, and a manager could not find their own work in the
+   * export at all.
+   *
+   * Which companions become a row is migration 076's rule, copied exactly —
+   * `invitee_kind = 'manager'`, `status = 'accepted'`, and never the meeting's
+   * own agent. Anything looser and this card would stop agreeing with the quota
+   * panel again, which is the whole point of counting attendances here.
+   *
+   * So three kinds of companion are deliberately NOT rows: a teammate who came
+   * along (no manager quota exists for them to earn), a manager whose request
+   * is still pending (076 waits for the answer before crediting anyone), and a
+   * declined or cancelled request (nobody attended). The pending case is the
+   * one to watch — those visits appear as agent-only here until the manager
+   * confirms, and the `Manager Confirmation` column is what flags them.
+   */
+  const meetingParticipants = useMemo(
+    () =>
+      filteredMeetings.flatMap(m => {
+        const owner = {
+          meeting: m,
+          participant: m.agent?.full_name ?? '',
+          participation: 'Agent' as const,
+        }
+        const companions = tagAlongsFor(tagAlongsByMeetingId, m.id)
+          .filter(
+            r =>
+              r.invitee_kind === 'manager' &&
+              r.status === 'accepted' &&
+              r.invitee_id !== m.agent_id
+          )
+          .map(r => ({
+            meeting: m,
+            participant: r.invitee_name ?? 'Unknown',
+            participation: 'Tagged along' as const,
+          }))
+        return [owner, ...companions]
+      }),
+    [filteredMeetings, tagAlongsByMeetingId]
+  )
+
   const reports: ReportDefinition[] = [
     {
       title: 'Meetings Report',
-      description: 'All client meetings with agenda, outcome, start/end GPS, companions, and photo flags',
+      description:
+        'One meeting record per attendee — the agent, and any manager who tagged along — with agenda, outcome, start/end GPS, and photo flags',
       icon: CalendarCheck,
-      count: filteredMeetings.length,
-      countLabel: 'meetings',
+      // RECORDS, one per attendee, so this figure is exactly the number of rows
+      // in the file it downloads. A meeting with a manager along is two records
+      // because two people worked it, which is the same reading the quota
+      // ledger takes (076) and the reason a manager's monthly target is
+      // reachable at all.
+      count: meetingParticipants.length,
+      countLabel: 'meeting records',
+      // All four outcomes, so the tiles account for the count above them. Three
+      // of them did not: 'no_decision' was absent, and its meetings simply went
+      // missing from the card — 561 meetings reading as 381 + 74 + 4 on live
+      // data. Counted over RECORDS for the same reason the count is: tiles that
+      // sum to something other than the number above them is the original bug.
       stats: [
-        { label: 'Successful', value: filteredMeetings.filter(m => m.outcome === 'successful').length },
-        { label: 'Follow-up', value: filteredMeetings.filter(m => m.outcome === 'follow_up').length },
-        { label: 'Lost', value: filteredMeetings.filter(m => m.outcome === 'lost_opportunity').length },
+        {
+          label: 'Successful',
+          value: meetingParticipants.filter(p => p.meeting.outcome === 'successful').length,
+        },
+        {
+          label: 'Follow-up',
+          value: meetingParticipants.filter(p => p.meeting.outcome === 'follow_up').length,
+        },
+        {
+          label: 'No Decision',
+          value: meetingParticipants.filter(p => p.meeting.outcome === 'no_decision').length,
+        },
+        {
+          label: 'Lost',
+          value: meetingParticipants.filter(p => p.meeting.outcome === 'lost_opportunity').length,
+        },
       ],
       onDownload: () =>
         downloadSheet(
-          filteredMeetings.map(m => {
+          meetingParticipants.map(({ meeting: m, participant, participation }) => {
             // Real duration from mobile's start/end capture pair. Blank rather
             // than 0 when either end is missing — an unrecorded duration is not
             // a zero-length meeting, and most historical rows predate the feature.
             const duration = meetingDurationMinutes(m)
-            // Companions belong in this file specifically. It is where an admin
-            // reviews a whole cutoff at once, and without these columns a
-            // meeting held out of the quota by an unanswered manager tag-along
-            // is indistinguishable from one that counted.
-            const companions = tagAlongsFor(tagAlongsByMeetingId, m.id)
-            const gate = managerGate(companions)
+            const gate = managerGate(tagAlongsFor(tagAlongsByMeetingId, m.id))
             return {
+              // Who this row is about, before the meeting it belongs to. The
+              // file is filtered and pivoted on these two more than on anything
+              // else — "show me this manager's fortnight" is one filter now,
+              // where before it could not be asked of this sheet at all.
+              'Participant': participant,
+              'Participation': participation,
               'Date': format(new Date(m.meeting_date), 'MMM d, yyyy h:mm a'),
               'Client': m.client?.company_name ?? '',
-              'Agent': m.agent?.full_name ?? '',
+              // Kept on tagged-along rows too, so a companion's row still says
+              // whose meeting they joined. Equal to Participant on agent rows.
+              'Meeting Agent': m.agent?.full_name ?? '',
               'Recorded By': m.recorder?.full_name ?? m.agent?.full_name ?? '',
               'Meeting Type': m.meeting_type === 'f2f' ? 'Face to Face' : m.online_platform === 'zoom' ? 'Zoom' : 'Google Meet',
               'Location': m.location_type === 'client_office' ? 'Client Office' : m.location_name ?? '',
@@ -170,14 +244,12 @@ export function SalesReports() {
               'Start GPS': m.gps_lat != null ? `${m.gps_lat}, ${m.gps_lng}` : '',
               'End GPS': m.end_gps_lat != null ? `${m.end_gps_lat}, ${m.end_gps_lng}` : '',
               'Start-End Gap (m)': meetingGpsDriftMeters(m) ?? '',
-              // Three columns rather than one, because a spreadsheet gets
-              // sorted and filtered. The flag is what you filter on, the
-              // participants are what you read, and the confirmation is the
-              // only one with a consequence attached.
-              'Tagged Along': companions.some(r => r.status !== 'cancelled') ? 'Yes' : 'No',
-              'Companions': companionSummary(companions),
-              // Blank when no manager was invited — the ordinary case, and not
-              // the same fact as an approval that is missing.
+              // The old 'Tagged Along' flag and 'Companions' list are gone: each
+              // companion is a row of its own now, so both were restating in
+              // prose what the Participation column states as data. The gate
+              // stays — it is the only one with a consequence attached, and it
+              // is blank when no manager was invited, which is not the same
+              // fact as an approval that is missing.
               'Manager Confirmation': gate === 'none' ? '' : MANAGER_GATE_LABEL[gate],
               'Photo': m.photo_url ? 'Yes' : 'No',
             }
@@ -290,7 +362,12 @@ export function SalesReports() {
           question from the three exports above — those are "what happened",
           this is "what counted" — and it is scoped by cutoff period rather than
           by the toolbar's agent and date filters, which do not apply to it. */}
-      <CutoffQuotaReport clients={clients} agents={agents} meetings={meetings} />
+      <CutoffQuotaReport
+        clients={clients}
+        agents={agents}
+        meetings={meetings}
+        tagAlongsByMeeting={tagAlongsByMeetingId}
+      />
 
       <p className="text-xs text-muted-foreground text-center">
         Reports are exported as .xlsx files and include all data across every team.

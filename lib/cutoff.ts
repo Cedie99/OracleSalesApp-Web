@@ -586,6 +586,24 @@ export function workingDaysIn(period: CutoffPeriod, holidays: string[] = []): nu
 }
 
 /**
+ * The Manila calendar date a timestamp falls on, as 'YYYY-MM-DD'.
+ *
+ * The business day is Manila-local, and migration 072 exists precisely because
+ * the server was getting this wrong. The admin side was still slicing the first
+ * ten characters off the raw timestamp — a UTC date — so every visit logged
+ * before 08:00 Manila was dated to the day BEFORE the one it happened on.
+ *
+ * That is not only a cosmetic slip in the daily chart. These dates decide which
+ * cutoff an orphaned ledger row belongs to (`periodAttributions`), so a visit
+ * recorded at 7am on the first day of a cutoff was placed in the previous one,
+ * and the panel and the Meetings Report disagreed about how many meetings the
+ * period held.
+ */
+export function manilaDateOf(timestamp: string): string {
+  return manilaIso(new Date(timestamp))
+}
+
+/**
  * The calendar month a 'YYYY-MM-DD' day belongs to, as 'YYYY-MM'.
  *
  * String arithmetic rather than Date arithmetic throughout this section: the
@@ -712,6 +730,212 @@ export function monthlyTargetFor(
   return null
 }
 
+/**
+ * What one agent of this role is expected to do in one CUTOFF.
+ *
+ * The admin panel reports per cutoff — that is the window an admin selects, the
+ * window a client's visit limit is allocated in, and the window they asked to be
+ * measured on. Targets, however, are stored per MONTH (105), so two of the three
+ * roles have to be divided down to reach a cutoff.
+ *
+ * RSR needs no division and gets none: their number is already per working day,
+ * so a cutoff's target is that rate times the cutoff's own working days —
+ * including any `working_days_override`, which is exactly the per-cutoff
+ * correction `workingDaysIn` exists for.
+ *
+ * Sales and Manager carry flat monthly figures, so they are prorated by the
+ * cutoff's share of the month's working days rather than split in half. A month
+ * does not divide into two equal fortnights — holidays land in one cutoff and
+ * not the other — and halving would quietly move a holiday's worth of target
+ * onto whichever cutoff was unlucky.
+ *
+ * Rounded per agent rather than at the roster sum, so the number an individual
+ * is shown is the number that was added up. Null in, null out, as O-6 requires.
+ */
+export function cutoffTargetFor(
+  role: string | undefined,
+  period: CutoffPeriod,
+  workingDaysInTheCutoff: number,
+  workingDaysInTheMonth: number
+): number | null {
+  if (role === 'rsr') {
+    return period.rsr_daily_target == null
+      ? null
+      : period.rsr_daily_target * workingDaysInTheCutoff
+  }
+
+  const monthly =
+    role === 'sales_specialist'
+      ? period.sales_target
+      : role === 'sales_manager'
+        ? period.manager_target
+        : null
+
+  // A month with no working days would be a data error, but dividing by it
+  // would turn that into an Infinity on screen.
+  if (monthly == null || workingDaysInTheMonth <= 0) return null
+  return Math.round(monthly * (workingDaysInTheCutoff / workingDaysInTheMonth))
+}
+
+/**
+ * What the whole roster is expected to record on one working day of a cutoff.
+ *
+ * The denominator for the daily chart. Built from the same per-role cutoff
+ * targets as the headline, so a bar and the headline above it are the same unit
+ * measured over different spans — the chart previously divided every agent's
+ * combined day by ONE RSR's daily quota, which saturated `Math.min(100, …)` on
+ * essentially every working day and made the whole row unreadable.
+ *
+ * Null when not one roster member has a configured target, so the caller can
+ * hide the chart rather than draw bars against an invented denominator.
+ */
+export function rosterDailyExpectation(
+  roster: RosterMember[],
+  period: CutoffPeriod,
+  workingDaysInTheCutoff: number,
+  workingDaysInTheMonth: number
+): number | null {
+  if (workingDaysInTheCutoff <= 0) return null
+
+  let total = 0
+  let configured = false
+  for (const member of roster) {
+    const target = cutoffTargetFor(
+      member.role,
+      period,
+      workingDaysInTheCutoff,
+      workingDaysInTheMonth
+    )
+    if (target != null) {
+      total += target
+      configured = true
+    }
+  }
+
+  if (!configured) return null
+  // At least 1: a roster whose whole cutoff target rounds below one a day still
+  // needs a denominator that does not divide by zero.
+  return Math.max(1, Math.round(total / workingDaysInTheCutoff))
+}
+
+/**
+ * The ledger rows belonging to one cutoff — the single place that decides.
+ *
+ * Normally by `period_id`, which is the server's own record of which cutoff a
+ * meeting was charged against; the two can disagree for anything synced late
+ * off a phone, and the server's answer is the one the quota actually used.
+ *
+ * But `period_id` alone does NOT select a cutoff's work, and assuming it did is
+ * what hid a hundred real visits. Migration 059 writes THREE of the six
+ * attributions with `period_id = NULL` — `pending_validity` (75),
+ * `excluded_invalid` (96) and `unattributed` (120). Only `counted`,
+ * `excluded_uncapped` and `over_cap` carry a period. A `row.period_id ===
+ * period.id` test therefore cannot match half the vocabulary, which made those
+ * three buckets structurally incapable of reporting anything but zero — the
+ * rows O-5 put on screen to surface disqualified work were the exact rows that
+ * could never appear.
+ *
+ * Those orphans are placed by the MEETING's date instead. It is the only honest
+ * mapping available, since the row names no period, and it answers what an
+ * admin is really asking of a cutoff they selected: what happened in these
+ * dates, including the work that qualified for nothing.
+ *
+ * Callers that must NOT see orphans simply omit `meetingDates` — `clientQuotaUsage`
+ * is the case that matters, since an orphan carries `slot_index = null` and
+ * consumes no client visit slot.
+ */
+export function periodAttributions(
+  attributions: MeetingCutoffAttribution[],
+  period: CutoffPeriod,
+  meetingDates?: Map<string, string>
+): MeetingCutoffAttribution[] {
+  return attributions.filter(row => {
+    if (row.period_id === period.id) return true
+    if (row.period_id == null && meetingDates != null) {
+      const date = meetingDates.get(row.meeting_id)
+      return date != null && date >= period.starts_on && date <= period.ends_on
+    }
+    return false
+  })
+}
+
+/**
+ * Why the cutoff's disqualified visits were disqualified.
+ *
+ * The ledger records only that a visit landed in `excluded_invalid`; migration
+ * 059's gate is three separate rules OR'd together and it keeps no note of
+ * which one fired. So the reason is reconstructed here from the meeting itself,
+ * in the gate's own precedence.
+ *
+ * This exists because the count alone is not actionable, and the three arms
+ * mean opposite things. A No Decision visit is work the business ruled does not
+ * count — a policy question. A missing photo is a visit that probably happened
+ * and cannot be proved, which is an EVIDENCE FAILURE and most likely a bug on
+ * the capture side: the agent travelled, met the client, and lost the credit to
+ * a failed upload. Reporting both as one number leaves nobody able to tell a
+ * policy decision from a defect.
+ *
+ * `otherReason` is the residue, and it is meaningful rather than a catch-all:
+ * outcome and photo both pass, so the only remaining arm is a manager who
+ * declined the tag-along. It is derived by elimination because this panel is
+ * not given the tag-along table.
+ */
+export interface DisqualificationBreakdown {
+  /**
+   * No Decision and Lost, split rather than summed.
+   *
+   * They were one `outcome` figure, which read "91 No Decision or Lost" and so
+   * could not be checked against anything: the Meetings Report publishes the two
+   * separately, and a combined number cannot be reconciled with a pair. Split,
+   * the identity an admin actually wants to verify is visible on screen —
+   * No Decision + Lost + no photo = didn't qualify.
+   */
+  noDecision: number
+  lost: number
+  /** Eligible outcome, no photo. Evidence missing, not work missing. */
+  noPhoto: number
+  /** Outcome and photo both fine, so a manager declined the tag-along. */
+  otherReason: number
+  /** Row present but its meeting is not loaded — reported, never folded away. */
+  unknown: number
+  total: number
+}
+
+export function disqualificationBreakdown(
+  attributionsInPeriod: MeetingCutoffAttribution[],
+  meetingsById: Map<string, { outcome: string; photo_url: string | null }>
+): DisqualificationBreakdown {
+  const out: DisqualificationBreakdown = {
+    noDecision: 0,
+    lost: 0,
+    noPhoto: 0,
+    otherReason: 0,
+    unknown: 0,
+    total: 0,
+  }
+
+  for (const row of attributionsInPeriod) {
+    if (row.attribution !== 'excluded_invalid') continue
+    out.total += 1
+
+    const meeting = meetingsById.get(row.meeting_id)
+    if (meeting == null) {
+      out.unknown += 1
+      continue
+    }
+
+    // The gate's own order: outcome is checked before evidence, so a No
+    // Decision with no photo is reported as the outcome it is rather than
+    // being blamed on a missing upload.
+    if (meeting.outcome === 'no_decision') out.noDecision += 1
+    else if (meeting.outcome === 'lost_opportunity') out.lost += 1
+    else if (meeting.photo_url == null) out.noPhoto += 1
+    else out.otherReason += 1
+  }
+
+  return out
+}
+
 /** One day's worth of an agent's, or a team's, target-contributing work. */
 export interface DailyUsage {
   /** 'YYYY-MM-DD'. */
@@ -743,10 +967,12 @@ export function dailyUsage(
   for (const row of attributions) {
     if (row.period_id !== period.id) continue
     if (!TARGET_CONTRIBUTING.includes(row.attribution)) continue
-    // One visit per meeting — see attributionBuckets. This chart is read against
-    // the RSR daily target, so counting a manager's tag-along row as a second
-    // visit would make a 16-visit day look like 20.
-    if (row.participation !== 'agent') continue
+    // Every participation, tag-alongs included — see attributionBuckets. These
+    // bars are read against the ROSTER's daily expectation, which is built from
+    // the same per-role targets that credit a manager for tagging along, so both
+    // sides of the ratio count the same unit. Against a single RSR's daily
+    // number they would not: that comparison divided the whole company's day by
+    // one person's quota and pinned every working day at 100%.
     const date = meetingDates.get(row.meeting_id)
     if (!date) continue
     counts.set(date, (counts.get(date) ?? 0) + 1)
@@ -804,30 +1030,34 @@ export const ATTRIBUTION_ORDER: CutoffAttribution[] = [
 ]
 
 /**
- * How many meetings landed in each bucket for one period.
+ * How many credited visits landed in each bucket, for rows already scoped to a
+ * cutoff by `periodAttributions()`.
+ *
+ * Takes pre-scoped rows rather than filtering by period itself, so that exactly
+ * one function decides what belongs to a cutoff. It used to apply its own
+ * `period_id` test, which meant the buckets and the per-agent/per-team rollups
+ * could disagree about the same cutoff — and did: the buckets showed 97
+ * disqualified visits that the team table and its exports knew nothing about.
+ *
+ * CREDITS, not meetings. Since 076 a manager who tagged along carries a ledger
+ * row of their own and it is counted here, because this panel measures people
+ * against quotas and a manager's tag-along is their work. The consequence to
+ * keep in mind: this total exceeds the number of MEETINGS in the period
+ * whenever anyone tagged along, so it must not be reconciled against a meeting
+ * count.
  *
  * Every value is present even at zero — a bucket that vanishes when empty makes
  * "no invalid meetings" indistinguishable from "invalid meetings not reported",
  * which is the exact ambiguity O-5 exists to remove.
  */
 export function attributionBuckets(
-  attributions: MeetingCutoffAttribution[],
-  period: CutoffPeriod
+  attributionsInPeriod: MeetingCutoffAttribution[]
 ): Record<CutoffAttribution, number> {
   const counts = Object.fromEntries(ATTRIBUTION_ORDER.map(k => [k, 0])) as Record<
     CutoffAttribution,
     number
   >
-  for (const row of attributions) {
-    if (row.period_id !== period.id) continue
-    // Meetings, not participations. Since 076 a manager who tagged along has a
-    // ledger row of their own, so counting every row would report more visits
-    // than happened — and this total is reconciled on screen against
-    // `unattributedMeetingCount`, which counts meetings. Every meeting has
-    // exactly one 'agent' row, which makes it the canonical one to count.
-    if (row.participation !== 'agent') continue
-    counts[row.attribution] += 1
-  }
+  for (const row of attributionsInPeriod) counts[row.attribution] += 1
   return counts
 }
 
@@ -847,29 +1077,29 @@ export interface AgentPeriodUsage {
 }
 
 /**
- * Per-agent rollup for one MONTH.
+ * Per-agent rollup for one CUTOFF.
  *
- * Takes rows already scoped to the month rather than filtering by `period_id`
- * itself, because since 105 the two are different windows: a month holds two
- * cutoffs, so no single period id selects it. `monthAttributions()` is what
- * does the scoping, and dates each row by its MEETING — see the note there.
- * `period` is still passed because that is where the configured numbers are
- * snapshotted; it names the target, it no longer bounds the window.
+ * Takes rows already scoped to the cutoff — `periodAttributions()` does that —
+ * so this walks what it is given without re-filtering. Every participation
+ * counts, tag-alongs included: a manager's flat monthly number is earned by
+ * joining other people's visits, so dropping those rows would measure them
+ * against a target they had no way to reach.
  *
  * `roleOf` is injected rather than joined here because the ledger stores no
  * role: the target that applies depends on who the agent is *now*, which only
  * the profiles table knows. Returning null for an unknown role is deliberate —
  * that renders as "not configured" rather than inventing a denominator.
  */
-export function agentMonthUsage(
-  attributionsInMonth: MeetingCutoffAttribution[],
+export function agentPeriodUsage(
+  attributionsInPeriod: MeetingCutoffAttribution[],
   period: CutoffPeriod,
   roleOf: (agentId: string) => string | undefined,
+  workingDaysInTheCutoff: number,
   workingDaysInTheMonth: number
 ): Map<string, AgentPeriodUsage> {
   const byAgent = new Map<string, AgentPeriodUsage>()
 
-  for (const row of attributionsInMonth) {
+  for (const row of attributionsInPeriod) {
     let entry = byAgent.get(row.agent_id)
     if (!entry) {
       const role = roleOf(row.agent_id)
@@ -880,9 +1110,9 @@ export function agentMonthUsage(
           number
         >,
         towardTarget: 0,
-        // Via monthlyTargetFor, so an RSR's daily number is multiplied out over
-        // the month rather than compared against a fortnight's work.
-        target: monthlyTargetFor(role, period, workingDaysInTheMonth),
+        // Via cutoffTargetFor, so a monthly figure is prorated down to this
+        // cutoff rather than compared against a fortnight of work.
+        target: cutoffTargetFor(role, period, workingDaysInTheCutoff, workingDaysInTheMonth),
         role,
       }
       byAgent.set(row.agent_id, entry)
@@ -927,7 +1157,7 @@ export interface TeamPeriodUsage {
   /**
    * Sum of the roster's individual role targets, or null when not one member
    * has a configured target. Summed over the ROSTER, not over the agents who
-   * appear in the ledger — see `teamMonthUsage`.
+   * appear in the ledger — see `teamPeriodUsage`.
    */
   target: number | null
   memberCount: number
@@ -943,7 +1173,7 @@ export interface RosterMember {
 }
 
 /**
- * Per-team rollup for one MONTH. Window scoping as `agentMonthUsage`.
+ * Per-team rollup for one CUTOFF. Window scoping as `agentPeriodUsage`.
  *
  * Aggregated over the ROSTER rather than over the ledger, which matters for the
  * denominator: a team of six where two agents recorded nothing has six targets
@@ -955,13 +1185,14 @@ export interface RosterMember {
  * Only roles with a configured target contribute to the denominator. That
  * includes the team's manager, who since 105 carries a flat monthly number of
  * their own rather than a copy of their team's — so a team of five specialists
- * plus a manager has six targets to hit, 5 x 35 + 20, and the manager's
- * tag-alongs count toward the 20.
+ * plus a manager has six targets to hit, and the manager's tag-alongs count
+ * toward theirs. Each figure is prorated to the cutoff by `cutoffTargetFor`.
  */
-export function teamMonthUsage(
-  attributionsInMonth: MeetingCutoffAttribution[],
+export function teamPeriodUsage(
+  attributionsInPeriod: MeetingCutoffAttribution[],
   period: CutoffPeriod,
   roster: RosterMember[],
+  workingDaysInTheCutoff: number,
   workingDaysInTheMonth: number
 ): Map<string | null, TeamPeriodUsage> {
   const blank = (teamId: string | null): TeamPeriodUsage => ({
@@ -985,15 +1216,20 @@ export function teamMonthUsage(
     const entry = byTeam.get(member.team_id) ?? blank(member.team_id)
     entry.memberCount += 1
     // Mixed-role teams sum correctly because each member is resolved in their
-    // own unit first: 35 a month per Sales head, 20 for the manager, and
-    // (16 x the month's working days) per RSR head.
-    const memberTarget = monthlyTargetFor(member.role, period, workingDaysInTheMonth)
+    // own unit first: a prorated share of 35 a month per Sales head, the same
+    // for the manager's 20, and (16 x this cutoff's working days) per RSR head.
+    const memberTarget = cutoffTargetFor(
+      member.role,
+      period,
+      workingDaysInTheCutoff,
+      workingDaysInTheMonth
+    )
     if (memberTarget != null) entry.target = (entry.target ?? 0) + memberTarget
     byTeam.set(member.team_id, entry)
   }
 
   const active = new Set<string>()
-  for (const row of attributionsInMonth) {
+  for (const row of attributionsInPeriod) {
     // An agent absent from the roster (deactivated, or another module's staff)
     // still recorded a real meeting, so it is counted under whatever team the
     // roster knows — null when it knows none.

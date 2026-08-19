@@ -181,6 +181,8 @@ interface UseCutoffAttributionsResult {
    * Meetings with no ledger row at all — inserted before migration 059's
    * trigger existed, since nothing backfills. Surfaced so admin screens can say
    * so rather than implying those visits never happened.
+   *
+   * Counted over DISTINCT meeting ids, not over row count — see `load()`.
    */
   unattributedMeetingCount: number
   refresh: () => Promise<void>
@@ -211,9 +213,18 @@ export function useCutoffAttributions(): UseCutoffAttributionsResult {
       setError('')
       const rows = (ledger.data ?? []) as unknown as MeetingCutoffAttribution[]
       setAttributions(rows)
-      // Meetings minus ledger rows. Not a filter on the ledger itself: rows that
-      // predate the trigger are ABSENT, not marked 'unattributed'.
-      setUnattributedMeetingCount(Math.max(0, (meetingCount.count ?? 0) - rows.length))
+      // Meetings minus the meetings the ledger KNOWS ABOUT. Not a filter on the
+      // ledger itself: rows that predate the trigger are ABSENT, not marked
+      // 'unattributed'.
+      //
+      // Distinct meeting ids, not `rows.length`. That subtraction was written
+      // when the ledger held exactly one row per meeting; since 076 a manager
+      // who tagged along carries a row of their own, so the count runs AHEAD of
+      // the meeting total and `Math.max(0, …)` pinned this to zero. The warning
+      // that exists to announce missing meetings could no longer fire at all,
+      // and stayed silent through a hundred-meeting discrepancy.
+      const meetingsInLedger = new Set(rows.map(r => r.meeting_id)).size
+      setUnattributedMeetingCount(Math.max(0, (meetingCount.count ?? 0) - meetingsInLedger))
     }
     setLoading(false)
   }, [])
