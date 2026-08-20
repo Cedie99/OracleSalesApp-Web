@@ -22,9 +22,12 @@ import { addMonths } from 'date-fns'
  * is a BEFORE UPDATE trigger that overwrites `reassignable_at` on the
  * active -> lost transition regardless of what the client sent. What lives here
  * is web's copy of the same rule, for the UI copy that explains the wait and for
- * the write paths that stamp the column on rows the trigger does not cover
- * (an INSERT that arrives already-lost, and a re-save of an already-lost row
- * that somehow has no timestamp).
+ * the one write path that stamps the column on a row the trigger does not
+ * cover: a re-save of an already-lost row that somehow has no timestamp.
+ * (There is no longer an INSERT that arrives already-lost — the admin Clients
+ * page creates active and then calls declare_client_lost(), because 051 opens a
+ * cycle on every insert and a row inserted already-lost would carry an open one.
+ * See migration 112.)
  */
 export const REASSIGN_COOLDOWN_LABEL = '1 month'
 
