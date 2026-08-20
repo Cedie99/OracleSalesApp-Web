@@ -19,6 +19,7 @@ import { PoDetailDialog } from '@/components/delivery/po-detail-dialog'
 import { TripBoard } from '@/components/delivery/trip-board'
 import { usePurchaseOrders, useCodRemittances } from '@/lib/hooks/use-delivery'
 import { useClients } from '@/lib/hooks/use-clients'
+import { listableCustomers } from '@/lib/client-info'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { TripRuns } from '@/components/trip-runs'
@@ -102,6 +103,15 @@ export default function DeliveryPage() {
     codRemittances, error: codError, setStatus: setCodRemittanceStatus,
   } = useCodRemittances()
   const { clients } = useClients()
+  /**
+   * Who the Add-PO picker may offer. Prospects and in-progress clients have
+   * never placed an order, so no PO of theirs can exist; lost and deleted
+   * records are out too. See `isListableCustomer`.
+   *
+   * Only the picker is narrowed — `clients` stays whole for resolving stops
+   * already on a list, which may well have gone lost since they were listed.
+   */
+  const listableClients = useMemo(() => listableCustomers(clients), [clients])
   const { profiles, byRole } = useProfiles()
   // Surfaces the reason a publish failed — an RLS rejection or a constraint
   // violation would otherwise look like the dialog simply not working.
@@ -331,14 +341,18 @@ export default function DeliveryPage() {
   )
 
   const handleAdd = useCallback(
-    async (draft: AddPoDraft) => {
+    // Returns an error message, or null on success. The dialog needs to know
+    // which it was: it stays open on "Save & add another", so it can only clear
+    // its fields for the next sheet once this one is actually on the list.
+    async (draft: AddPoDraft): Promise<string | null> => {
       // The customer name travels ONTO the row (migration 045) — the driver's
       // phone can't read `clients`. `area` already comes off the form. Refuse
       // rather than publish a PO the driver would see with no customer on it.
       const client = clients.find(c => c.id === draft.clientId)
       if (!client) {
-        setActionError('That customer could not be found. Refresh and try again.')
-        return
+        const message = 'That customer could not be found. Refresh and try again.'
+        setActionError(message)
+        return message
       }
 
       // Every driver-side column is left to the database defaults: nobody owns
@@ -355,6 +369,7 @@ export default function DeliveryPage() {
         listedBy: profile?.id ?? null,
       })
       setActionError(message ?? '')
+      return message ?? null
     },
     [createOrder, clients, profile?.id]
   )
@@ -848,7 +863,7 @@ export default function DeliveryPage() {
         key={addSession}
         open={addOpen}
         onOpenChange={setAddOpen}
-        clients={clients}
+        clients={listableClients}
         orders={orders}
         defaults={addDefaults}
         onAdd={handleAdd}

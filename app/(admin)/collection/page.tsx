@@ -16,6 +16,7 @@ import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
 import { useClients } from '@/lib/hooks/use-clients'
+import { listableCustomers } from '@/lib/client-info'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AddStoreDialog, type AddStoreDraft } from '@/components/collection/add-store-dialog'
@@ -44,7 +45,7 @@ import {
   PhotoLightbox, RemittanceProofThumb, captionFor, type LightboxPhoto,
 } from '@/components/photo-lightbox'
 import { RemittanceActions } from '@/components/remittance-actions'
-import type { CollectionVisit, PaymentMethod, RemittanceStatus } from '@/types'
+import type { Client, CollectionVisit, PaymentMethod, RemittanceStatus } from '@/types'
 import {
   Search, Wallet, MapPin, Camera, PenLine, AlertTriangle, Banknote, Clock, ImageOff, Plus,
   Loader2,
@@ -98,6 +99,15 @@ export default function CollectionPage() {
     remittances: allRemittances, error: remittancesError, setStatus: setRemittanceStatus,
   } = useRemittances()
   const { clients } = useClients()
+  /**
+   * Who the Add-store picker may offer. Prospects and in-progress clients have
+   * never placed an order, so there is nothing to collect from them; lost and
+   * deleted records are out too. See `isListableCustomer`.
+   *
+   * Only the picker is narrowed — `clients` stays whole for resolving stores
+   * already on a list, which may well have gone lost since they were listed.
+   */
+  const listableClients = useMemo(() => listableCustomers(clients), [clients])
   const { profiles, byRole } = useProfiles()
   // Surfaces the reason a publish failed — an RLS rejection or a constraint
   // violation would otherwise look like the dialog simply not working.
@@ -348,66 +358,115 @@ export default function CollectionPage() {
     [openAdd]
   )
 
+  /**
+   * Publishes a whole batch of stores onto one day's list.
+   *
+   * Sequential, not `Promise.all`: an additional store fans out an SMS to every
+   * collector, and firing several of those concurrently is how a batch of six
+   * turns into a burst the provider rate-limits. The batch stops at the first
+   * failure rather than pressing on, so the admin is told exactly how far it
+   * got instead of having to work out which stores landed.
+   *
+   * Returns an error message, or null when every store landed.
+   */
   const handleAdd = useCallback(
-    async (draft: AddStoreDraft) => {
+    async (drafts: AddStoreDraft[]): Promise<string | null> => {
       // The name and city travel ONTO the row (migration 045): the collector's
       // phone has no RLS read on `clients`, so a store published without them
-      // shows up blank on the list. Refuse rather than publish a nameless row —
-      // the admin can only have got here by picking from this same list.
-      const client = clients.find(c => c.id === draft.clientId)
-      if (!client) {
-        setActionError('That customer could not be found. Refresh and try again.')
-        return
+      // shows up blank on the list. Resolve every one BEFORE writing any —
+      // refusing the batch whole beats publishing half of it and then stopping.
+      const resolved: { draft: AddStoreDraft; client: Client }[] = []
+      for (const draft of drafts) {
+        const client = clients.find(c => c.id === draft.clientId)
+        if (!client) {
+          const message = 'One of those customers could not be found. Refresh and try again.'
+          setActionError(message)
+          return message
+        }
+        resolved.push({ draft, client })
       }
 
-      // An "additional" store fires an SMS, so it can't go through the
-      // client-side insert (the BusyBee key is server-only). It routes through a
-      // server action that lists the row AND texts every active collector; the
-      // hook doesn't see that write, so reload after it lands.
-      if (draft.isAdditional) {
-        const result = await listAdditionalStore({
-          clientId: draft.clientId,
-          clientName: client.company_name,
-          area: client.city ?? null,
-          scheduledFor: draft.scheduledFor,
-          amountDue: draft.amountDue,
-          listedBy: profile?.id ?? null,
-        })
-        if (result.error) {
-          setActionError(result.error)
-          return
-        }
-        setActionError('')
-        await refreshVisits()
+      let listed = 0
+      let anyAdditional = false
+      const fanout = { configured: true, recipients: 0, sent: 0, failed: 0 }
 
-        const { configured, recipients, sent, failed } = result.sms
-        if (!configured) {
-          toast.success('Store added as additional', {
-            description: 'SMS isn’t configured yet — the store is listed and badged, but no texts were sent.',
+      /** How a mid-batch failure reads: what landed, then why it stopped. */
+      const stoppedAt = (reason: string) =>
+        listed === 0
+          ? reason
+          : `Listed ${listed} of ${resolved.length} stores, then stopped: ${reason} ` +
+            'The ones already on the list are ticked as such — untick them and try the rest again.'
+
+      for (const { draft, client } of resolved) {
+        // An "additional" store fires an SMS, so it can't go through the
+        // client-side insert (the BusyBee key is server-only). It routes through
+        // a server action that lists the row AND texts every active collector;
+        // the hook doesn't see that write, so reload after it lands.
+        if (draft.isAdditional) {
+          const result = await listAdditionalStore({
+            clientId: draft.clientId,
+            clientName: client.company_name,
+            area: client.city ?? null,
+            scheduledFor: draft.scheduledFor,
+            amountDue: draft.amountDue,
+            listedBy: profile?.id ?? null,
           })
-        } else if (recipients === 0) {
-          toast.success('Store added as additional', {
-            description: 'No active collector had a textable number.',
-          })
+          if (result.error) {
+            await refreshVisits()
+            const message = stoppedAt(result.error)
+            setActionError(message)
+            return message
+          }
+          anyAdditional = true
+          fanout.configured = result.sms.configured
+          fanout.recipients += result.sms.recipients
+          fanout.sent += result.sms.sent
+          fanout.failed += result.sms.failed
         } else {
-          toast.success(`Additional store added — ${sent}/${recipients} collectors notified`, {
-            description: failed > 0 ? `${failed} text${failed === 1 ? '' : 's'} could not be sent.` : undefined,
+          // Everything the collector fills in is left to the database defaults —
+          // the store belongs to nobody until someone actually works it.
+          const message = await createVisit({
+            clientId: draft.clientId,
+            clientName: client.company_name,
+            area: client.city ?? null,
+            scheduledFor: draft.scheduledFor,
+            amountDue: draft.amountDue,
+            listedBy: profile?.id ?? null,
           })
+          if (message) {
+            const wrapped = stoppedAt(message)
+            setActionError(wrapped)
+            return wrapped
+          }
         }
-        return
+        listed++
       }
 
-      // Everything the collector fills in is left to the database defaults —
-      // the store belongs to nobody until someone actually works it.
-      const message = await createVisit({
-        clientId: draft.clientId,
-        clientName: client.company_name,
-        area: client.city ?? null,
-        scheduledFor: draft.scheduledFor,
-        amountDue: draft.amountDue,
-        listedBy: profile?.id ?? null,
-      })
-      setActionError(message ?? '')
+      setActionError('')
+      if (anyAdditional) await refreshVisits()
+
+      const count = `${listed} store${listed === 1 ? '' : 's'}`
+
+      if (!anyAdditional) {
+        toast.success(`${count} added to the list`)
+        return null
+      }
+
+      const { configured, recipients, sent, failed } = fanout
+      if (!configured) {
+        toast.success(`${count} added as additional`, {
+          description: 'SMS isn’t configured yet — the stores are listed and badged, but no texts were sent.',
+        })
+      } else if (recipients === 0) {
+        toast.success(`${count} added as additional`, {
+          description: 'No active collector had a textable number.',
+        })
+      } else {
+        toast.success(`${count} added as additional — ${sent}/${recipients} texts sent`, {
+          description: failed > 0 ? `${failed} text${failed === 1 ? '' : 's'} could not be sent.` : undefined,
+        })
+      }
+      return null
     },
     [createVisit, clients, profile?.id, refreshVisits]
   )
@@ -868,7 +927,7 @@ export default function CollectionPage() {
         key={addSession}
         open={addOpen}
         onOpenChange={setAddOpen}
-        clients={clients}
+        clients={listableClients}
         visits={visits}
         defaults={addDefaults}
         onAdd={handleAdd}
