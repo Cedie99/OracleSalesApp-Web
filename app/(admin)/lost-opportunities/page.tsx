@@ -89,6 +89,22 @@ export default function LostOpportunitiesPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {pageItems.map(client => {
             const lostMeeting = meetings.find(m => m.client_id === client.id && m.outcome === 'lost_opportunity')
+            /*
+             * Why we lost them, from whichever path did the losing.
+             *
+             * A meeting marked lost_opportunity carries the explanation in its
+             * remarks and leaves inactive_reason null (082 never sets it). A
+             * declaration — mobile's Complete Info, or an admin on the Clients
+             * page — has no meeting at all and puts the reason in
+             * inactive_reason (088/112). Reading only the meeting left every
+             * declared loss with a blank card.
+             *
+             * inactive_reason wins when both exist: 037 clears it on claim and
+             * the Clients page clears it when a loss is undone, so it always
+             * describes the CURRENT cycle, while the meeting lookup is
+             * unordered and could match one from a previous one.
+             */
+            const lostReason = client.inactive_reason?.trim() || lostMeeting?.remarks
             const isReassignable = client.reassignable_at ? isPast(new Date(client.reassignable_at)) : false
 
             return (
@@ -120,13 +136,18 @@ export default function LostOpportunitiesPage() {
                       <User className="w-3 h-3 shrink-0" />
                       <span>Lost by: <span className="text-foreground">{client.agent?.full_name}</span></span>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <Building2 className="w-3 h-3 shrink-0" />
-                      <span>{client.contact_person}</span>
-                    </div>
-                    {lostMeeting?.remarks && (
+                    {/* Optional since 013, and blank on most field-created
+                        clients — without the guard the row renders as a lone
+                        icon with nothing beside it. */}
+                    {client.contact_person && (
+                      <div className="flex items-center gap-1.5">
+                        <Building2 className="w-3 h-3 shrink-0" />
+                        <span>{client.contact_person}</span>
+                      </div>
+                    )}
+                    {lostReason && (
                       <div className="mt-2 bg-muted/30 rounded-lg p-2.5">
-                        <p className="text-muted-foreground italic">&ldquo;{lostMeeting.remarks}&rdquo;</p>
+                        <p className="text-muted-foreground italic">&ldquo;{lostReason}&rdquo;</p>
                       </div>
                     )}
                   </div>
