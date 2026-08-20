@@ -17,9 +17,12 @@ import type {
  * on explicit columns and on coercing NUMERIC.
  */
 
+// Structured address columns ride along with the legacy free-text one — see the
+// twin note in use-collection.ts.
 const CLIENT_JOIN = `
   id, company_name, contact_person, contact_position, contact_number,
-  office_address, customer_type, sales_channel, assigned_agent_id, status,
+  office_address, address_line1, address_line2, landmark,
+  customer_type, sales_channel, assigned_agent_id, status,
   city, province, lost_at, reassignable_at, created_at, updated_at
 `
 
@@ -35,6 +38,19 @@ const PO_COLUMNS = `
   client:clients!client_id ( ${CLIENT_JOIN} ),
   driver:profiles!driver_id ( ${PROFILE_JOIN} )
 `
+
+// The store's default map pin (migration 114), selected ON TOP of PO_COLUMNS and
+// kept apart so the fetch can fall back without it — the collection twin of that
+// file's ADDITIONAL_COLUMNS, and for the same deploy-ordering reason: 114 ships
+// in this repo and CI applies it on merge, but the Vercel build and the
+// migration push race. Without the fallback that window is a dead page, because
+// PostgREST rejects the ENTIRE select on one unknown column.
+const COORDINATE_COLUMNS = `client_lat, client_lng`
+
+/** True when a select failed only because 114's columns aren't there yet. */
+function isMissingCoordinateColumn(error: { message?: string } | null): boolean {
+  return !!error?.message && /client_lat|client_lng/.test(error.message)
+}
 
 const COD_REMITTANCE_COLUMNS = `
   id, driver_id, amount_remitted, amount_collected, status, receiver_name,
@@ -110,6 +126,10 @@ function normalizePo(
     sequence_no: num(row.sequence_no),
     gps_lat: num(row.gps_lat),
     gps_lng: num(row.gps_lng),
+    // Absent while the pre-114 fallback select is in play; null then reads as
+    // "no default pin known", which is how the maps page already treats it.
+    client_lat: num(row.client_lat),
+    client_lng: num(row.client_lng),
     client: one<Client>(row.client),
     driver: one<Profile>(row.driver),
     // COD installments behind a partial PO (migration 073). Empty until 073 is
@@ -164,17 +184,33 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
 
   const load = useCallback(async () => {
     const supabase = createClient()
-    const { data, error: queryError } = await supabase
+    const primary = await supabase
       .from('purchase_orders')
-      .select(PO_COLUMNS)
+      .select(`${PO_COLUMNS}, ${COORDINATE_COLUMNS}`)
       .order('scheduled_for', { ascending: false })
+
+    // The two selects infer different row shapes, so hold the rows at the shape
+    // normalizePo already accepts rather than let the union fight itself.
+    let rows = primary.data as Record<string, unknown>[] | null
+    let queryError = primary.error
+
+    // Pre-114 fallback: retry without the default-pin columns rather than fail
+    // the whole page. See COORDINATE_COLUMNS.
+    if (queryError && isMissingCoordinateColumn(queryError)) {
+      const fallback = await supabase
+        .from('purchase_orders')
+        .select(PO_COLUMNS)
+        .order('scheduled_for', { ascending: false })
+      rows = fallback.data as Record<string, unknown>[] | null
+      queryError = fallback.error
+    }
 
     if (queryError) {
       setError(queryError.message)
     } else {
       setError('')
       const paymentsByPo = await loadCodPayments(supabase)
-      setOrders((data ?? []).map(row => normalizePo(row as Record<string, unknown>, paymentsByPo)))
+      setOrders((rows ?? []).map(row => normalizePo(row, paymentsByPo)))
     }
     setLoading(false)
   }, [])

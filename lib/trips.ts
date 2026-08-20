@@ -31,6 +31,14 @@ export interface TripStopDetail {
 export interface TripStop {
   id: string
   /**
+   * The customer this stop is for, so a surface can reach the client's other
+   * records — chiefly its `client_locations` list (see lib/store-locations.ts).
+   *
+   * Null only where the row somehow has no customer, which the schema forbids;
+   * typed nullable so a surface handles it rather than asserting.
+   */
+  clientId: string | null
+  /**
    * 1-based position in this worker's own run, ALWAYS derived from the stop's
    * position inside its (worker, day) group — never read off a stored counter.
    *
@@ -50,11 +58,47 @@ export interface TripStop {
   sequence: number
   /** Store or customer name. */
   label: string
-  /** Address (Collection) or area (Delivery). */
+  /**
+   * The stop's address in one line.
+   *
+   * Composed by `clientAddress()` from every address column the client record
+   * carries, NOT read off `office_address` alone — that legacy free-text field
+   * is empty on plenty of real rows whose structured city/province are filled
+   * in, and reading only it is what made the not-worked list report "No address
+   * on file" for stores that plainly have one.
+   */
   sublabel: string
-  /** Null when no photo was captured, so no fix came with it. */
+  /**
+   * Where the WORKER's phone stood, from the fix that rode along with the proof
+   * photo. Null when no photo was captured, so no fix came with it — which is
+   * every stop nobody has reached yet.
+   */
   lat: number | null
   lng: number | null
+  /**
+   * Where the STORE is, per its own record: the current pin a field officer set
+   * on the ground, else its office pin. Denormalized onto the row by migration
+   * 114.
+   *
+   * A different fact from `lat`/`lng` above and never a substitute for it — this
+   * is known before anyone sets out, which is precisely what makes it the only
+   * thing an unworked stop can be plotted at. A worked stop carries both, and
+   * the gap between them is worth seeing.
+   *
+   * Null when the client record carries no position at all; `locality` below is
+   * then all there is to go on.
+   */
+  storeLat: number | null
+  storeLng: number | null
+  /**
+   * The stop's municipality ("Tanza, Cavite"), when the record names one.
+   *
+   * The last fallback for placing a stop on the map. A store with no coordinate
+   * of any kind still almost always has a city, and the map draws that city's
+   * boundary rather than inventing a pin inside it — see `MapArea` in
+   * components/maps/field-map.tsx.
+   */
+  locality: string | null
   /** When the stop closed out. Null while nobody has reached it. */
   at: string | null
   /**

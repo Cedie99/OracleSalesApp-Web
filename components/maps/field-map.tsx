@@ -1,7 +1,9 @@
 'use client'
 
-import { useEffect } from 'react'
-import { MapContainer, TileLayer, Marker, Polyline, Popup, ZoomControl, useMap } from 'react-leaflet'
+import { Fragment, useEffect } from 'react'
+import {
+  Circle, MapContainer, Polygon, Polyline, Popup, Marker, TileLayer, ZoomControl, useMap,
+} from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { ExternalLink } from 'lucide-react'
@@ -148,18 +150,37 @@ function FlyTo({ focus }: { focus: FocusTarget | null }) {
  * through the very stops that produced those pins, so it can never fall outside
  * their bounds.
  */
-function FitToPins({ pins }: { pins: MapPin[] }) {
+function FitToPins({ pins, areas }: { pins: MapPin[]; areas: MapArea[] }) {
   const map = useMap()
-  const key = pins.map(p => p.id).sort().join(',')
+  const key = [...pins.map(p => p.id), ...areas.map(a => `~${a.id}`)].sort().join(',')
   useEffect(() => {
-    if (pins.length === 0) return
-    if (pins.length === 1) {
+    // Areas are framed alongside pins, not instead of them: the not-worked lens
+    // can show a mix — the stores with a real pin, and a circle for the towns
+    // holding the ones without — and framing only the pins would push those
+    // circles off screen, hiding exactly the records that have least known
+    // about them.
+    const bounds = L.latLngBounds([])
+    for (const pin of pins) bounds.extend([pin.lat, pin.lng])
+    for (const area of areas) {
+      // The drawn shape's own extent, so the camera frames what is on screen:
+      // an outline's bounds are the boundary itself, and only a fallback circle
+      // is framed by its radius.
+      if (area.outline) {
+        for (const ring of area.outline) for (const point of ring) bounds.extend(point)
+      } else {
+        bounds.extend(L.latLng(area.lat, area.lng).toBounds(area.radiusMeters * 2))
+      }
+    }
+    if (!bounds.isValid()) return
+
+    // One point and nothing around it has no extent to fit, so fitBounds would
+    // run to the tile ceiling. A circle always has extent, so it never lands here.
+    if (pins.length === 1 && areas.length === 0) {
       map.setView([pins[0].lat, pins[0].lng], 14, { animate: true })
       return
     }
-    const bounds = L.latLngBounds(pins.map(p => [p.lat, p.lng] as [number, number]))
     map.fitBounds(bounds, { padding: [64, 64], maxZoom: 15, animate: true })
-    // Intentionally keyed on `key`, not `pins` — see the note above.
+    // Intentionally keyed on `key`, not `pins`/`areas` — see the note above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, map])
   return null
@@ -209,6 +230,95 @@ export interface TripPath {
   points: { lat: number; lng: number }[]
   /** Dimmed and thinner, for trips other than the selected one. */
   muted?: boolean
+}
+
+/**
+ * A place a record is known to be INSIDE, drawn as a shape rather than a pin.
+ *
+ * The distinction a pin cannot make: a pin says "the store is HERE", and putting
+ * one at a town's centre because a town is all the record carries is a lie with
+ * four decimal places on it. An outline says "somewhere in Quezon City", which
+ * is the truth about a store that has a `city` and no coordinate — see the
+ * not-worked lens in trip-map-view.tsx, and `app/api/geocode/city/route.ts` for
+ * where the shape comes from.
+ *
+ * Drawn under everything else and kept deliberately faint: it is the backdrop a
+ * real pin is read against, never a thing competing with one for attention.
+ */
+export interface MapArea {
+  id: string
+  /** Centre, used for the circle fallback and to frame the camera. */
+  lat: number
+  lng: number
+  /** The circle's size, used ONLY when `outline` is absent. */
+  radiusMeters: number
+  /**
+   * The real municipal boundary, as one `[lat, lng]` ring per part. When present
+   * this is what is drawn; a circle is the cruder fallback for towns OSM has no
+   * shape for, and the difference in how they read is deliberate.
+   */
+  outline?: [number, number][][]
+  color: string
+  /** Place name, e.g. "Quezon City, Metro Manila". */
+  label: string
+  /** Shown on the area's own marker, e.g. how many records sit in it. */
+  badge?: string | number | null
+  /** Popup lines under the label — same purpose as `MapPin.meta`. */
+  meta?: (string | null | undefined)[]
+}
+
+/**
+ * The area's marker: a flat name chip at its centre, NOT a teardrop pin.
+ *
+ * The shape is the whole message. A teardrop means "the thing is exactly at the
+ * point I am standing on", which is the one claim an area explicitly cannot
+ * make — so reusing it here would undo the reason the outline exists. A label
+ * lying flat on the map reads the way a place name reads on any atlas: it names
+ * the region under it rather than marking a spot inside it.
+ *
+ * Centre-anchored for the same reason. A pin's tip is meaningful and its anchor
+ * sits at the bottom; this has no tip, so it is centred on the centroid and the
+ * eye takes it as the whole shape's caption.
+ */
+function createAreaLabelIcon(color: string, label: string, badge?: string | number | null) {
+  const count =
+    badge != null
+      ? `<span style="background:${color};color:#0f172a;border-radius:9999px;padding:0 5px;font-weight:700;margin-left:5px;">${badge}</span>`
+      : ''
+  return L.divIcon({
+    className: '',
+    html: `<div style="display:inline-flex;align-items:center;white-space:nowrap;transform:translate(-50%,-50%);padding:2px 4px 2px 8px;border-radius:9999px;background:rgba(15,23,42,0.82);border:1.5px solid ${color};color:#fff;font-size:11px;font-weight:600;line-height:17px;box-shadow:0 1px 4px rgba(0,0,0,0.45);">${label}${count}</div>`,
+    // Sized 0x0 with the chip translated by -50%: the label is variable-width
+    // and Leaflet needs a fixed iconSize to anchor from, so the anchoring is
+    // done in CSS where the real width is known.
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+    popupAnchor: [0, -12],
+  })
+}
+
+/**
+ * Shared by both shapes, so an outline and a fallback circle read as one thing.
+ *
+ * Weighted to survive the basemap rather than to be tasteful in isolation: the
+ * standard tiles are a dense field of grey and pink roads, and the first pass at
+ * this (1.5px, 70% opacity, 8% fill) was in the DOM and invisible on screen. A
+ * boundary nobody can see is the same as no boundary.
+ */
+function areaPathOptions(color: string) {
+  return {
+    color,
+    weight: 3,
+    opacity: 0.95,
+    fillColor: color,
+    // Enough to tint the towns apart from their surroundings, low enough to read
+    // the roads and the basemap's own labels straight through.
+    fillOpacity: 0.15,
+    // Dashed because the claim is "somewhere inside this", not "on this line" —
+    // and for the circle, because its boundary is an approximation of an
+    // approximation.
+    dashArray: '8 6',
+  }
 }
 
 export interface FocusTarget {
@@ -327,6 +437,8 @@ interface FieldMapProps {
   highlight: HighlightMarker | null
   /** Routes to draw under the pins. Omit for lenses that have no notion of a run. */
   trips?: TripPath[]
+  /** Approximate areas, drawn beneath everything. See `MapArea`. */
+  areas?: MapArea[]
 }
 
 /**
@@ -355,6 +467,7 @@ export default function FieldMap({
   focus,
   highlight,
   trips = [],
+  areas = [],
 }: FieldMapProps) {
   const tile = TILE_LAYERS[mapType]
 
@@ -386,6 +499,52 @@ export default function FieldMap({
           maxZoom={TILE_LAYERS.satellite.maxZoom}
         />
       )}
+
+      {/* Areas first of all: they are the backdrop. Markers live in Leaflet's
+          own higher pane, so a pin inside one stays clickable through it, and
+          the fill is faint enough to read the basemap through. */}
+      {areas.map(area => {
+        const popup = (
+          <Popup>
+            <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+              <strong>{area.label}</strong>
+              <PopupMeta meta={area.meta} />
+            </div>
+          </Popup>
+        )
+        return (
+          <Fragment key={area.id}>
+            {area.outline ? (
+              // `positions` takes the array of rings directly, which is what
+              // draws a municipality split across several islands as several
+              // shapes under one identity rather than as one ring zig-zagging
+              // between them.
+              <Polygon positions={area.outline} pathOptions={areaPathOptions(area.color)}>
+                {popup}
+              </Polygon>
+            ) : (
+              <Circle
+                center={[area.lat, area.lng]}
+                radius={area.radiusMeters}
+                pathOptions={areaPathOptions(area.color)}
+              >
+                {popup}
+              </Circle>
+            )}
+            {/* The name chip. Given the LOWEST zIndex offset of anything on the
+                map so a real pin standing on the same spot always wins — the
+                area is context, and context must never cover the thing it is
+                context for. */}
+            <Marker
+              position={[area.lat, area.lng]}
+              icon={createAreaLabelIcon(area.color, area.label, area.badge)}
+              zIndexOffset={-1000}
+            >
+              {popup}
+            </Marker>
+          </Fragment>
+        )
+      })}
 
       {/* Routes render before the markers so pins always sit on top of the line. */}
       {trips
@@ -494,7 +653,7 @@ export default function FieldMap({
         </Marker>
       )}
       <InvalidateOnResize />
-      <FitToPins pins={pins} />
+      <FitToPins pins={pins} areas={areas} />
       <FlyTo focus={focus} />
     </MapContainer>
   )
