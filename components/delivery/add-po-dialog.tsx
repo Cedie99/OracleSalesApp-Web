@@ -8,6 +8,8 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ClientPicker } from '@/components/ui/client-picker'
+import { recentClientIds } from '@/lib/client-search'
 import { peso } from '@/lib/money'
 import { TONE_TEXT } from '@/lib/status-styles'
 import type { Client, DeliveryStatus, PurchaseOrder } from '@/types'
@@ -33,7 +35,8 @@ interface AddPoDialogProps {
   orders: PurchaseOrder[]
   /** Pre-selected day when opened from a specific list's "Add PO". */
   defaults?: { scheduledFor?: string }
-  onAdd: (draft: AddPoDraft) => void
+  /** Returns an error message, or null once the PO is on the list. */
+  onAdd: (draft: AddPoDraft) => Promise<string | null>
 }
 
 function today(): string {
@@ -102,18 +105,36 @@ const PRIOR_USE_ADVICE: Record<DeliveryStatus, string> = {
 export function AddPoDialog({
   open, onOpenChange, clients, orders, defaults, onAdd,
 }: AddPoDialogProps) {
-  // `null`, not '', is this Select's "nothing chosen" value. An empty string is
+  // `null`, not '', is the picker's "nothing chosen" value. An empty string is
   // treated as a selected-but-unknown value and the popup silently refuses to
   // commit a click — see base-ui's select docs, "Placeholder values".
   const [clientId, setClientId] = useState<string | null>(null)
   const [poNumber, setPoNumber] = useState('')
   const [scheduledFor, setScheduledFor] = useState(defaults?.scheduledFor ?? today)
   const [area, setArea] = useState('')
+  /**
+   * Whether the area on screen is the admin's own wording rather than the
+   * customer's town. It is what stops a later customer change overwriting text
+   * someone typed on purpose — and it goes back to false when they empty the
+   * field, because clearing an area is asking for the default back, not
+   * overriding it with a blank.
+   */
+  const [areaEdited, setAreaEdited] = useState(false)
   const [cod, setCod] = useState(false)
   const [codDue, setCodDue] = useState('')
   const [error, setError] = useState('')
   /** Set once the admin has seen and accepted the history warning below. */
   const [warningAccepted, setWarningAccepted] = useState(false)
+  const [busy, setBusy] = useState(false)
+  /** How many POs this sitting has already put on the list — see "Save & add another". */
+  const [addedCount, setAddedCount] = useState(0)
+
+  /**
+   * The customers most recently listed, pinned to the top of the picker.
+   * Derived from the orders this dialog already receives for the duplicate
+   * check, so nothing extra is loaded to get it.
+   */
+  const recentIds = useMemo(() => recentClientIds(orders), [orders])
 
   const normalizedPo = normalizePoNumber(poNumber)
 
@@ -148,14 +169,67 @@ export function AddPoDialog({
 
   const selectedClient = clients.find(c => c.id === clientId)
 
-  /** Picking the customer fills the area, since that is where they are. */
-  function handleClientChange(id: string | null) {
-    setClientId(id)
-    const picked = clients.find(c => c.id === id)
-    if (picked?.city && !area) setArea(picked.city)
+  /** The town the picked customer is in, when their record carries one. */
+  const clientCity = selectedClient?.city?.trim() || null
+
+  /**
+   * Every area already in use, for the spelling snap below. Read off the orders
+   * this dialog already receives, so no extra load.
+   */
+  const knownAreas = useMemo(
+    () => [...new Set(orders.map(po => po.area?.trim()).filter((a): a is string => !!a))],
+    [orders]
+  )
+
+  /** True when the field says exactly where the customer is. */
+  const areaMatchesCity =
+    clientCity !== null && area.trim().toLowerCase() === clientCity.toLowerCase()
+
+  /**
+   * The customer's town, when it is on file and is NOT what the field says —
+   * i.e. the admin has typed over it, or emptied it. Offered as one click
+   * rather than applied, because a delivery area legitimately differs from the
+   * customer's registered town and their wording wins.
+   */
+  const citySuggestion = clientCity !== null && !areaMatchesCity ? clientCity : null
+
+  /**
+   * Snap what was typed onto an area already in use when the two differ only in
+   * case or spacing. The trip board and the delivery dashboard group stops by
+   * this string EXACTLY, so "balanga", "Balanga" and "Balanga " quietly split
+   * one town into three areas on the ticket.
+   */
+  function normalizeArea(raw: string): string {
+    const cleaned = raw.trim().replace(/\s+/g, ' ')
+    return knownAreas.find(known => known.toLowerCase() === cleaned.toLowerCase()) ?? cleaned
   }
 
-  function handleAdd() {
+  /**
+   * Picking the customer fills the area, since that is where they are — and
+   * KEEPS filling it as the customer is changed again. The earlier version
+   * filled an empty field once and then went quiet, so correcting a mis-picked
+   * customer left the previous customer's town sitting on the PO.
+   */
+  function handleClientChange(id: string | null) {
+    setClientId(id)
+    if (areaEdited) return
+    const picked = clients.find(c => c.id === id)
+    setArea(picked?.city?.trim() ?? '')
+  }
+
+  function handleAreaChange(next: string) {
+    setArea(next)
+    setAreaEdited(next.trim() !== '')
+  }
+
+  /** Take the customer's town, and hand the field back to auto-fill. */
+  function useCityAsArea() {
+    if (!clientCity) return
+    setArea(normalizeArea(clientCity))
+    setAreaEdited(false)
+  }
+
+  async function handleAdd(andAnother: boolean) {
     if (!poNumber.trim()) return setError('Enter the PO number from the paperwork.')
     if (!PO_PATTERN.test(normalizedPo)) {
       return setError('PO numbers look like PO-2100 — check what was typed.')
@@ -189,20 +263,47 @@ export function AddPoDialog({
       return setWarningAccepted(true)
     }
 
-    onAdd({
-      poNumber: normalizedPo, clientId, scheduledFor, area: area.trim(), cod, codDue: due,
+    setBusy(true)
+    const message = await onAdd({
+      // Normalized here too, not just on blur — this is the value that becomes
+      // an area on the trip ticket, and it must not depend on the field having
+      // lost focus first.
+      poNumber: normalizedPo, clientId, scheduledFor, area: normalizeArea(area), cod, codDue: due,
     })
-    onOpenChange(false)
+    setBusy(false)
+    if (message) return setError(message)
+
+    if (!andAnother) return onOpenChange(false)
+
+    // A stack of PO paperwork is worked through in one sitting, so keep the
+    // delivery day and clear everything that belongs to the sheet just entered.
+    // The area is cleared with the rest because picking the next customer
+    // refills it, and a stale area is worse than an empty one.
+    setAddedCount(n => n + 1)
+    setPoNumber('')
+    setClientId(null)
+    setArea('')
+    setAreaEdited(false)
+    setCod(false)
+    setCodDue('')
+    setWarningAccepted(false)
+    setError('')
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      {/* Same height guard as the store dialog: the history warning and the COD
+          field both appear conditionally, and on a short window they were
+          enough to push the footer off screen. */}
+      {/* A size wider than the fields need, because the footer carries three
+          controls and a running count — at `md` the "Add to list" button was
+          wrapping onto its own row. */}
+      <DialogContent className="sm:max-w-lg max-h-[min(90dvh,52rem)] grid-rows-[auto_minmax(0,1fr)_auto]">
         <DialogHeader>
           <DialogTitle>Add a PO to the trip list</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-4 min-h-0 overflow-y-auto -mx-1 px-1">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="add-po-number">PO number</Label>
@@ -243,19 +344,18 @@ export function AddPoDialog({
 
           <div className="space-y-1.5">
             <Label htmlFor="add-po-client">Customer</Label>
-            <Select value={clientId} onValueChange={handleClientChange}>
-              <SelectTrigger id="add-po-client" className="w-full">
-                <SelectValue placeholder="Select a customer" />
-              </SelectTrigger>
-              <SelectContent>
-                {/* One string per item, not a fragment — the Select derives its
-                    trigger label from string children and falls back to the raw
-                    value otherwise (see collectSelectItems in ui/select.tsx). */}
-                {clients.map(c => (
-                  <SelectItem key={c.id} value={c.id}>{c.company_name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {/* Typed, not scrolled. The customer is named on the PO in the
+                admin's hand, so the fast path is to type it — see ClientPicker
+                for why a plain dropdown stopped working at this list's size. */}
+            <ClientPicker
+              id="add-po-client"
+              clients={clients}
+              value={clientId}
+              onChange={handleClientChange}
+              recentIds={recentIds}
+              placeholder={`Search ${clients.length.toLocaleString()} customers…`}
+              className="w-full"
+            />
             {selectedClient?.office_address && (
               <p className="text-[11px] text-muted-foreground">{selectedClient.office_address}</p>
             )}
@@ -267,10 +367,38 @@ export function AddPoDialog({
               id="add-po-area"
               placeholder="Balanga"
               value={area}
-              onChange={e => setArea(e.target.value)}
+              onChange={e => handleAreaChange(e.target.value)}
+              // Snapped on the way out, not per keystroke — mid-word the typed
+              // text matches nothing and the cursor would fight the correction.
+              onBlur={() => area.trim() && setArea(normalizeArea(area))}
+              className="w-full"
             />
-            <p className="text-[11px] text-muted-foreground">
-              How the trip ticket groups stops. There is no GPS on this module.
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {citySuggestion ? (
+                <>
+                  {/* The escape hatch for the case the sync deliberately will
+                      not handle: the admin typed their own area, so we offer
+                      the customer's town instead of overwriting with it. */}
+                  This customer is in{' '}
+                  <button
+                    type="button"
+                    onClick={useCityAsArea}
+                    className="font-medium text-foreground underline underline-offset-2 hover:no-underline"
+                  >
+                    {citySuggestion}
+                  </button>
+                  {area.trim() ? ' — click to use that instead.' : ' — click to fill it in.'}
+                </>
+              ) : areaMatchesCity ? (
+                <>From this customer&apos;s address. How the trip ticket groups stops.</>
+              ) : selectedClient ? (
+                <>
+                  This customer has no town on file, so type the area. It is how the trip ticket
+                  groups stops.
+                </>
+              ) : (
+                <>How the trip ticket groups stops. There is no GPS on this module.</>
+              )}
             </p>
           </div>
 
@@ -352,9 +480,24 @@ export function AddPoDialog({
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleAdd}>Add to list</Button>
+        <DialogFooter className="sm:justify-between">
+          {/* Reassurance, not decoration: with the dialog staying open after a
+              save, the only other evidence a PO landed is behind it. */}
+          <span className="self-center text-[11px] whitespace-nowrap text-muted-foreground">
+            {addedCount > 0 && `${addedCount} PO${addedCount === 1 ? '' : 's'} added`}
+          </span>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+              {addedCount > 0 ? 'Done' : 'Cancel'}
+            </Button>
+            {/* POs arrive as a stack of paper for one delivery day, and closing
+                the dialog per sheet meant reopening it and re-picking the day
+                every time. */}
+            <Button variant="outline" onClick={() => handleAdd(true)} disabled={busy}>
+              Save &amp; add another
+            </Button>
+            <Button onClick={() => handleAdd(false)} disabled={busy}>Add to list</Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

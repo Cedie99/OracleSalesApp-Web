@@ -112,3 +112,38 @@ export function clientInfoGaps(client: Client): ClientInfoGap[] {
   ]
   return checklist.filter(item => !item.done).map(({ key, label }) => ({ key, label }))
 }
+
+/**
+ * Whether a client may be put on a Collection or Delivery day list.
+ *
+ * Two gates, and both are about whether there is anything to deliver or collect
+ * in the first place:
+ *
+ *  1. **They have actually ordered.** Only `new` and `existing` clients have.
+ *     Promotion out of `in_progress` into `new` requires explicit PO/order
+ *     evidence (DEC-009, meeting 2026-07-24; enforced by
+ *     `po_confirmation_requests`), so a `prospect` or an `in_progress` client
+ *     is by definition someone who has never bought anything. Listing one is a
+ *     truck sent to a shop with no goods for it, or a collector sent for money
+ *     nobody owes. Note the UI already reads `in_progress` as a qualified
+ *     prospect — "Prospect - In Progress" in lib/status-styles.ts — so both
+ *     stages are excluded together.
+ *
+ *  2. **They are still a live record.** `lost` and soft-`deleted` clients are
+ *     out. A deleted client is invisible on every other surface (the Clients
+ *     page filters it), and these two pickers were the only place it still
+ *     showed up.
+ *
+ * Deliberately NOT applied to rows already on a list: a client can go lost
+ * while a PO of theirs is still pending, and that stop must keep rendering.
+ * This gates what can be ADDED, nothing else.
+ */
+export function isListableCustomer(client: Client): boolean {
+  if (client.status !== 'active') return false
+  return client.customer_type === 'new' || client.customer_type === 'existing'
+}
+
+/** The subset of `clients` the Collection and Delivery pickers may offer. */
+export function listableCustomers(clients: Client[]): Client[] {
+  return clients.filter(isListableCustomer)
+}
