@@ -365,12 +365,36 @@ export default function ClientsPage() {
   /** Sentinel returned instead of a message: the phone field shows its own red outline. */
   const PHONE_INVALID = 'PHONE_INVALID'
 
+  /**
+   * True when a number was typed and it is not 11 digits. Empty passes: since
+   * 013 the column is nullable and most field-created clients have none.
+   */
+  function phoneMalformed(value: string): boolean {
+    const v = value.trim()
+    return v !== '' && !/^\d{11}$/.test(v)
+  }
+
+  /**
+   * Only what the row itself refuses.
+   *
+   * 013 dropped NOT NULL from contact_person, contact_number, office_address,
+   * customer_type and sales_channel when mobile began creating clients
+   * bare-bones in the field. This form went on validating the pre-013 shape,
+   * which made the incomplete prospects that most need closing out the exact
+   * rows an admin could not save at all — 11 of 14 active clients on staging
+   * have no contact_person. Profile completeness is Complete Info's job.
+   *
+   * company_name and assigned_agent_id stay: both are still NOT NULL, and
+   * company_name additionally carries unique_company_per_agent (001), so a
+   * blank one would fail on the second blank client for the same agent.
+   */
   function validateForm(): string {
     if (!form.company_name.trim()) return 'Company name is required.'
-    if (!form.contact_person.trim()) return 'Contact person is required.'
-    if (!/^\d{11}$/.test(form.contact_number)) { setPhoneTouched(true); return PHONE_INVALID }
-    if (!form.office_address.trim()) return 'Office address is required.'
     if (!form.assigned_agent_id) return 'Assign an agent to this client.'
+    // Not a completeness rule: a half-typed number would be saved and then
+    // silently dropped by toE164() at SMS time, which reads as "the text never
+    // arrived" rather than "the number is wrong".
+    if (phoneMalformed(form.contact_number)) { setPhoneTouched(true); return PHONE_INVALID }
     // declare_client_lost() refuses an empty reason (`reason_required`); catch it
     // here so the admin is told before a round-trip.
     if (form.status === 'lost' && !form.inactive_reason.trim()) {
@@ -383,10 +407,10 @@ export default function ClientsPage() {
   function formColumns() {
     return {
       company_name: form.company_name.trim(),
-      contact_person: form.contact_person.trim(),
+      contact_person: form.contact_person.trim() || null,
       contact_position: form.contact_position.trim() || null,
-      contact_number: form.contact_number.trim(),
-      office_address: form.office_address.trim(),
+      contact_number: form.contact_number.trim() || null,
+      office_address: form.office_address.trim() || null,
       city: form.city.trim() || null,
       customer_type: form.customer_type,
       sales_channel: form.sales_channel,
@@ -1002,7 +1026,7 @@ export default function ClientsPage() {
             form={form}
             setForm={setForm}
             agents={assignableAgents}
-            phoneInvalid={phoneTouched && !/^\d{11}$/.test(form.contact_number)}
+            phoneInvalid={phoneTouched && phoneMalformed(form.contact_number)}
             onPhoneBlur={() => setPhoneTouched(true)}
           />
           {formError && formError !== PHONE_INVALID && (
@@ -1029,7 +1053,7 @@ export default function ClientsPage() {
             form={form}
             setForm={setForm}
             agents={assignableAgents}
-            phoneInvalid={phoneTouched && !/^\d{11}$/.test(form.contact_number)}
+            phoneInvalid={phoneTouched && phoneMalformed(form.contact_number)}
             onPhoneBlur={() => setPhoneTouched(true)}
           />
           {formError && formError !== PHONE_INVALID && (
@@ -1091,7 +1115,7 @@ function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: Client
           <div className="space-y-1.5">
             <Label htmlFor="contact_person" className="flex items-center gap-1.5 text-xs">
               <User className="w-3.5 h-3.5 text-muted-foreground" />
-              Contact Person
+              Contact Person <span className="text-muted-foreground font-normal">(optional)</span>
             </Label>
             <Input
               id="contact_person"
@@ -1117,7 +1141,7 @@ function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: Client
           <div className="space-y-1.5">
             <Label htmlFor="contact_number" className="flex items-center gap-1.5 text-xs">
               <Phone className="w-3.5 h-3.5 text-muted-foreground" />
-              Phone Number
+              Phone Number <span className="text-muted-foreground font-normal">(optional)</span>
             </Label>
             <Input
               id="contact_number"
@@ -1131,7 +1155,7 @@ function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: Client
           <div className="space-y-1.5">
             <Label htmlFor="office_address" className="flex items-center gap-1.5 text-xs">
               <MapPin className="w-3.5 h-3.5 text-muted-foreground" />
-              Office Address
+              Office Address <span className="text-muted-foreground font-normal">(optional)</span>
             </Label>
             <Input
               id="office_address"
@@ -1145,7 +1169,7 @@ function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: Client
         <div className="space-y-1.5">
           <Label htmlFor="city" className="flex items-center gap-1.5 text-xs">
             <MapPin className="w-3.5 h-3.5 text-muted-foreground" />
-            Municipality/City
+            Municipality/City <span className="text-muted-foreground font-normal">(optional)</span>
           </Label>
           <Input
             id="city"
