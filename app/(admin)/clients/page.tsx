@@ -7,6 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
@@ -57,6 +58,23 @@ interface ClientFormData {
   sales_channel: SalesChannel
   status: ClientStatus
   assigned_agent_id: string
+  /** Only meaningful while `status` is 'lost'; carries clients.inactive_reason. */
+  inactive_reason: string
+}
+
+/**
+ * declare_client_lost() (088, admin arm in 112) rejects by code rather than by
+ * throwing. Same convention as mobile's lib/policies/lost-opportunity-claim-policy.ts:
+ * a pure code -> message map, so the dialog can say what actually blocked the
+ * declaration instead of a generic failure.
+ */
+const DECLARE_LOST_MESSAGES: Record<string, string> = {
+  reason_required: 'A reason is required to mark a client lost.',
+  not_found: 'This client no longer exists.',
+  role_not_eligible: "You don't have permission to mark this client lost.",
+  already_lost: 'This client is already lost or deleted.',
+  pending_edit_request: "Resolve this client's pending edit request first.",
+  pending_po_confirmation: "Resolve this client's pending PO confirmation first.",
 }
 
 const EMPTY_CLIENT_FORM: ClientFormData = {
@@ -70,6 +88,7 @@ const EMPTY_CLIENT_FORM: ClientFormData = {
   sales_channel: 'distributor',
   status: 'active',
   assigned_agent_id: '',
+  inactive_reason: '',
 }
 
 export default function ClientsPage() {
@@ -336,6 +355,7 @@ export default function ClientsPage() {
       sales_channel: client.sales_channel,
       status: client.status === 'deleted' ? 'active' : client.status,
       assigned_agent_id: client.assigned_agent_id,
+      inactive_reason: client.inactive_reason ?? '',
     })
     setFormError('')
     setPhoneTouched(false)
@@ -351,6 +371,11 @@ export default function ClientsPage() {
     if (!/^\d{11}$/.test(form.contact_number)) { setPhoneTouched(true); return PHONE_INVALID }
     if (!form.office_address.trim()) return 'Office address is required.'
     if (!form.assigned_agent_id) return 'Assign an agent to this client.'
+    // declare_client_lost() refuses an empty reason (`reason_required`); catch it
+    // here so the admin is told before a round-trip.
+    if (form.status === 'lost' && !form.inactive_reason.trim()) {
+      return 'Give a reason for marking this client lost.'
+    }
     return ''
   }
 
@@ -392,7 +417,47 @@ export default function ClientsPage() {
     { field: 'sales_channel', label: 'Sales channel', format: v => (v ? LABEL[v as string] ?? String(v) : null) },
     { field: 'status', label: 'Status', format: v => (v ? LABEL[v as string] ?? String(v) : null) },
     { field: 'assigned_agent_id', label: 'Assigned agent', format: v => agentName(v as string | null) },
+    // Not a formColumns() field: inactive_reason is written by
+    // declare_client_lost(), never by the direct update, and putting it in
+    // formColumns would write '' over a null on every non-lost save. The audit
+    // diff gets it via auditColumns() instead.
+    { field: 'inactive_reason', label: 'Lost reason' },
   ]
+
+  /**
+   * formColumns() plus the loss reason, for the audit diff only.
+   *
+   * The reason is the answer to the question someone opens this log to ask —
+   * "why did we lose them" — and without it an entry says a client was marked
+   * lost and nothing more. `null` when not lost so undoing a loss records the
+   * reason being cleared, matching what the row actually does.
+   */
+  function auditColumns(isLost: boolean, reason: string) {
+    return { ...formColumns(), inactive_reason: isLost ? reason : null }
+  }
+
+  /**
+   * Run the loss transition through declare_client_lost() (088 + 112's admin
+   * arm) instead of writing lost_at/reassignable_at onto the row.
+   *
+   * A direct UPDATE only writes the client columns; it cannot close the open
+   * client_cycles row, and claim_lost_opportunity() (037) matches on
+   * client_cycles.end_reason — not clients.status. A client lost by direct
+   * write therefore shows up in mobile's Lost Opportunities list (which reads
+   * clients) but can never be claimed: 037 falls through its diagnosis and
+   * returns `already_claimed`, so every agent who tries is told another agent
+   * took it. Only the RPC does both halves.
+   *
+   * Returns null on success, or a message to show the admin.
+   */
+  async function declareLost(clientId: string, reason: string): Promise<string | null> {
+    const { data, error } = await createSupabaseClient()
+      .rpc('declare_client_lost', { p_client_id: clientId, p_reason: reason })
+    if (error) return error.message
+    const result = data as { ok?: boolean; code?: string } | null
+    if (result?.ok) return null
+    return DECLARE_LOST_MESSAGES[result?.code ?? ''] ?? 'Could not mark this client lost.'
+  }
 
   async function handleCreate() {
     const err = validateForm()
@@ -400,28 +465,40 @@ export default function ClientsPage() {
 
     setSaving(true)
     setFormError('')
-    const now = new Date().toISOString()
     const isLost = form.status === 'lost'
+    const reason = form.inactive_reason.trim()
     const columns = formColumns()
 
+    // Always INSERT active, even when the form says Lost. 051 opens a cycle on
+    // every client insert, so a row inserted already-lost carries an OPEN cycle
+    // while claiming to be lost — the exact unclaimable state migration 112
+    // describes. Create the client, then declare it lost through the RPC, which
+    // closes the cycle it was just given.
     const { data: created, error: insertError } = await createSupabaseClient()
       .from('clients')
-      .insert({
-        ...columns,
-        lost_at: isLost ? now : null,
-        // One-month cooling-off before a lost client can be reassigned. The
-        // BEFORE UPDATE trigger that normally stamps this does NOT fire on an
-        // insert, so this path has to compute it — see lib/lost-opportunity.ts.
-        reassignable_at: isLost ? reassignableFrom(new Date()).toISOString() : null,
-      })
+      .insert({ ...columns, status: 'active', lost_at: null, reassignable_at: null })
       .select('id')
       .single()
 
-    setSaving(false)
     if (insertError) {
+      setSaving(false)
       setFormError(insertError.message)
       return
     }
+
+    if (isLost && created?.id) {
+      const declineError = await declareLost(created.id, reason)
+      if (declineError) {
+        setSaving(false)
+        // The client exists; only the loss failed. Say so, or the admin retries
+        // the create and trips the duplicate-company constraint.
+        setFormError(`Client created, but marking it lost failed: ${declineError}`)
+        await refresh()
+        return
+      }
+    }
+
+    setSaving(false)
 
     // Logged after the write, and never awaited into the error path — a broken
     // audit table must not make a saved client look unsaved. See lib/audit.
@@ -433,7 +510,7 @@ export default function ClientsPage() {
       summary: `Created client ${columns.company_name}`,
       // Everything is "new" on a create, so the diff is the starting values
       // rather than a set of changes — from is null throughout.
-      changes: buildChanges(null, columns, CLIENT_AUDIT_FIELDS),
+      changes: buildChanges(null, auditColumns(isLost, reason), CLIENT_AUDIT_FIELDS),
     })
 
     setCreateOpen(false)
@@ -450,30 +527,66 @@ export default function ClientsPage() {
     setFormError('')
     const wasLost = editTarget.status === 'lost'
     const isLost = form.status === 'lost'
-
-    // Only stamp lost_at/reassignable_at on the transition. Re-saving an
-    // already-lost client must not restart its reassignment clock.
-    const lostFields = isLost
-      ? {
-          lost_at: editTarget.lost_at ?? new Date().toISOString(),
-          reassignable_at: editTarget.reassignable_at ?? reassignableFrom(new Date()).toISOString(),
-        }
-      : wasLost
-        ? { lost_at: null, reassignable_at: null }
-        : {}
+    const becomingLost = isLost && !wasLost
+    const reason = form.inactive_reason.trim()
 
     const columns = formColumns()
 
+    // On the active -> lost edge `status` is withheld from the direct update and
+    // declareLost() performs the transition instead — see its doc comment. The
+    // field edits go first deliberately: if the declaration then fails, the
+    // client is left ACTIVE with its edits saved, which is recoverable by
+    // retrying, rather than lost with a still-open cycle, which is not.
+    // Hold `status` at its current value on this edge rather than writing
+    // 'lost': declareLost() owns the transition, and writing the column here is
+    // exactly the half-loss migration 112 exists to remove.
+    const directColumns = becomingLost ? { ...columns, status: editTarget.status } : columns
+
+    // Only stamp lost_at/reassignable_at on the transition. Re-saving an
+    // already-lost client must not restart its reassignment clock; the coalesce
+    // is the belt-and-braces fill lib/lost-opportunity.ts describes, for a lost
+    // row that somehow carries no timestamp.
+    const lostFields = becomingLost
+      ? {}
+      : isLost
+        ? {
+            lost_at: editTarget.lost_at ?? new Date().toISOString(),
+            reassignable_at: editTarget.reassignable_at ?? reassignableFrom(new Date()).toISOString(),
+            inactive_reason: reason,
+          }
+        : wasLost
+          // Undoing a loss clears the reason with the timestamps — 037's claim
+          // path nulls all three together, and leaving a stale "why we lost
+          // them" on a re-activated client reads as current.
+          ? { lost_at: null, reassignable_at: null, inactive_reason: null }
+          : {}
+
     const { error: updateError } = await createSupabaseClient()
       .from('clients')
-      .update({ ...columns, ...lostFields, updated_at: new Date().toISOString() })
+      .update({
+        ...directColumns,
+        ...lostFields,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', editTarget.id)
 
-    setSaving(false)
     if (updateError) {
+      setSaving(false)
       setFormError(updateError.message)
       return
     }
+
+    if (becomingLost) {
+      const declineError = await declareLost(editTarget.id, reason)
+      if (declineError) {
+        setSaving(false)
+        setFormError(declineError)
+        await refresh()
+        return
+      }
+    }
+
+    setSaving(false)
 
     void recordAuditLog({
       ...describeClientEdit(editTarget, columns, wasLost, isLost),
@@ -482,7 +595,7 @@ export default function ClientsPage() {
       entityLabel: columns.company_name,
       changes: buildChanges(
         editTarget as unknown as Record<string, unknown>,
-        columns,
+        auditColumns(isLost, reason),
         CLIENT_AUDIT_FIELDS,
       ),
     })
@@ -1111,6 +1224,28 @@ function ClientForm({ form, setForm, agents, phoneInvalid, onPhoneBlur }: Client
             </Select>
           </div>
         </div>
+
+        {/*
+          Required by declare_client_lost(), which refuses an empty reason
+          (`reason_required`). It is also the only place a loss reason is ever
+          captured on web — until now nothing wrote inactive_reason from this
+          form, which is why every lost client in the database carries a null
+          reason.
+        */}
+        {form.status === 'lost' && (
+          <div className="space-y-1.5">
+            <Label className="text-xs">Reason for loss</Label>
+            <Textarea
+              value={form.inactive_reason}
+              onChange={e => set('inactive_reason', e.target.value)}
+              placeholder="Why is this client a lost opportunity?"
+              rows={3}
+            />
+            <p className="text-muted-foreground text-xs">
+              Shown to agents on Lost Opportunities, and recorded against this client&apos;s history.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   )

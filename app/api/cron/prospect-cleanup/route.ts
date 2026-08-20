@@ -13,9 +13,16 @@ export const dynamic = 'force-dynamic'
  * and soft-delete keeps the action reversible.
  *
  * `details_deadline_at` is exactly the 1-month clock mobile sets when a
- * client is created bare-bones in the field; it goes null once details are
- * completed (see the field's doc comment in types/index.ts). So a prospect is
- * overdue when the deadline has passed and details still aren't done.
+ * client is created bare-bones in the field (migration 021 mirrors mobile's
+ * `created_at + 30 days` server-side). Nothing ever clears that column, so
+ * completion is read from `details_completed_at`, not from the deadline going
+ * null — a prospect is overdue when the deadline has passed and
+ * `details_completed_at` is still unset.
+ *
+ * SCHEDULING. Vercel Cron runs in UTC. This is a destructive batch and must
+ * land while nobody is in the field, so vercel.json carries `0 17 * * *` —
+ * 5 PM UTC, which is 1 AM the next day in Manila (UTC+8, no DST). A bare
+ * `0 1 * * *` reads as "1 AM" but would fire at 9 AM Manila, mid-workday.
  */
 export async function GET(request: Request) {
   if (!isAuthorizedCronRequest(request)) {
