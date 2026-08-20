@@ -68,6 +68,38 @@ export function clientAddress(client: Client): ClientAddress {
   }
 }
 
+/**
+ * A Collection/Delivery stop's address in one line — never an empty string.
+ *
+ * Reads the whole client record via `clientAddress` rather than `office_address`
+ * alone. That single legacy column is blank on a large share of real rows (only
+ * mobile's Complete Info screen writes it, and only when an agent fills that
+ * screen in), while `city`/`province` are populated by sync on the same rows —
+ * so the old one-column read reported "No address on file" for stores whose
+ * municipality the database knew perfectly well.
+ *
+ * `area` is the last resort: the locality copied ONTO the row at publish time
+ * (migration 045). It is the only address left when the client join comes back
+ * empty, which happens for a client deleted after the stop was listed.
+ */
+export function stopAddress(client: Client | undefined, area: string | null): string {
+  const full = client ? clientAddress(client).full : null
+  return full ?? area?.trim() ?? ''
+}
+
+/**
+ * The municipality a stop sits in ("Tanza, Cavite"), or null if nothing names
+ * one — the key the map groups stops by when it has to fall back to drawing a
+ * town instead of a pin.
+ *
+ * Deliberately NOT the street line: two stores on the same street are one town,
+ * and one boundary is drawn for both.
+ */
+export function stopLocality(client: Client | undefined, area: string | null): string | null {
+  const locality = client ? clientAddress(client).locality : null
+  return locality ?? area?.trim() ?? null
+}
+
 /** True when the client carries its own permanent office pin (migration 052). */
 export function hasOfficePin(client: Client): boolean {
   return client.office_lat != null && client.office_lng != null

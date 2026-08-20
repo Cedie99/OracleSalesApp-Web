@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import type { DateRangeFilterState } from '@/lib/hooks/use-date-range-filter'
 import { TILE_LAYERS, parseLatLng, type MapTileType } from '@/components/maps/map-constants'
-import type { MapPin, FocusTarget, HighlightMarker, TripPath } from '@/components/maps/field-map'
+import type { MapArea, MapPin, FocusTarget, HighlightMarker, TripPath } from '@/components/maps/field-map'
 import {
   TRIP_TONE_COLOR, tripDurationMinutes, tripPoints,
   type Trip, type TripStop,
@@ -20,9 +20,13 @@ import {
 import {
   Search, Layers, ChevronDown, Check, Info, PanelLeftClose, PanelLeftOpen,
   X, Crosshair, Clock, CameraOff, MapPin as MapPinIcon, Route, Building2, ExternalLink,
+  CalendarX, LandPlot, Star,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { useReverseGeocode } from '@/lib/hooks/use-reverse-geocode'
+import { useCityPlaces, type CityPlace } from '@/lib/hooks/use-city-places'
+import { useClientLocations } from '@/lib/hooks/use-client-locations'
+import { storeLocations, type StoreLocation } from '@/lib/store-locations'
 import { formatDurationMinutes } from '@/lib/utils'
 
 const FieldMap = dynamic(() => import('@/components/maps/field-map'), {
@@ -35,6 +39,24 @@ const FieldMap = dynamic(() => import('@/components/maps/field-map'), {
 })
 
 const TILE_KEYS = Object.keys(TILE_LAYERS) as MapTileType[]
+
+/**
+ * The colour of the not-worked lens — its pins, its town outlines, its list dots
+ * and its legend, all one thing.
+ *
+ * Amber because that is already what "not worked" is called in colour elsewhere
+ * in this app (`ATTENTION_TONE` in components/needs-attention.tsx maps the
+ * `notworked` key to amber), so an admin arriving from a Needs-attention tile
+ * finds the same colour meaning the same thing.
+ *
+ * Deliberately not `TRIP_TONE_COLOR.open`, the slate these rows used to carry.
+ * That slate is the badge colour for a stop still open INSIDE somebody's run,
+ * and it is a deliberately recessive grey — which is right for one unfinished
+ * stop among a day's finished ones, and wrong for a whole lens whose entire
+ * content is the thing needing attention. On the standard basemap it also
+ * disappeared outright.
+ */
+const NOT_WORKED_COLOR = '#f59e0b'
 
 interface Nouns {
   /** "store" / "stores", "stop" / "stops". */
@@ -83,6 +105,72 @@ interface TripMapViewProps {
 
 function plural(n: number, [one, many]: [string, string]): string {
   return `${n} ${n === 1 ? one : many}`
+}
+
+/** ~metres per degree of latitude; longitude is scaled by cos(lat) from it. */
+const METRES_PER_DEGREE = 111_320
+
+/**
+ * Is this coordinate inside the town's boundary?
+ *
+ * Standard ray casting, run per ring and OR'd, so a municipality split across
+ * several islands counts a store on any of them as inside. Rings arrive as
+ * `[lat, lng]`, so latitude is the y axis.
+ *
+ * Returns TRUE when there is no boundary to test against — a town that resolved
+ * to a fallback circle rather than a real shape cannot support the claim "this
+ * pin is in the wrong place", and asserting it anyway would turn a gap in OSM's
+ * coverage into an accusation about the client's record.
+ *
+ * Boundary cases are not special-cased: a store exactly on a municipal line is
+ * arbitrary either way, and the only cost of getting it wrong is one advisory
+ * line in a popup.
+ */
+function insideRings(lat: number, lng: number, rings?: [number, number][][]): boolean {
+  if (!rings || rings.length === 0) return true
+  return rings.some(ring => {
+    let inside = false
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [latI, lngI] = ring[i]
+      const [latJ, lngJ] = ring[j]
+      const straddles = latI > lat !== latJ > lat
+      if (straddles && lng < ((lngJ - lngI) * (lat - latI)) / (latJ - latI) + lngI) {
+        inside = !inside
+      }
+    }
+    return inside
+  })
+}
+
+/**
+ * The camera for a town outline: FRAME it, never fly to its centre.
+ *
+ * A municipality is not a point, and a `zoom` picked for one lands wherever that
+ * zoom happens to fall — Bulacan at z12 fills several screens, so clicking the
+ * row showed a stretch of road and a sliver of boundary. Handing `FlyTo` a pair
+ * of corners makes `zoom` a CEILING and fits the shape instead, which is the
+ * only reading of "show me this town" that works for a town of any size.
+ *
+ * The corners come from the outline where there is one, and from the fallback
+ * circle's radius otherwise — either way, from the shape actually on screen.
+ */
+function townFocus(place: CityPlace, nonce: number): FocusTarget {
+  const points = place.outline?.flat().map(([lat, lng]) => ({ lat, lng }))
+  if (points && points.length > 1) {
+    return { lat: place.lat, lng: place.lng, zoom: 14, fitTo: points, nonce }
+  }
+  const dLat = place.radiusMeters / METRES_PER_DEGREE
+  const dLng = dLat / Math.max(0.2, Math.cos((place.lat * Math.PI) / 180))
+  return {
+    lat: place.lat,
+    lng: place.lng,
+    zoom: 14,
+    fitTo: [
+      { lat: place.lat - dLat, lng: place.lng - dLng },
+      { lat: place.lat + dLat, lng: place.lng + dLng },
+    ],
+    nonce,
+  }
 }
 
 /**
@@ -238,6 +326,79 @@ export function TripMapView({
     return openStops.filter(s => s.label.toLowerCase().includes(q))
   }, [openStops, search, coord])
 
+  /**
+   * Everything the not-worked list knows about WHERE its entries are — as two
+   * overlapping facts, not as one precedence chain.
+   *
+   * These stops used to be unplottable by definition: the map plots captured
+   * GPS, and nobody has been to them to capture any. But where a store IS was
+   * never the same fact as where a worker stood. A store carries up to two
+   * independent answers, and both get drawn:
+   *
+   *  - **A pin.** Migration 114 copies the store's own coordinate (its current
+   *    `client_locations` pin, else its office pin) onto every visit/PO, so a
+   *    store nobody has reached can still be plotted.
+   *  - **A town.** The municipality on the client record. This is a location
+   *    too — often the only one, and never made redundant by a pin.
+   *
+   * Grouping the town by EVERY stop that names one, rather than only the ones
+   * with no pin, is the whole point. A store whose pin sits in Bulacan while its
+   * record says Quezon City is a real and common data fault (a mistagged Client
+   * Office meeting will do it), and drawing only the pin hides it. Drawing both
+   * puts the contradiction on screen, where an admin can act on it.
+   *
+   * A client may also have SEVERAL locations — branches, each pinned by whoever
+   * collected there. Only the current one reaches this view today, because that
+   * is all migration 114 denormalizes; the rest live in `client_locations` and
+   * are a separate read.
+   */
+  const { placedOpenStops, openStopsByTown, townlessOpenStops } = useMemo(() => {
+    const placed: TripStop[] = []
+    const byTown = new Map<string, TripStop[]>()
+    const townless: TripStop[] = []
+
+    for (const stop of visibleOpenStops) {
+      const pinned = stop.storeLat != null && stop.storeLng != null
+      if (pinned) placed.push(stop)
+
+      if (stop.locality) {
+        const existing = byTown.get(stop.locality)
+        if (existing) existing.push(stop)
+        else byTown.set(stop.locality, [stop])
+      } else if (!pinned) townless.push(stop)
+    }
+
+    return {
+      placedOpenStops: placed,
+      openStopsByTown: [...byTown].sort((a, b) => a[0].localeCompare(b[0])),
+      townlessOpenStops: townless,
+    }
+  }, [visibleOpenStops])
+
+  /**
+   * Municipal boundaries for the towns above. Only asked for while the
+   * not-worked lens is open — the trips lens has a real fix for every pin and
+   * nothing to approximate — and only for towns that actually have a stop with
+   * no pin, so a day whose stores all carry coordinates makes no lookup at all.
+   */
+  const townNames = useMemo(
+    () => (listMode === 'open' ? openStopsByTown.map(([town]) => town) : []),
+    [listMode, openStopsByTown]
+  )
+  const townPlaces = useCityPlaces(townNames)
+
+  /**
+   * Every customer's numbered locations (113), so a not-worked row can list ALL
+   * the places its customer might be rather than only the one 114 stamped onto
+   * the row. A customer with branches has several, and which one a collector is
+   * being sent to is exactly the question this lens is asked.
+   *
+   * Fetched here rather than passed down: it is one small query for the whole
+   * table, both module lenses want it, and it must refresh on its own cadence —
+   * a pin set from the field has to reach this board without a reload.
+   */
+  const { byClient: locationsByClient } = useClientLocations()
+
   // Plain derivation rather than a useMemo: the early-return-inside-a-loop shape
   // is one the React Compiler can't preserve, and it bails out of optimising the
   // whole component when it sees it. The scan is over one day's stops.
@@ -263,14 +424,48 @@ export function TripMapView({
    * resolving for exactly the stop whose popup is open, and no pin nobody
    * clicked is ever geocoded.
    */
-  const stopPlace = useReverseGeocode(selectedStop?.stop.lat, selectedStop?.stop.lng)
+  /**
+   * The not-worked row the admin clicked, if any. Kept separate from
+   * `selectedStop` above because an open stop belongs to no trip — it is on the
+   * day's list and on nobody's route, which is what "not worked" means.
+   */
+  const selectedOpenStop =
+    selectedStopId !== null
+      ? visibleOpenStops.find(stop => stop.id === selectedStopId) ?? null
+      : null
+
+  const stopPlace = useReverseGeocode(
+    selectedStop?.stop.lat ?? selectedOpenStop?.storeLat,
+    selectedStop?.stop.lng ?? selectedOpenStop?.storeLng
+  )
 
   const pins = useMemo<MapPin[]>(
     () =>
-      // The not-worked lens has nothing to plot by definition, so the map clears
-      // and the panel below explains why.
       listMode === 'open'
-        ? []
+        ? placedOpenStops.map(stop => {
+            const active = stop.id === selectedStopId
+            return {
+              id: stop.id,
+              lat: stop.storeLat!,
+              lng: stop.storeLng!,
+              // One colour across the whole lens. Deliberately NOT a worker
+              // colour: nobody has taken this one, and colouring it as if
+              // someone had is the one thing this lens must never imply.
+              color: NOT_WORKED_COLOR,
+              active,
+              label: stop.label,
+              sublabel: stop.sublabel || undefined,
+              meta: [
+                // Said plainly on every pin, because the same map draws worked
+                // stops at CAPTURED GPS. Without this line the two are
+                // indistinguishable, and an admin would read "the collector was
+                // here" off a store nobody has visited.
+                "Store's registered location · not worked yet",
+                stop.amountLabel ? `Due: ${stop.amountLabel}` : null,
+                active ? (stopPlace.loading ? 'Locating…' : stopPlace.label) : null,
+              ],
+            }
+          })
         : visibleTrips.flatMap(trip =>
             trip.located.map(stop => {
               const active = stop.id === selectedStopId
@@ -296,8 +491,75 @@ export function TripMapView({
               }
             })
           ),
-    [visibleTrips, selectedStopId, listMode, stopPlace.loading, stopPlace.label]
+    [visibleTrips, placedOpenStops, selectedStopId, listMode, stopPlace.loading, stopPlace.label]
   )
+
+  /**
+   * One outline per town the not-worked list names.
+   *
+   * The honest shape of a location known only to the town: the record says the
+   * store is in Quezon City, so the map draws Quezon City. Dropping a pin at the
+   * town's centre instead would put a marker on a specific street corner on the
+   * strength of a city name, and every other pin on this map means "a store is
+   * exactly here".
+   *
+   * Towns still resolving are simply absent — the outlines fill in as the
+   * lookups land rather than the map waiting on the slowest one.
+   */
+  const areas = useMemo<MapArea[]>(() => {
+    if (listMode !== 'open') return []
+    return openStopsByTown.flatMap(([town, stops]) => {
+      const place = townPlaces.places.get(town)
+      if (!place) return []
+      return [{
+        id: `town:${town}`,
+        lat: place.lat,
+        lng: place.lng,
+        radiusMeters: place.radiusMeters,
+        outline: place.outline,
+        color: NOT_WORKED_COLOR,
+        // The town as the CLIENT RECORD spells it, not as Nominatim returned it
+        // — the chip has to be readable at a glance, and a full display name
+        // ("Quezon City, Eastern Manila District, Metro Manila, Philippines")
+        // is a paragraph. The matched name goes in the popup instead, where it
+        // is worth checking when an outline looks wrong.
+        label: town,
+        badge: stops.length,
+        meta: (() => {
+          const outside = stops.filter(
+            stop =>
+              stop.storeLat != null &&
+              stop.storeLng != null &&
+              !insideRings(stop.storeLat, stop.storeLng, place.outline)
+          )
+          const unpinned = stops.filter(s => s.storeLat == null || s.storeLng == null).length
+          return [
+            `${plural(stops.length, nouns.stop)} registered here`,
+            unpinned > 0
+              ? `${unpinned} with no exact location — somewhere inside this boundary`
+              : null,
+            // The check the whole overlay exists to make possible. A store whose
+            // pin falls outside the town its own record names is a contradiction
+            // between two things the database believes, and it is worth saying
+            // out loud rather than leaving to be spotted by eye.
+            outside.length > 0
+              ? `⚠ ${outside.length} pinned OUTSIDE this boundary: ${outside.map(s => s.label).join(', ')}`
+              : null,
+            // Naming them makes the outline actionable rather than decorative;
+            // capped because a town can hold a whole day's list.
+            stops.slice(0, 6).map(stop => stop.label).join(', ')
+              + (stops.length > 6 ? `, +${stops.length - 6} more` : ''),
+            // What the boundary was actually matched from. Only worth saying
+            // when it differs from the name on the chip, which is exactly when
+            // an admin is wondering why the shape looks wrong.
+            place.label.toLowerCase().startsWith(town.toLowerCase())
+              ? null
+              : `Boundary matched: ${place.label}`,
+          ]
+        })(),
+      }]
+    })
+  }, [listMode, openStopsByTown, townPlaces.places, nouns.stop])
 
   const paths = useMemo<TripPath[]>(
     () =>
@@ -319,6 +581,14 @@ export function TripMapView({
   // plain string (components/ui/select.tsx), so an interpolated child falls back
   // to rendering the raw value — a trigger reading "all" instead of "All drivers".
   const allWorkersLabel = `All ${nouns.worker[1]}`
+
+  // Stops carrying a town but no pin — the ones the outline is the ONLY answer
+  // for. Distinct from the number of stops in outlined towns, which now includes
+  // pinned ones too.
+  const areaOnlyCount = openStopsByTown.reduce(
+    (n, [, stops]) => n + stops.filter(s => s.storeLat == null || s.storeLng == null).length,
+    0
+  )
 
   const mappedCount = visibleTrips.reduce((n, t) => n + t.located.length, 0)
   const totalStops = visibleTrips.reduce((n, t) => n + t.stops.length, 0)
@@ -349,9 +619,65 @@ export function TripMapView({
     }
   }
 
+  /**
+   * Move the camera to one entry of a customer's location list.
+   *
+   * A pin gets flown to; an AREA gets framed by its outline, because zooming to
+   * a municipality's centroid at pin zoom shows a street corner and calls it a
+   * town. Selecting the row as well keeps the list, the map and the panel
+   * agreeing about what is being looked at.
+   */
+  function selectLocation(stop: TripStop, location: StoreLocation) {
+    setSelectedStopId(stop.id)
+    setSelectedTripId(null)
+    setHighlight(null)
+    focusNonce.current += 1
+
+    if (location.lat != null && location.lng != null) {
+      setFocus({ lat: location.lat, lng: location.lng, zoom: 16, nonce: focusNonce.current })
+      // A pulsing ring on the exact entry clicked. Without it, two branches a
+      // few hundred metres apart are one indistinguishable cluster once the
+      // camera lands, and the list has no way to say WHICH one it moved to.
+      setHighlight({
+        lat: location.lat,
+        lng: location.lng,
+        kind: 'search',
+        label: `${stop.label} — ${location.label}`,
+        meta: [location.detail],
+      })
+      return
+    }
+
+    const town = stop.locality ? townPlaces.places.get(stop.locality) : undefined
+    if (town) setFocus(townFocus(town, focusNonce.current))
+  }
+
   function selectStop(stopId: string) {
     setSelectedStopId(stopId)
     setHighlight(null)
+
+    // A not-worked entry first: it belongs to no trip, so the loop below would
+    // never find it. Framed on its own pin where it has one, and on its town's
+    // outline where all we know is the town — either way, clicking a row moves
+    // the map to what that row is about.
+    const openStop = visibleOpenStops.find(stop => stop.id === stopId)
+    if (openStop) {
+      setSelectedTripId(null)
+      if (openStop.storeLat != null && openStop.storeLng != null) {
+        focusNonce.current += 1
+        setFocus({ lat: openStop.storeLat, lng: openStop.storeLng, zoom: 16, nonce: focusNonce.current })
+        return
+      }
+      const town = openStop.locality ? townPlaces.places.get(openStop.locality) : undefined
+      if (town) {
+        focusNonce.current += 1
+        // The whole town in frame rather than a point inside it — the camera
+        // should show the same uncertainty the outline does.
+        setFocus(townFocus(town, focusNonce.current))
+      }
+      return
+    }
+
     for (const trip of visibleTrips) {
       const stop = trip.stops.find(s => s.id === stopId)
       if (!stop) continue
@@ -370,7 +696,25 @@ export function TripMapView({
     <>
       <Header
         title={title}
-        subtitle={`${dateFilter.label} · ${plural(visibleTrips.length, ['trip', 'trips'])} · ${mappedCount} of ${totalStops} ${nouns.stop[1]} mapped${unlocatedCount > 0 ? ` · ${unlocatedCount} no location` : ''}`}
+        // The subtitle answers the question the OPEN tab is asking, which is not
+        // the one the trips tab asks. "0 trips · 0 of 0 stores mapped" is a true
+        // and completely useless caption over a list of eleven outstanding
+        // stores.
+        subtitle={
+          listMode === 'open'
+            ? [
+                dateFilter.label,
+                `${plural(visibleOpenStops.length, nouns.stop)} not worked`,
+                `${placedOpenStops.length} pinned`,
+                openStopsByTown.length > 0
+                  ? plural(openStopsByTown.length, ['town outlined', 'towns outlined'])
+                  : null,
+                townlessOpenStops.length > 0 ? `${townlessOpenStops.length} not on the map` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')
+            : `${dateFilter.label} · ${plural(visibleTrips.length, ['trip', 'trips'])} · ${mappedCount} of ${totalStops} ${nouns.stop[1]} mapped${unlocatedCount > 0 ? ` · ${unlocatedCount} no location` : ''}`
+        }
         action={headerAction}
       />
 
@@ -575,30 +919,128 @@ export function TripMapView({
                 </>
               ) : (
                 <>
-                  {visibleOpenStops.map(stop => (
-                    <div key={stop.id} className="px-4 py-3 space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ background: TRIP_TONE_COLOR.open }}
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          <span className="text-[10px] text-muted-foreground/70">Customer: </span>
-                          <span className="text-sm font-medium text-foreground">{stop.label}</span>
-                        </span>
-                        {stop.amountLabel && (
-                          <span className="text-[10px] shrink-0 tabular-nums">
-                            <span className="text-muted-foreground/70">Due: </span>
-                            <span className="text-foreground">{stop.amountLabel}</span>
+                  {visibleOpenStops.map(stop => {
+                    const active = stop.id === selectedStopId
+                    const pinned = stop.storeLat != null && stop.storeLng != null
+                    // Every place this customer might be — their branches, their
+                    // office pin, their town. Only built for the OPEN row, the
+                    // one the admin has drilled into; assembling the list for a
+                    // whole day's stores on every render is work nobody sees.
+                    const locations = active
+                      ? storeLocations(stop, stop.clientId ? locationsByClient.get(stop.clientId) : undefined)
+                      : []
+                    return (
+                      <div key={stop.id}>
+                      <button
+                        type="button"
+                        onClick={() => selectStop(stop.id)}
+                        className={`w-full text-left px-4 py-3 space-y-1 transition-colors ${
+                          active ? 'bg-primary/10' : 'hover:bg-muted/30'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ background: NOT_WORKED_COLOR }}
+                          />
+                          <span className="min-w-0 flex-1 truncate">
+                            <span className="text-[10px] text-muted-foreground/70">Customer: </span>
+                            <span className="text-sm font-medium text-foreground">{stop.label}</span>
                           </span>
-                        )}
+                          {stop.amountLabel && (
+                            <span className="text-[10px] shrink-0 tabular-nums">
+                              <span className="text-muted-foreground/70">Due: </span>
+                              <span className="text-foreground">{stop.amountLabel}</span>
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-xs mt-0.5 truncate pl-4">
+                          <span className="text-muted-foreground/70">Location: </span>
+                          <span className="text-muted-foreground">
+                            {stop.sublabel || 'No address on file'}
+                          </span>
+                        </span>
+                        {/* How well the map can place this row, said on the row
+                            itself — a store shown inside a town outline and one
+                            shown on its own pin are different levels of
+                            knowledge, and the admin acts differently on each. */}
+                        <span className="block pl-4">
+                          {pinned ? (
+                            <Badge variant="outline" className="text-[9px] px-1 h-3.5 gap-0.5">
+                              <MapPinIcon className="w-2.5 h-2.5" />
+                              Pinned
+                            </Badge>
+                          ) : stop.locality ? (
+                            <Badge variant="outline" className="text-[9px] px-1 h-3.5 gap-0.5 text-muted-foreground">
+                              <LandPlot className="w-2.5 h-2.5" />
+                              Area only
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[9px] px-1 h-3.5 text-muted-foreground">
+                              Not on map
+                            </Badge>
+                          )}
+                        </span>
+                      </button>
+
+                      {/* The customer's locations, expanded for the selected row
+                          only — every row open at once is a wall, the same
+                          reason the trips lens expands one run at a time.
+
+                          Listed rather than reduced to a winner because a
+                          customer can trade from several branches and the admin
+                          is the one who knows which is meant. Each is clickable
+                          and moves the map to it. */}
+                      {active && locations.length > 0 && (
+                        <ul className="pb-2">
+                          {locations.map(location => (
+                            <li key={location.id}>
+                              <button
+                                type="button"
+                                onClick={() => selectLocation(stop, location)}
+                                className="w-full text-left pl-6 pr-4 py-1.5 flex items-start gap-2 hover:bg-muted/40 transition-colors"
+                              >
+                                {location.kind === 'area' ? (
+                                  <LandPlot
+                                    className="w-3 h-3 shrink-0 mt-1"
+                                    style={{ color: NOT_WORKED_COLOR }}
+                                  />
+                                ) : (
+                                  <MapPinIcon
+                                    className="w-3 h-3 shrink-0 mt-1"
+                                    style={{ color: NOT_WORKED_COLOR }}
+                                  />
+                                )}
+                                <span className="min-w-0 flex-1">
+                                  <span className="flex items-center gap-1">
+                                    <span className="text-[11px] font-medium text-foreground truncate">
+                                      {location.label}
+                                    </span>
+                                    {/* Which one a new visit would be stamped
+                                        with — the difference between "a place
+                                        this shop has been" and "where we would
+                                        send someone today". */}
+                                    {location.isCurrent && (
+                                      <Star
+                                        className="w-2.5 h-2.5 shrink-0 fill-current"
+                                        style={{ color: NOT_WORKED_COLOR }}
+                                      />
+                                    )}
+                                  </span>
+                                  {location.detail && (
+                                    <span className="block text-[10px] text-muted-foreground truncate">
+                                      {location.detail}
+                                    </span>
+                                  )}
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                       </div>
-                      <p className="text-xs mt-0.5 truncate pl-4">
-                        <span className="text-muted-foreground/70">Location: </span>
-                        <span className="text-muted-foreground">{stop.sublabel || 'No address on file'}</span>
-                      </p>
-                    </div>
-                  ))}
+                    )
+                  })}
                   {visibleOpenStops.length === 0 && (
                     <div className="text-center py-12 text-muted-foreground text-sm px-6">
                       Nothing outstanding for {dateFilter.label.toLowerCase()} — every{' '}
@@ -630,22 +1072,26 @@ export function TripMapView({
           <FieldMap
             pins={pins}
             trips={paths}
+            areas={areas}
             onSelect={selectStop}
             mapType={mapType}
             focus={focus ?? initialFocus}
             highlight={highlight}
           />
 
-          {pins.length === 0 && (
+          {pins.length === 0 && areas.length === 0 && (
             <Card className="absolute top-4 left-1/2 -translate-x-1/2 bg-card/95 border-border backdrop-blur-sm z-10 py-0 gap-0 max-w-md">
               <CardContent className="p-3 flex items-start gap-2.5">
                 <Info className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
                 <div className="text-xs text-muted-foreground leading-relaxed">
                   {listMode === 'open' ? (
                     <>
-                      <p className="font-medium text-foreground mb-0.5">Not-worked {nouns.stop[1]}</p>
-                      Nobody has reached these yet, so there is no location to plot — they&apos;re
-                      listed on the left.
+                      <p className="font-medium text-foreground mb-0.5">
+                        Not-worked {nouns.stop[1]}, nowhere to draw them
+                      </p>
+                      {townPlaces.loading
+                        ? 'Looking up the towns these are in…'
+                        : `None of these carry a location or a municipality, so there is nothing to place them by. Add the office pin or the city to the client record and they'll appear here.`}
                     </>
                   ) : visibleTrips.length === 0 ? (
                     <>
@@ -708,6 +1154,78 @@ export function TripMapView({
                       <span className="text-[11px] text-muted-foreground">{label}</span>
                     </div>
                   ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Not-worked legend — what a pin means HERE, which is not what it
+              means on the trips lens, and why some of the list is a shape
+              instead. The distinction is the whole point of this view, so it is
+              stated on screen rather than left to be inferred. */}
+          {listMode === 'open' && visibleOpenStops.length > 0 && (
+            <Card className="absolute top-4 left-4 w-60 bg-card/95 border-border backdrop-blur-sm z-10 pt-0 gap-0">
+              <CardContent className="p-3 space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <CalendarX className="w-3 h-3 text-muted-foreground" />
+                  <span className="text-[11px] font-semibold text-foreground">
+                    Not worked · {plural(visibleOpenStops.length, nouns.stop)}
+                  </span>
+                </div>
+
+                {/* Only the tiers that actually have entries. A day whose stores
+                    all carry pins should not be told about area-only rows it
+                    does not have — "0 area only" reads as a defect report.
+
+                    The tiers OVERLAP by design: a pinned store is also inside
+                    its registered town, and both facts are drawn. The counts
+                    are therefore worded as what each thing on the map is, not
+                    as a partition of the list. */}
+                <div className="space-y-1.5">
+                  {placedOpenStops.length > 0 && (
+                    <div className="flex items-start gap-2">
+                      <MapPinIcon
+                        className="w-3 h-3 shrink-0 mt-0.5"
+                        style={{ color: NOT_WORKED_COLOR }}
+                      />
+                      <span className="text-[10px] text-muted-foreground leading-relaxed">
+                        <span className="text-foreground font-medium">
+                          {placedOpenStops.length} pinned
+                        </span>
+                        {' '}at the {nouns.stop[0]}&apos;s own registered location — not captured
+                        GPS, since nobody has been yet.
+                      </span>
+                    </div>
+                  )}
+
+                  {openStopsByTown.length > 0 && (
+                    <div className="flex items-start gap-2">
+                      <LandPlot className="w-3 h-3 shrink-0 mt-0.5" style={{ color: NOT_WORKED_COLOR }} />
+                      <span className="text-[10px] text-muted-foreground leading-relaxed">
+                        <span className="text-foreground font-medium">
+                          {plural(openStopsByTown.length, ['town outlined', 'towns outlined'])}
+                        </span>
+                        {' '}from the client records — every {nouns.stop[0]} registered there is
+                        somewhere inside, {areaOnlyCount > 0
+                          ? `and ${plural(areaOnlyCount, nouns.stop)} ${areaOnlyCount === 1 ? 'has' : 'have'} no pin at all`
+                          : 'pinned or not'}.
+                        {townPlaces.loading && ' Loading outlines…'}
+                      </span>
+                    </div>
+                  )}
+
+                  {townlessOpenStops.length > 0 && (
+                    <div className="flex items-start gap-2">
+                      <CameraOff className="w-3 h-3 shrink-0 mt-0.5 text-muted-foreground" />
+                      <span className="text-[10px] text-muted-foreground leading-relaxed">
+                        <span className="text-foreground font-medium">
+                          {townlessOpenStops.length} not on the map
+                        </span>
+                        {' '}— no location and no city on the client record, so nothing places
+                        {' '}them at all.
+                      </span>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
