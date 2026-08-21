@@ -43,7 +43,7 @@ const VISIT_COLUMNS = `
   id, client_id, client_name, area, status, scheduled_for, listed_by, listed_at, amount_due,
   claimed_by, claimed_at, claimed_by_name,
   collector_id, amount_collected, payment_method, payment_photo_url,
-  delivery_receipt_photo_url, gps_lat, gps_lng, remarks, rescheduled_to,
+  delivery_receipt_photo_url, gps_lat, gps_lng, client_lat, client_lng, remarks, rescheduled_to,
   visited_at, created_at,
   client:clients!client_id ( ${CLIENT_JOIN} ),
   collector:profiles!collector_id ( ${PROFILE_JOIN} )

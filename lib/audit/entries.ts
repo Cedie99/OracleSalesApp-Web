@@ -32,6 +32,7 @@ export const AUDIT_ACTIONS = {
   'collection_visit.removed': { label: 'Removed store from list', module: 'collection' },
   'collection_visit.claim_released': { label: 'Released collector claim', module: 'collection' },
   'remittance.status_changed': { label: 'Reconciled remittance', module: 'collection' },
+  'client_credit.adjusted': { label: 'Adjusted store credit balance', module: 'collection' },
 
   // --- Delivery ------------------------------------------------------------
   'purchase_order.listed': { label: 'Listed purchase order', module: 'delivery' },

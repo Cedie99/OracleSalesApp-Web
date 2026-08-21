@@ -1,6 +1,7 @@
 'use client'
 
 import { Header } from '@/components/header'
+import { StoreLocationPanel } from '@/components/maps/store-location-panel'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -432,6 +433,8 @@ export default function ApprovalsPage() {
               </div>
             ))}
           </div>
+
+          <StoreLocationPanel clientId={req.client_id} hideMap className="mb-3" />
 
           {/* mt-auto: cards in a row stretch to the tallest one, so without it
               the actions float wherever the content happens to end and no two

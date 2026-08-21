@@ -454,6 +454,8 @@ const collectionVisitSeed: Omit<
   'client' | 'collector' | 'client_name' | 'area'
   | 'claimed_by' | 'claimed_at' | 'claimed_by_name' | 'customer_signature_url'
   | 'is_additional' | 'additional_received_at' | 'additional_seen_at'
+  // Denormalized default pin (migration 114) is derived from the client's office
+  // pin in the map below, not hand-authored per seed row.
   | 'client_lat' | 'client_lng'
 >[] = [
   {
@@ -716,6 +718,8 @@ const signed = (seed: string) => `https://picsum.photos/seed/${seed}/400/160`
 const purchaseOrderSeed: Omit<
   PurchaseOrder,
   'client' | 'driver' | 'client_name' | 'claimed_by' | 'claimed_at' | 'claimed_by_name'
+  // Denormalized default pin (migration 114) is derived from the client's office
+  // pin in the map below, not hand-authored per seed row.
   | 'client_lat' | 'client_lng'
 >[] = [
   // --- Today's trip list: published last night, half run ---------------------

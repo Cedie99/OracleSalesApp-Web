@@ -3,6 +3,16 @@ import { CUSTOMER_TYPE_LABEL } from '@/lib/status-styles'
 import type { AttentionKind } from '@/lib/attention'
 
 /**
+ * The two store-location kinds, colour-coded so a relocation reads at a glance:
+ * the REGISTERED office pin (set by sales / RSR) vs the UPDATED field pin (set on
+ * the ground by Collection / Delivery). Kept here — a leaflet-free module — so
+ * the StoreLocationPanel can label the legend without pulling leaflet into SSR;
+ * the leaflet map imports the same constants. See store-location-panel.tsx.
+ */
+export const REGISTERED_COLOR = '#2563eb' // blue
+export const UPDATED_COLOR = '#f97316' // orange
+
+/**
  * The map's status vocabulary is deliberately one narrower than CustomerType:
  * 'in_progress' shares the prospect pin, so there is no such key here. See
  * getMapStatus.

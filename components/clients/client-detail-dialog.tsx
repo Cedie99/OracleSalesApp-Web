@@ -12,7 +12,8 @@ import { meetingGpsDriftMeters, meetingDurationMinutes } from '@/lib/hooks/use-m
 import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
 import { CompanionLine, ManagerGateIcon } from '@/components/tag-along-indicator'
 import { formatDistanceMeters, formatDurationMinutes } from '@/lib/utils'
-import { clientAddress, hasOfficePin, officePinSourceLabel } from '@/lib/client-info'
+import { clientAddress } from '@/lib/client-info'
+import { StoreLocationPanel } from '@/components/maps/store-location-panel'
 import type { Client, Meeting, MeetingOutcome, TagAlongRequest } from '@/types'
 import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, Tag, X as XIcon, Clock, ChevronRight, FileText, ListChecks } from 'lucide-react'
 import { format } from 'date-fns'
@@ -26,15 +27,6 @@ import {
   TONE_CLASS,
   VALUE_LABEL as LABEL,
 } from '@/lib/status-styles'
-
-const ClientMap = dynamic(() => import('@/components/maps/client-map'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex-1 h-full flex items-center justify-center text-xs text-muted-foreground">
-      Loading map…
-    </div>
-  ),
-})
 
 const MeetingRouteMap = dynamic(() => import('@/components/maps/meeting-route-map'), {
   ssr: false,
@@ -409,28 +401,11 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                           )}
                         </div>
 
-                        {/* The client's own office pin (migration 052), for the
-                            rows that have one — never meeting GPS, which is
-                            where the agent stood, not where the client is. */}
-                        {hasOfficePin(client) && (
-                          <div className="space-y-1.5">
-                            <div className="h-64 rounded-md overflow-hidden border border-border">
-                              <ClientMap
-                                clients={[client]}
-                                selectedId={client.id}
-                                onSelect={() => {}}
-                                mapType="standard"
-                              />
-                            </div>
-                            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                              <Navigation className="w-3 h-3 shrink-0" />
-                              <span className="font-mono">
-                                {client.office_lat!.toFixed(4)}, {client.office_lng!.toFixed(4)}
-                              </span>
-                              <span>· {officePinSourceLabel(client.office_pin_source)}</span>
-                            </div>
-                          </div>
-                        )}
+                        {/* Both of the store's locations (migration 052 office
+                            pin + migration 113 field-set pin) — never meeting
+                            GPS, which is where the agent stood, not where the
+                            store is. */}
+                        <StoreLocationPanel clientId={client.id} />
                       </div>
 
                       <div>
