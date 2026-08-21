@@ -4,35 +4,29 @@
 -- See projects/OracleSalesApp-Mobile/Decisions.md ADR-067 (vault, mobile
 -- repo tree) for the full product spec. Summary of what changes here:
 --
---   1. tag_along_requests gains `holder_decision` — a SEPARATE column from
---      `status`. `status` already tracks the meeting-invite accept/decline
---      (unchanged, still drives quota/meeting credit per migrations 076/077
---      — this migration does not touch attribution at all). `holder_decision`
---      only exists for `invitee_kind = 'manager'` rows and records whether
---      that manager separately approved/rejected becoming a PERMANENT
---      record holder for the related client. Independent decision, no
---      interaction with `status` or quota.
---
---   2. client_meeting_holders — new, append-only table. One row per
+--   1. client_meeting_holders — new, append-only table. One row per
 --      (client_id, manager_id) that has ever been granted holder status.
 --      No UPDATE/DELETE policy exists anywhere in this migration and none is
---      planned (ADR-067 decision 3/6: holder status is permanent, no revoke
+--      planned (ADR-067 decision 3: holder status is permanent, no revoke
 --      code path, ever). Deliberately a NEW table, NOT the retired
 --      `public.client_record_holders` from the direct Joint Manager holder
 --      experiment (migration 091, retired by 097) — that table/its RLS stay
 --      dropped-and-dead; reusing its name or rows would resurrect a
 --      superseded design ADR-067 explicitly is not.
 --
---   3. decide_client_record_holder_status() — new SECURITY DEFINER RPC, the
---      only write path for `holder_decision` / `client_meeting_holders`.
---      Mirrors decide_client_edit_request()/decide_po_confirmation()'s CAS
---      shape (row locked FOR UPDATE, idempotent, plain text return code).
---      Gated on the caller being the invitee of an ACCEPTED meeting-context
---      manager tag-along request that has not yet recorded a holder
---      decision — a manager who never accepted the meeting invite, or who
---      already decided, cannot call this again.
+--   2. Holder status has exactly ONE trigger: a manager accepting a
+--      meeting-context Tag-Along invite. Corrected 2026-08-22 — there is
+--      NO separate "approve becoming a holder" decision/RPC/column. The
+--      existing "Invitee responds to pending" RLS policy (migration 019)
+--      already lets the invitee flip `status` from 'pending' to
+--      'accepted'/'declined' directly; a trigger on that UPDATE inserts
+--      the holder row the instant status becomes 'accepted' for a
+--      meeting-context manager invitee. Declining never creates a holder
+--      row, but has zero effect on quota/meeting attribution (migrations
+--      076/077/107, untouched by this migration) — those two things are
+--      independent by design.
 --
---   4. decide_client_edit_request() eligibility is WIDENED (not replaced):
+--   3. decide_client_edit_request() eligibility is WIDENED (not replaced):
 --      previously "the requester's team-scoped sales_manager
 --      (is_manager_of_profile) OR admin/superadmin" (migration 102). This
 --      adds a third arm: "OR any current holder of the client per
@@ -42,7 +36,7 @@
 --      extraction) — CREATE OR REPLACE is safe here since the OUT-parameter
 --      row type (a single `text`) is unchanged, no DROP FUNCTION needed.
 --
---   5. New SELECT policies on clients/meetings/client_edit_requests scoped
+--   4. New SELECT policies on clients/meetings/client_edit_requests scoped
 --      by client_meeting_holders membership — this is what actually
 --      delivers ADR-067 decision 2/4's "full client history visibility,
 --      independent of meeting attendance" (a holder must see the WHOLE
@@ -53,15 +47,7 @@
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- 1. tag_along_requests.holder_decision
--- ----------------------------------------------------------------------------
-
-alter table public.tag_along_requests
-  add column if not exists holder_decision text
-    check (holder_decision in ('approved', 'rejected'));
-
--- ----------------------------------------------------------------------------
--- 2. client_meeting_holders
+-- 1. client_meeting_holders
 -- ----------------------------------------------------------------------------
 
 create table if not exists public.client_meeting_holders (
@@ -77,11 +63,10 @@ create index if not exists idx_cmh_client on public.client_meeting_holders(clien
 
 alter table public.client_meeting_holders enable row level security;
 
--- No INSERT/UPDATE/DELETE policy for any role, ever (ADR-067 decision 3/6) —
--- the only write path is decide_client_record_holder_status() below, which
--- is SECURITY DEFINER and bypasses RLS entirely, same discipline as
--- decide_client_edit_request()/decide_po_confirmation() writing their own
--- tables with no caller-facing UPDATE policy.
+-- No INSERT/UPDATE/DELETE policy for any role, ever (ADR-067 decision 3) --
+-- the only write path is the trigger below, which runs as the table owner
+-- and bypasses RLS entirely, same discipline as other SECURITY DEFINER
+-- write paths in this schema.
 drop policy if exists "Holders read their client's holder set" on public.client_meeting_holders;
 create policy "Holders read their client's holder set" on public.client_meeting_holders
   for select using (
@@ -94,73 +79,38 @@ create policy "Holders read their client's holder set" on public.client_meeting_
   );
 
 -- ----------------------------------------------------------------------------
--- 3. decide_client_record_holder_status()
+-- 2. Trigger: accepting a meeting-context manager invite IS the holder
+--    decision. No separate button, RPC, or column.
 -- ----------------------------------------------------------------------------
 
-create or replace function public.decide_client_record_holder_status(
-  p_request_id uuid, p_decision text
-) returns text
+create or replace function public.grant_client_holder_on_tagalong_accept()
+returns trigger
 language plpgsql
 security definer
-volatile
 set search_path = public
 as $$
-declare
-  req public.tag_along_requests%rowtype;
 begin
-  select * into req from public.tag_along_requests where id = p_request_id for update;
-  if not found then
-    return 'not_found';
-  end if;
-
-  if p_decision not in ('approved', 'rejected') then
-    return 'invalid_decision';
-  end if;
-
-  -- Only the invited manager of THIS meeting-context request may decide it,
-  -- and only for a manager invitee — a teammate companion is never a holder
-  -- candidate (ADR-067 is scoped to managers throughout).
-  if req.invitee_id <> public.current_profile_id()
-     or req.invitee_kind <> 'manager'
-     or req.context <> 'meeting' then
-    return 'role_not_eligible';
-  end if;
-
-  -- ADR-067 decision 2: holder consent is a SEPARATE decision from accepting
-  -- the meeting invite, but it presupposes acceptance — a manager who
-  -- declined (or hasn't yet answered) the meeting invite was never actually
-  -- part of the meeting, so there is nothing to become a holder of yet.
-  if req.status <> 'accepted' then
-    return 'not_eligible';
-  end if;
-
-  if req.holder_decision is not null then
-    return 'already_decided';
-  end if;
-
-  update public.tag_along_requests
-     set holder_decision = p_decision
-   where id = p_request_id;
-
-  -- ADR-067 decision 3: permanent, additive only. ON CONFLICT DO NOTHING
-  -- makes a retry of an already-approved decision a harmless no-op rather
-  -- than an error (matches the CAS-idempotent spirit of the sibling RPCs,
-  -- even though the `holder_decision is not null` guard above already
-  -- prevents a legitimate second call from reaching this far).
-  if p_decision = 'approved' and req.related_client_id is not null then
+  if new.status = 'accepted'
+     and old.status is distinct from 'accepted'
+     and new.context = 'meeting'
+     and new.invitee_kind = 'manager'
+     and new.related_client_id is not null then
     insert into public.client_meeting_holders (client_id, manager_id, granted_via_request_id)
-    values (req.related_client_id, req.invitee_id, req.id)
+    values (new.related_client_id, new.invitee_id, new.id)
     on conflict (client_id, manager_id) do nothing;
   end if;
-
-  return p_decision;
+  return new;
 end;
 $$;
-revoke execute on function public.decide_client_record_holder_status(uuid, text) from public, anon;
-grant execute on function public.decide_client_record_holder_status(uuid, text) to authenticated;
+
+drop trigger if exists trg_grant_client_holder_on_tagalong_accept on public.tag_along_requests;
+create trigger trg_grant_client_holder_on_tagalong_accept
+  after update of status on public.tag_along_requests
+  for each row
+  execute function public.grant_client_holder_on_tagalong_accept();
 
 -- ----------------------------------------------------------------------------
--- 4. decide_client_edit_request(): widen eligibility to include any current
+-- 3. decide_client_edit_request(): widen eligibility to include any current
 --    holder of the client (ADR-067 decision 5 — first-come-first-served).
 --    Reproduces migration 102's body verbatim except for the added arm.
 -- ----------------------------------------------------------------------------
@@ -286,7 +236,7 @@ revoke execute on function public.decide_client_edit_request(uuid, text, text) f
 grant execute on function public.decide_client_edit_request(uuid, text, text) to authenticated;
 
 -- ----------------------------------------------------------------------------
--- 5. Full-client-history visibility for current holders (ADR-067 decision 2/4)
+-- 4. Full-client-history visibility for current holders (ADR-067 decision 2/4)
 -- ----------------------------------------------------------------------------
 
 drop policy if exists "Client record holders read held clients" on public.clients;
@@ -330,8 +280,8 @@ create policy "Client record holders read held clients edit requests" on public.
 --   drop policy if exists "Client record holders read held clients" on public.clients;
 --   -- restore migration 102's decide_client_edit_request() body (drop the
 --   -- client_meeting_holders arm) via CREATE OR REPLACE.
---   drop function if exists public.decide_client_record_holder_status(uuid, text);
+--   drop trigger if exists trg_grant_client_holder_on_tagalong_accept on public.tag_along_requests;
+--   drop function if exists public.grant_client_holder_on_tagalong_accept();
 --   drop policy if exists "Holders read their client's holder set" on public.client_meeting_holders;
 --   drop table if exists public.client_meeting_holders;
---   alter table public.tag_along_requests drop column if exists holder_decision;
 -- ============================================================================
