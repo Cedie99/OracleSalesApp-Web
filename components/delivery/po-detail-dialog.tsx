@@ -13,6 +13,7 @@ import {
   TONE_CLASS, TONE_TEXT,
 } from '@/lib/status-styles'
 import type { PurchaseOrder } from '@/types'
+import { StoreLocationPanel } from '@/components/maps/store-location-panel'
 import { AlertTriangle, Banknote, Camera, Clock, MapPin, PackageX, Truck, UserCog } from 'lucide-react'
 
 import { format } from 'date-fns'
@@ -280,6 +281,8 @@ function PoDetail({
               : 'No GPS captured'}
           </p>
         </div>
+
+        <StoreLocationPanel clientId={po.client_id} />
 
         {po.remarks && (
           <p className="text-xs">

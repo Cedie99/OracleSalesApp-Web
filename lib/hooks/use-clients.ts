@@ -22,6 +22,7 @@ const CLIENT_COLUMNS = `
   address_line1, address_line2, landmark, province, city,
   details_deadline_at, details_completed_at, inactive_reason,
   office_lat, office_lng, office_pin_source, office_pin_updated_at,
+  credit_balance,
   agent:profiles!assigned_agent_id (
     id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at
   )
@@ -53,6 +54,11 @@ function normalizeClient(row: Record<string, unknown>): Client {
     // one stage. Resolving it here keeps CustomerType non-nullable, so every
     // Record<CustomerType, …> lookup in the UI stays total.
     customer_type: (row.customer_type as CustomerType | null) ?? 'prospect',
+    // Running credit balance (migration 117). PostgREST can serialise NUMERIC as
+    // a string; coerce here so the Add-store dialog's auto-fill and the balances
+    // tool do arithmetic on a number, not a string. Absent (0) on rows read
+    // before 117 deploys.
+    credit_balance: Number(row.credit_balance ?? 0),
     agent: (agent as Profile | null) ?? undefined,
   }
 }

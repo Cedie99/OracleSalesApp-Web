@@ -15,6 +15,7 @@ import {
   VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
 import type { CollectionVisit } from '@/types'
+import { StoreLocationPanel } from '@/components/maps/store-location-panel'
 import { AlertTriangle, Banknote, Camera, Clock, MapPin, UserCog, Zap } from 'lucide-react'
 import { format } from 'date-fns'
 
@@ -276,6 +277,8 @@ function VisitDetail({
               : 'Not yet visited'}
           </p>
         </div>
+
+        <StoreLocationPanel clientId={visit.client_id} />
 
         {visit.rescheduled_to && (
           <p className="text-xs">
