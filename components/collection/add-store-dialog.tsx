@@ -87,9 +87,9 @@ const RECENT_LIMIT = 8
  * It publishes a BATCH because that is the shape of the job: a day's list is
  * many stores, and the earlier one-store-per-dialog version made the admin
  * reopen the form and re-pick the same day for each one. Search once, tick the
- * stores, type the amounts down the column. The day and the "additional" flag
- * are set once and apply to everything in the batch, since they describe the
- * publish rather than any one store.
+ * stores; each one's amount due comes from its balance, not the keyboard. The day
+ * and the "additional" flag are set once and apply to everything in the batch,
+ * since they describe the publish rather than any one store.
  *
  * Picking is a search, not a scroll. At ~1,500 customers an alphabetical
  * dropdown is unusable, so results are ranked and capped by `searchClients` and
@@ -98,9 +98,10 @@ const RECENT_LIMIT = 8
  * because "why isn't it in the list?" is a worse question than seeing it
  * greyed.
  *
- * The amount due is captured here and, per the 2026-07-25 anchoring-bias
- * decision, never travels to the collector's Collect Payment screen; it stays
- * office-side as the figure the collected amount is later reconciled against.
+ * The amount due is the store's running balance (117), locked here rather than
+ * retyped, and — per the 2026-07-25 anchoring-bias decision — it never travels to
+ * the collector's Collect Payment screen; it stays office-side as the figure the
+ * collected amount is later reconciled against.
  *
  * Fields initialise from `defaults` and are never synced back to them. Reopening
  * for a different day has to start over, so the caller remounts this component
@@ -170,12 +171,6 @@ export function AddStoreDialog({
     setPicked([])
   }
 
-  function setAmount(clientId: string, amount: string) {
-    setPicked(current =>
-      current.map(p => (p.clientId === clientId ? { ...p, amount } : p))
-    )
-  }
-
   /** Enter in the search box takes the top result — the whole point of typing. */
   function handleSearchKeyDown(key: string) {
     if (key !== 'Enter') return
@@ -208,7 +203,10 @@ export function AddStoreDialog({
       }
       const amount = Number(p.amount)
       if (!Number.isFinite(amount) || amount <= 0) {
-        return setError(`Enter what ${name} owes, in whole pesos.`)
+        // The amount is locked to the store's balance, so a non-positive one
+        // means no due has been set — point the admin at where to set it rather
+        // than at a field that no longer accepts typing.
+        return setError(`${name} has no amount due set — set its balance in Store credit balances first, then list it.`)
       }
       drafts.push({
         clientId: p.clientId, scheduledFor, amountDue: Math.round(amount), isAdditional,
@@ -225,6 +223,11 @@ export function AddStoreDialog({
   function renderRow(client: Client) {
     const taken = takenClientIds.has(client.id)
     const checked = pickedIds.has(client.id)
+    // The store's amount due IS its current balance (117): the one-time figure
+    // an admin set, drawn down by every payment. Shown per row so the admin sees
+    // what each store owes before ticking it — and it is the amount that gets
+    // listed, since the field no longer lets them retype it.
+    const due = Math.round(client.credit_balance ?? 0)
 
     return (
       <button
@@ -244,16 +247,21 @@ export function AddStoreDialog({
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
             <span className="truncate text-sm text-foreground">{client.company_name}</span>
-            {taken && (
-              <span className="ml-auto shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                already listed
-              </span>
-            )}
+            <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
+              {due > 0 ? peso(due) : <span className="text-muted-foreground/70">No due set</span>}
+            </span>
           </span>
           {/* Two shops on the same round can share a name; they do not share a
               street. */}
-          <span className="block truncate text-[11px] text-muted-foreground">
-            {clientWhere(client)}
+          <span className="flex items-baseline justify-between gap-2">
+            <span className="truncate text-[11px] text-muted-foreground">
+              {clientWhere(client)}
+            </span>
+            {taken && (
+              <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                already listed
+              </span>
+            )}
           </span>
         </span>
       </button>
@@ -394,26 +402,30 @@ export function AddStoreDialog({
               <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-border">
                 {picked.length === 0 ? (
                   <p className="px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-                    Nothing picked yet. Tick stores on the left, then type what each one
-                    owes here.
+                    Nothing picked yet. Tick stores on the left — each one&apos;s amount due is
+                    set from its balance.
                   </p>
                 ) : (
                   <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain p-1">
                     {picked.map(p => {
                       const client = clientsById.get(p.clientId)
+                      const due = Number(p.amount)
                       return (
                         <div key={p.clientId} className="flex items-center gap-2 px-1">
                           <span className="min-w-0 flex-1 truncate text-sm text-foreground">
                             {client?.company_name ?? 'Unknown store'}
                           </span>
-                          <Input
-                            inputMode="numeric"
-                            placeholder="Amount due"
-                            aria-label={`Amount due from ${client?.company_name ?? 'this store'}`}
-                            value={p.amount}
-                            onChange={e => setAmount(p.clientId, e.target.value.replace(/[^\d]/g, ''))}
-                            className="h-8 w-32 tabular-nums"
-                          />
+                          {/* Locked to the store's balance — the admin sets the
+                              amount due once in Store credit balances, and every
+                              day's list draws from it. A store with none set can't
+                              be listed until it is (handleAdd blocks it). */}
+                          <span className="w-32 shrink-0 text-right text-sm tabular-nums">
+                            {due > 0 ? (
+                              <span className="text-foreground">{peso(due)}</span>
+                            ) : (
+                              <span className="text-[11px] text-destructive">No due set</span>
+                            )}
+                          </span>
                           <button
                             type="button"
                             onClick={() => toggle(p.clientId)}

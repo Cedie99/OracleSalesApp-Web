@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { format, subDays, startOfDay } from 'date-fns'
 import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
-import { hasMissingProof, remainingBalance, remittanceVariance } from '@/lib/collection'
+import { hasMissingProof, remittanceVariance } from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
 import type { PaymentMethod } from '@/types'
 import {
@@ -82,9 +82,9 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
       totalDue: visits.reduce((sum, v) => sum + v.amount_due, 0),
       // Every collected AND partial store's real total — not just fully-paid ones.
       totalCollected: visits.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0),
-      // A pending store owes its whole due; a partial owes only the balance left.
-      outstanding: pending.reduce((sum, v) => sum + v.amount_due, 0)
-        + partial.reduce((sum, v) => sum + remainingBalance(v), 0),
+      // Only a pending store is still out today; a partial has closed for the day
+      // and its leftover rides on the store's balance, brought in when re-listed.
+      outstanding: pending.reduce((sum, v) => sum + v.amount_due, 0),
       stillHeld,
       missingProof: visits.filter(hasMissingProof).length,
     }

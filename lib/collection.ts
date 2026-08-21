@@ -107,10 +107,14 @@ export function hasMissingProof(visit: CollectionVisit): boolean {
 }
 
 /**
- * What a store still owes right now — its due minus everything collected so far
- * (migration 070). Positive on a `partial` store (the balance the collector goes
- * back for); zero once collected, or negative on the allowed overpayment. Read
- * this on a partial visit to show "balance left".
+ * How much of THIS visit's day due went uncollected — its due minus what came in
+ * (migration 070). Zero once fully collected, negative on the allowed overpayment.
+ *
+ * ⚠️ Since the store-credit model (117) this is a per-DAY shortfall, not the
+ * store's running debt. A partial visit closes for the day; what the store still
+ * owes across days is `clients.credit_balance`, drawn down by every payment — reach
+ * for that, not this, to answer "what does the store still owe". Kept as the twin
+ * of delivery's `remainingCod`.
  */
 export function remainingBalance(visit: CollectionVisit): number {
   return visit.amount_due - (visit.amount_collected ?? 0)
@@ -199,10 +203,12 @@ export function buildDays(visits: CollectionVisit[]): CollectionDay[] {
   const days: CollectionDay[] = []
 
   for (const [id, stores] of byDay) {
-    // A `partial` store is NOT closed out — it still owes a balance and stays on
-    // the list until paid off (migration 070) — so it counts as still-open here,
-    // alongside pending. Only collected/rescheduled are "worked".
-    const isOpen = (s: CollectionVisit) => s.status === 'pending' || s.status === 'partial'
+    // Only a `pending` store is still open. A `partial` store had money come in
+    // and closes for the day like a collected one — its leftover is carried by
+    // the store's credit balance (117) and brought in when the store is re-listed
+    // on a later day, not by holding this visit open. So collected, partial and
+    // rescheduled all count as "worked" for the day.
+    const isOpen = (s: CollectionVisit) => s.status === 'pending'
     const worked = stores.filter(s => !isOpen(s))
     days.push({
       id,
@@ -214,13 +220,13 @@ export function buildDays(visits: CollectionVisit[]): CollectionDay[] {
       pendingCount: stores.length - worked.length,
       totalDue: stores.reduce((sum, s) => sum + s.amount_due, 0),
       totalCollected: stores.reduce((sum, s) => sum + (s.amount_collected ?? 0), 0),
-      // What the day still has to bring in: a pending store owes its whole due, a
-      // partial owes only the balance left on it.
-      outstanding: stores.reduce((sum, s) => {
-        if (s.status === 'pending') return sum + s.amount_due
-        if (s.status === 'partial') return sum + remainingBalance(s)
-        return sum
-      }, 0),
+      // What the day still has to bring in: only its pending stores, each owing
+      // its whole due. A partial has already closed for the day — its remaining is
+      // the store's balance, brought in when it is re-listed, not today.
+      outstanding: stores.reduce(
+        (sum, s) => (s.status === 'pending' ? sum + s.amount_due : sum),
+        0,
+      ),
       contributors: buildContributors(stores),
       // Per day, never across days — a collector's count restarts each morning.
       numbers: numberStopsByWorker(stores, {
@@ -263,11 +269,12 @@ function buildContributors(stores: CollectionVisit[]): DayContributor[] {
 }
 
 const STORE_ORDER: Record<CollectionVisit['status'], number> = {
+  // Money-in-and-closed first: collected, then partial (some came in, the rest
+  // rides on the store balance). Rescheduled next, then the untouched pending
+  // stores last — roughly the order the collector's own list decrements in.
   collected: 0,
-  rescheduled: 1,
-  // Still-open stores last, partial just above pending — it is closer to done
-  // (money is already in) and reads well sitting between worked and untouched.
-  partial: 2,
+  partial: 1,
+  rescheduled: 2,
   pending: 3,
 }
 
