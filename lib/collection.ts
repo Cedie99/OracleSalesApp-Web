@@ -355,8 +355,11 @@ function collectionStop(visit: CollectionVisit, sequence: number): TripStop {
     sequence,
     label: visit.client?.company_name ?? 'Unknown store',
     sublabel: visit.client?.office_address ?? '',
-    lat: visit.gps_lat,
-    lng: visit.gps_lng,
+    // Where the collector STOOD (visit GPS) once they worked the stop; before
+    // that, the store's default pin (migration 114) so a pending store still
+    // plots. This is what makes an unvisited store appear on the trip map at all.
+    lat: visit.gps_lat ?? visit.client_lat,
+    lng: visit.gps_lng ?? visit.client_lng,
     at: visit.visited_at,
     // Collection captures one timestamp per store, not a window — see
     // `TripStop.startedAt`. Nothing here to derive a dwell from.

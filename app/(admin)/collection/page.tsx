@@ -15,11 +15,13 @@ import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
+import { useStoreCredit } from '@/lib/hooks/use-store-credit'
 import { useClients } from '@/lib/hooks/use-clients'
 import { listableCustomers } from '@/lib/client-info'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AddStoreDialog, type AddStoreDraft } from '@/components/collection/add-store-dialog'
+import { StoreBalancesDialog } from '@/components/collection/store-balances-dialog'
 import { AdditionalBadge } from '@/components/collection/additional-badge'
 import { listAdditionalStore } from './actions'
 import { toast } from 'sonner'
@@ -99,6 +101,9 @@ export default function CollectionPage() {
     remittances: allRemittances, error: remittancesError, setStatus: setRemittanceStatus,
   } = useRemittances()
   const { clients } = useClients()
+  // The store-credit ledger (migration 115): the history behind each store's
+  // running balance, and the write path the balances tool uses to set/charge/adjust it.
+  const { entriesByClient: creditEntries, adjustBalance } = useStoreCredit()
   /**
    * Who the Add-store picker may offer. Prospects and in-progress clients have
    * never placed an order, so there is nothing to collect from them; lost and
@@ -118,6 +123,7 @@ export default function CollectionPage() {
   const [methodFilter, setMethodFilter] = useState<string>('all')
   const [selectedVisit, setSelectedVisit] = useState<CollectionVisit | null>(null)
   const [addOpen, setAddOpen] = useState(false)
+  const [balancesOpen, setBalancesOpen] = useState(false)
   const [addDefaults, setAddDefaults] = useState<{ scheduledFor?: string } | undefined>(undefined)
   // Bumped on every opening so the dialog remounts with fresh fields — see the
   // note on AddStoreDialog about why this isn't an effect.
@@ -635,6 +641,9 @@ export default function CollectionPage() {
             </SelectContent>
           </Select>
           <DateRangeFilter filter={dateFilter} />
+          <Button variant="outline" className="h-9" onClick={() => setBalancesOpen(true)}>
+            <Wallet /> Store balances
+          </Button>
           <Button className="h-9" onClick={() => openAdd()}>
             <Plus /> Add store
           </Button>
@@ -931,6 +940,15 @@ export default function CollectionPage() {
         visits={visits}
         defaults={addDefaults}
         onAdd={handleAdd}
+      />
+
+      <StoreBalancesDialog
+        open={balancesOpen}
+        onOpenChange={setBalancesOpen}
+        clients={listableClients}
+        entriesByClient={creditEntries}
+        onAdjust={adjustBalance}
+        createdBy={profile?.id ?? null}
       />
 
       <ConfirmDialog

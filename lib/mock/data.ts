@@ -450,6 +450,9 @@ const collectionVisitSeed: Omit<
   'client' | 'collector' | 'client_name' | 'area'
   | 'claimed_by' | 'claimed_at' | 'claimed_by_name' | 'customer_signature_url'
   | 'is_additional' | 'additional_received_at' | 'additional_seen_at'
+  // Denormalized default pin (migration 114) is derived from the client's office
+  // pin in the map below, not hand-authored per seed row.
+  | 'client_lat' | 'client_lng'
 >[] = [
   {
     id: 'cv-1', collector_id: 'col-1', client_id: 'client-1', status: 'collected',
@@ -584,6 +587,10 @@ export const mockCollectionVisits: CollectionVisit[] = collectionVisitSeed.map(v
     ...v,
     client_name: client?.company_name ?? null,
     area: client?.city ?? null,
+    // Default store pin (migration 114): the office pin stands in, so pending
+    // stores plot on the mock trip map just as they will against real data.
+    client_lat: client?.office_lat ?? null,
+    client_lng: client?.office_lng ?? null,
     customer_signature_url: null,
     is_additional: false,
     additional_received_at: null,
@@ -694,6 +701,9 @@ const signed = (seed: string) => `https://picsum.photos/seed/${seed}/400/160`
 const purchaseOrderSeed: Omit<
   PurchaseOrder,
   'client' | 'driver' | 'client_name' | 'claimed_by' | 'claimed_at' | 'claimed_by_name'
+  // Denormalized default pin (migration 114) is derived from the client's office
+  // pin in the map below, not hand-authored per seed row.
+  | 'client_lat' | 'client_lng'
 >[] = [
   // --- Today's trip list: published last night, half run ---------------------
   {
@@ -889,6 +899,9 @@ export const mockPurchaseOrders: PurchaseOrder[] = purchaseOrderSeed.map(po => {
   return {
     ...po,
     client_name: client?.company_name ?? null,
+    // Default store pin (migration 114) — office pin stands in for the mock.
+    client_lat: client?.office_lat ?? null,
+    client_lng: client?.office_lng ?? null,
     ...claimFor(po.id),
     client,
     driver: staffById(po.driver_id),

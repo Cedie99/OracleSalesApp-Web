@@ -4,6 +4,7 @@ import { Suspense, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { Header } from '@/components/header'
+import { StoreLocationPanel } from '@/components/maps/store-location-panel'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -1035,6 +1036,10 @@ function MeetingsPageContent() {
                     <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" /> Photo taken
                   </div>
                 )}
+              </div>
+
+              <div className="pt-3 border-t border-border">
+                <StoreLocationPanel clientId={selected.client_id} />
               </div>
             </div>
             </>

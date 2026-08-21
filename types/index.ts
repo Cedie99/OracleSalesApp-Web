@@ -116,6 +116,15 @@ export type AdditionalAckState = 'pending' | 'delivered' | 'viewed'
 
 export type RemittanceStatus = 'submitted' | 'reconciled' | 'variance'
 
+/**
+ * Why a store's credit balance moved (migration 117). `adjustment` and `charge`
+ * are admin acts — an admin sets or corrects the balance, or adds a charge for
+ * new goods; `collection` is automatic, one entry per `collection_payments` row,
+ * written by a trigger so the field can never move the balance itself. See
+ * `ClientCreditEntry`.
+ */
+export type CreditEntryType = 'adjustment' | 'charge' | 'collection'
+
 export interface CollectionVisit {
   id: string
   client_id: string
@@ -218,6 +227,15 @@ export interface CollectionVisit {
   customer_signature_url: string | null
   gps_lat: number | null
   gps_lng: number | null
+  /**
+   * The STORE's default map coordinate, denormalized at publish/insert time
+   * (migration 114): COALESCE(current client_locations field pin, office pin).
+   * Distinct from gps_lat, which is where the collector STOOD when they worked
+   * the stop. Lets the trip map plot a store BEFORE it is visited. Null when the
+   * store has neither a field pin nor an office pin.
+   */
+  client_lat: number | null
+  client_lng: number | null
   remarks: string | null
   /** Set when status is 'rescheduled' — the collection-day reschedule rule. */
   rescheduled_to: string | null
@@ -469,6 +487,14 @@ export interface PurchaseOrder {
    */
   gps_lat: number | null
   gps_lng: number | null
+  /**
+   * The STORE's default map coordinate, denormalized at publish/insert time
+   * (migration 114): COALESCE(current client_locations field pin, office pin).
+   * Distinct from gps_lat, which is where the driver STOOD at the stop. Lets the
+   * trip map plot a store BEFORE it is delivered. Null when neither pin exists.
+   */
+  client_lat: number | null
+  client_lng: number | null
   remarks: string | null
 
   // --- COD payment, captured at the stop when `cod` is set -------------------
@@ -681,6 +707,19 @@ export interface Client {
   sales_channel: SalesChannel
   assigned_agent_id: string
   status: ClientStatus
+  /**
+   * The store's running credit balance in PHP (migration 117) — what it owes the
+   * office across days, not on any one visit. A Collection admin sets the opening
+   * figure and raises it when the store buys more goods; every collection draws
+   * it down automatically. It is the SUM of `client_credit_entries` (see
+   * `ClientCreditEntry`), denormalized here and kept in step by a trigger.
+   *
+   * Collection-only: it has nothing to do with delivery COD, which is a per-PO
+   * price. Defaults to 0 on every client (no backfill), and is absent on rows
+   * read before 115 deploys — hence optional. Coerce via `num()` at the boundary,
+   * like every other NUMERIC (PostgREST can hand it back as a string).
+   */
+  credit_balance?: number
   /** ⚠️ NOT IN THE DATABASE — replaced by the binary progress bar. See lib/client-progress.ts. */
   rating?: number
   lost_at: string | null
@@ -707,6 +746,32 @@ export interface Client {
   inactive_reason?: string | null
   /** Lowercased/trimmed company_name, maintained by mobile for duplicate detection. */
   normalized_company_name?: string | null
+}
+
+/**
+ * One movement in a store's credit ledger (migration 117). The store's
+ * `credit_balance` is the SUM of these signed deltas: a `charge` or a positive
+ * `adjustment` raises it, a `collection` or a negative `adjustment` lowers it.
+ *
+ * A `collection` entry mirrors exactly one `collection_payments` row via
+ * `payment_id` and is written by a trigger, never by a caller — which is what
+ * keeps the owed figure off the collector's phone. Admin `adjustment`/`charge`
+ * entries carry `created_by` (the admin) and a null `payment_id`.
+ */
+export interface ClientCreditEntry {
+  id: string
+  client_id: string
+  entry_type: CreditEntryType
+  /** Signed delta in PHP: positive raises the balance, negative lowers it. Never 0. */
+  amount: number
+  note: string | null
+  /** The admin who made a manual entry; null on an automatic `collection` entry. */
+  created_by: string | null
+  /** The `collection_payments` row a `collection` entry reflects; null on admin entries. */
+  payment_id: string | null
+  created_at: string
+  /** The admin who made the entry, joined in for display. */
+  author?: Profile
 }
 
 /** Which admin function a notification belongs to — see migration 083. */

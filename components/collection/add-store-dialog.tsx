@@ -54,6 +54,19 @@ interface PickedStore {
   amount: string
 }
 
+/**
+ * What to pre-fill the amount field with when a store is ticked: its current
+ * running credit balance (migration 117), in whole pesos. This is the auto-fill
+ * that replaces re-typing what a store owes every collection day — the admin now
+ * confirms or tweaks a figure rather than remembering it. A store with nothing on
+ * file (balance 0, or read before 115) starts blank so it reads as "type this in"
+ * rather than a listable ₱0.
+ */
+function openingAmount(client: Client | undefined): string {
+  const balance = Math.round(client?.credit_balance ?? 0)
+  return balance > 0 ? String(balance) : ''
+}
+
 /** How many recently-listed stores are worth pinning above the search results. */
 const RECENT_LIMIT = 8
 
@@ -148,7 +161,7 @@ export function AddStoreDialog({
     setPicked(current =>
       current.some(p => p.clientId === clientId)
         ? current.filter(p => p.clientId !== clientId)
-        : [...current, { clientId, amount: '' }]
+        : [...current, { clientId, amount: openingAmount(clientsById.get(clientId)) }]
     )
   }
 

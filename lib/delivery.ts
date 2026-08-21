@@ -400,8 +400,10 @@ function deliveryStop(po: PurchaseOrder, sequence: number): TripStop {
     sequence,
     label: po.client?.company_name ?? 'Unknown customer',
     sublabel: po.area,
-    lat: po.gps_lat,
-    lng: po.gps_lng,
+    // Where the driver STOOD (visit GPS) once the stop is worked; before that,
+    // the store's default pin (migration 114) so a pending stop still plots.
+    lat: po.gps_lat ?? po.client_lat,
+    lng: po.gps_lng ?? po.client_lng,
     at: po.time_out,
     startedAt: po.time_in,
     durationMinutes: dwell,

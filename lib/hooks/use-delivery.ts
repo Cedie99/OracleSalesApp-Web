@@ -30,7 +30,7 @@ const PO_COLUMNS = `
   cod, cod_due, claimed_by, claimed_at, claimed_by_name,
   driver_id, truck_plate, sequence_no, receiver_name,
   receiver_signature_url, time_in, time_out, proof_url, backload_photo_url,
-  gps_lat, gps_lng, remarks, cod_amount, cod_method, cod_photo_url, cod_remitted,
+  gps_lat, gps_lng, client_lat, client_lng, remarks, cod_amount, cod_method, cod_photo_url, cod_remitted,
   created_at,
   client:clients!client_id ( ${CLIENT_JOIN} ),
   driver:profiles!driver_id ( ${PROFILE_JOIN} )
@@ -110,6 +110,8 @@ function normalizePo(
     sequence_no: num(row.sequence_no),
     gps_lat: num(row.gps_lat),
     gps_lng: num(row.gps_lng),
+    client_lat: num(row.client_lat),
+    client_lng: num(row.client_lng),
     client: one<Client>(row.client),
     driver: one<Profile>(row.driver),
     // COD installments behind a partial PO (migration 073). Empty until 073 is
