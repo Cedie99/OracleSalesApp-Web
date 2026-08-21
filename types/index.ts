@@ -116,6 +116,41 @@ export type AdditionalAckState = 'pending' | 'delivered' | 'viewed'
 
 export type RemittanceStatus = 'submitted' | 'reconciled' | 'variance'
 
+/**
+ * One candidate location for a client — "Location 1", "Location 2"… (migration
+ * 113).
+ *
+ * A client is not a point. Shops relocate, and a customer can trade from
+ * several branches, each of which a collector or driver may be sent to. So the
+ * record keeps a NUMBERED LIST rather than a single coordinate, exactly one row
+ * flagged `is_current`, and history is retained so a store that moves back can
+ * re-select an older pin.
+ *
+ * Written by the field officer who is standing there (`set_client_location()`),
+ * with no admin approval — the person at the door is the authority on where the
+ * door is. Mobile owns that capture path; until it ships this table is thin, and
+ * a client's only known position is its office pin or the city on its record.
+ */
+export interface ClientLocation {
+  id: string
+  client_id: string
+  /** "Location N", assigned server-side so two offline devices can't collide. */
+  seq: number
+  /** Optional free text the officer typed — "Warehouse", "New site". */
+  label: string | null
+  lat: number
+  lng: number
+  /** Exactly one per client. The one denormalized onto new visits/POs (114). */
+  is_current: boolean
+  source: 'field_set' | 'office_pin' | 'admin' | 'migrated'
+  set_by: string | null
+  /** Denormalized for display, like `claimed_by_name` — see migration 045. */
+  set_by_name: string | null
+  captured_at: string
+  created_at: string
+  updated_at: string
+}
+
 export interface CollectionVisit {
   id: string
   client_id: string
@@ -218,6 +253,35 @@ export interface CollectionVisit {
   customer_signature_url: string | null
   gps_lat: number | null
   gps_lng: number | null
+  /**
+   * The store's DEFAULT map coordinate, denormalized onto the row at insert
+   * (migration 114): COALESCE(the client's current `client_locations` pin,
+   * `clients.office_lat/office_lng`).
+   *
+   * NOT the same fact as `gps_lat` above, and the difference is the whole point:
+   * `gps_lat` is where the worker's phone stood when they captured the proof, so
+   * it exists only AFTER a stop is worked. This is where the store IS, known
+   * before anyone sets out — which is what lets an unworked ("not worked") entry
+   * be plotted at all.
+   *
+   * Both sources of the office pin count, INCLUDING one auto-adopted from a
+   * meeting tagged "Client Office" (`office_pin_source = 'client_office_meeting'`,
+   * migration 052): tagging that meeting is the agent saying they were at the
+   * client's office, so the fix they captured is an office location. Reviewed
+   * and affirmed 2026-08-20. The general warning on `Client.office_lat` — that
+   * meeting GPS is where the AGENT stood — still holds for meetings tagged
+   * anything else; those never become an office pin in the first place.
+   *
+   * A pin can therefore disagree with the address text on the same record, and
+   * on a mistagged meeting it will be plain wrong. That is a data-quality
+   * problem in the meeting, not a reason to distrust the column.
+   *
+   * Null for a store with neither a relocation pin nor an office pin. Surfaces
+   * fall back to the city (see `area`) and must not present that as an exact
+   * position.
+   */
+  client_lat: number | null
+  client_lng: number | null
   remarks: string | null
   /** Set when status is 'rescheduled' — the collection-day reschedule rule. */
   rescheduled_to: string | null
@@ -469,6 +533,35 @@ export interface PurchaseOrder {
    */
   gps_lat: number | null
   gps_lng: number | null
+  /**
+   * The store's DEFAULT map coordinate, denormalized onto the row at insert
+   * (migration 114): COALESCE(the client's current `client_locations` pin,
+   * `clients.office_lat/office_lng`).
+   *
+   * NOT the same fact as `gps_lat` above, and the difference is the whole point:
+   * `gps_lat` is where the worker's phone stood when they captured the proof, so
+   * it exists only AFTER a stop is worked. This is where the store IS, known
+   * before anyone sets out — which is what lets an unworked ("not worked") entry
+   * be plotted at all.
+   *
+   * Both sources of the office pin count, INCLUDING one auto-adopted from a
+   * meeting tagged "Client Office" (`office_pin_source = 'client_office_meeting'`,
+   * migration 052): tagging that meeting is the agent saying they were at the
+   * client's office, so the fix they captured is an office location. Reviewed
+   * and affirmed 2026-08-20. The general warning on `Client.office_lat` — that
+   * meeting GPS is where the AGENT stood — still holds for meetings tagged
+   * anything else; those never become an office pin in the first place.
+   *
+   * A pin can therefore disagree with the address text on the same record, and
+   * on a mistagged meeting it will be plain wrong. That is a data-quality
+   * problem in the meeting, not a reason to distrust the column.
+   *
+   * Null for a store with neither a relocation pin nor an office pin. Surfaces
+   * fall back to the city (see `area`) and must not present that as an exact
+   * position.
+   */
+  client_lat: number | null
+  client_lng: number | null
   remarks: string | null
 
   // --- COD payment, captured at the stop when `cod` is set -------------------

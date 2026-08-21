@@ -445,11 +445,16 @@ function claimFor(id: string) {
 // time too: the mock has no additional stores, and their ack timestamps only
 // exist once mobile stamps them (migration 069). Seeding them would show a
 // delivery/seen state the live database can't produce yet.
+// `client_lat`/`client_lng` are omitted for the plainest version of the same
+// reason: live rows never carry a hand-set value at all — a BEFORE INSERT
+// trigger copies the store's own pin onto them (migration 114) — so they are
+// derived at map time from the client, exactly as the database derives them.
 const collectionVisitSeed: Omit<
   CollectionVisit,
   'client' | 'collector' | 'client_name' | 'area'
   | 'claimed_by' | 'claimed_at' | 'claimed_by_name' | 'customer_signature_url'
   | 'is_additional' | 'additional_received_at' | 'additional_seen_at'
+  | 'client_lat' | 'client_lng'
 >[] = [
   {
     id: 'cv-1', collector_id: 'col-1', client_id: 'client-1', status: 'collected',
@@ -578,12 +583,29 @@ const collectionVisitSeed: Omit<
   },
 ]
 
+/**
+ * The `fill_client_coordinate()` rule (migration 114) in TypeScript: a store's
+ * default map pin is its current `client_locations` pin (which the mock has no
+ * table for), else its office pin — either source, manual or captured at a
+ * Client Office meeting.
+ */
+function mockDefaultCoordinate(client: Client | undefined) {
+  return {
+    client_lat: client?.office_lat ?? null,
+    client_lng: client?.office_lng ?? null,
+  }
+}
+
 export const mockCollectionVisits: CollectionVisit[] = collectionVisitSeed.map(v => {
   const client = clientById(v.client_id)
   return {
     ...v,
     client_name: client?.company_name ?? null,
     area: client?.city ?? null,
+    // What the 114 trigger does, in the mock: the store's own pin, which the
+    // seed clients carry as their office pin. Null where a client has none —
+    // that store then reaches the map as "area only".
+    ...mockDefaultCoordinate(client),
     customer_signature_url: null,
     is_additional: false,
     additional_received_at: null,
@@ -694,6 +716,7 @@ const signed = (seed: string) => `https://picsum.photos/seed/${seed}/400/160`
 const purchaseOrderSeed: Omit<
   PurchaseOrder,
   'client' | 'driver' | 'client_name' | 'claimed_by' | 'claimed_at' | 'claimed_by_name'
+  | 'client_lat' | 'client_lng'
 >[] = [
   // --- Today's trip list: published last night, half run ---------------------
   {
@@ -889,6 +912,8 @@ export const mockPurchaseOrders: PurchaseOrder[] = purchaseOrderSeed.map(po => {
   return {
     ...po,
     client_name: client?.company_name ?? null,
+    // The 114 trigger's job — see the twin note on mockCollectionVisits.
+    ...mockDefaultCoordinate(client),
     ...claimFor(po.id),
     client,
     driver: staffById(po.driver_id),
