@@ -28,7 +28,8 @@ const CLIENT_JOIN = `
   id, company_name, contact_person, contact_position, contact_number,
   office_address, address_line1, address_line2, landmark,
   customer_type, sales_channel, assigned_agent_id, status,
-  city, province, lost_at, reassignable_at, created_at, updated_at
+  city, province, lost_at, reassignable_at, created_at, updated_at,
+  credit_balance
 `
 
 const PROFILE_JOIN = `id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at`
@@ -147,6 +148,17 @@ function one<T>(value: unknown): T | undefined {
   return (v as T | null) ?? undefined
 }
 
+/**
+ * The embedded store's `credit_balance` (117) is NUMERIC, so PostgREST can hand
+ * it back as a string; coerce it here so the detail dialog does arithmetic on a
+ * number. Absent (0) on rows read before 117 — the same boundary rule
+ * normalizeClient applies in use-clients.ts.
+ */
+function normalizeVisitClient(client: Client | undefined): Client | undefined {
+  if (!client) return client
+  return { ...client, credit_balance: num(client.credit_balance) ?? 0 }
+}
+
 function normalizeVisit(
   row: Record<string, unknown>,
   paymentsByVisit?: Map<string, CollectionPayment[]>,
@@ -173,7 +185,7 @@ function normalizeVisit(
     // "no default pin known", which is exactly how the maps page treats it.
     client_lat: num(row.client_lat),
     client_lng: num(row.client_lng),
-    client: one<Client>(row.client),
+    client: normalizeVisitClient(one<Client>(row.client)),
     collector: one<Profile>(row.collector),
   }
 }

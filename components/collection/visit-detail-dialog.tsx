@@ -7,7 +7,7 @@ import { PendingNote } from '@/components/pending-note'
 import {
   PhotoLightbox, ProofTile, RemittanceProofThumb, captionFor, type LightboxPhoto,
 } from '@/components/photo-lightbox'
-import { additionalAckState, remainingBalance, visitProofs } from '@/lib/collection'
+import { additionalAckState, visitProofs } from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
 import {
   ADDITIONAL_ACK_LABEL, ADDITIONAL_ACK_TONE,
@@ -16,7 +16,7 @@ import {
 } from '@/lib/status-styles'
 import type { CollectionVisit } from '@/types'
 import { StoreLocationPanel } from '@/components/maps/store-location-panel'
-import { AlertTriangle, Banknote, Camera, Clock, MapPin, UserCog, Zap } from 'lucide-react'
+import { AlertTriangle, Banknote, Camera, Clock, MapPin, UserCog, Wallet, Zap } from 'lucide-react'
 import { format } from 'date-fns'
 
 interface VisitDetailDialogProps {
@@ -36,7 +36,10 @@ export function VisitDetailDialog({ visit, onOpenChange, listedByName }: VisitDe
   return (
     <>
       <Dialog open={!!visit} onOpenChange={open => !open && onOpenChange(false)}>
-        <DialogContent className="max-w-md">
+        {/* Wide + height-capped: the record can run long (partials, proofs, map),
+            so it spreads across two columns and scrolls inside rather than
+            growing off the top and bottom of the screen. */}
+        <DialogContent className="sm:max-w-2xl max-h-[88vh] grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
           {visit && (
             <VisitDetail visit={visit} listedByName={listedByName} onOpenPhoto={setPhoto} />
           )}
@@ -69,6 +72,10 @@ function VisitDetail({
     visit.status === 'collected' && visit.amount_collected !== null
       ? visit.amount_collected - visit.amount_due
       : 0
+  // The store's cross-day running balance (117). Positive = still owed, negative
+  // = the store is in credit (overpaid), zero = settled. Distinct from this
+  // visit's amount_due, which is only today's snapshot of it.
+  const balance = visit.client?.credit_balance ?? 0
 
   return (
     <>
@@ -76,8 +83,9 @@ function VisitDetail({
         <DialogTitle>{visit.client?.company_name}</DialogTitle>
       </DialogHeader>
 
-      <div className="space-y-3 text-sm">
-        <div className="flex items-center gap-2">
+      {/* The scroll region. -mr/pr keeps the scrollbar off the content. */}
+      <div className="space-y-3 overflow-y-auto -mr-2 pr-2 text-sm">
+        <div className="flex flex-wrap items-center gap-2">
           <Badge variant="tone" className={TONE_CLASS[VISIT_STATUS_TONE[visit.status]]}>
             {VISIT_STATUS_LABEL[visit.status]}
           </Badge>
@@ -88,10 +96,33 @@ function VisitDetail({
           )}
         </div>
 
+        {/* The store's running credit balance (117) — the cross-day figure it
+            owes, drawn down by every collection. Full width up top because it
+            frames the whole record: this visit's amount due is only today's
+            snapshot of it. "owed" and "in credit" read off the sign, since a
+            positive balance is what the store still owes. */}
+        <div className="flex items-center justify-between gap-2 rounded-xl bg-muted/50 px-3 py-2 text-xs">
+          <span className="flex items-center gap-1.5 font-medium text-foreground">
+            <Wallet className="w-3.5 h-3.5 text-muted-foreground" /> Store balance
+          </span>
+          {balance === 0 ? (
+            <span className="text-muted-foreground">Settled</span>
+          ) : (
+            <span className="tabular-nums font-semibold">
+              <span className={balance > 0 ? TONE_TEXT.amber : 'text-emerald-600 dark:text-emerald-400'}>
+                {peso(Math.abs(balance))}
+              </span>
+              <span className="ml-1 font-normal text-muted-foreground">
+                {balance > 0 ? 'owed' : 'in credit'}
+              </span>
+            </span>
+          )}
+        </div>
+
         {/* Additional-store notice: whether the urgent add reached the field.
             Only shown for a store the admin marked additional (migrations
             068/069). Delivered/Viewed only leave "Not yet" once mobile stamps
-            the ack columns via its RPCs. */}
+            the ack columns via its RPCs. Full width — it's a standalone alert. */}
         {ack && (
           <div className="rounded-xl border border-[var(--badge-purple-fg)]/30 bg-[var(--badge-purple-bg)]/40 p-3 space-y-1.5 text-xs">
             <p className="font-medium text-foreground flex items-center gap-1.5">
@@ -124,185 +155,192 @@ function VisitDetail({
           </div>
         )}
 
-        {/* Published by the office */}
-        <div className="rounded-xl bg-muted/50 p-3 space-y-1.5 text-xs">
-          <p className="font-medium text-foreground flex items-center gap-1.5">
-            <UserCog className="w-3.5 h-3.5" /> Listed
-          </p>
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Collection day</span>
-            <span className="font-medium">{format(new Date(visit.scheduled_for), 'MMM d, yyyy')}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Listed by</span>
-            <span className="font-medium">{listedByName ?? '—'}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Amount due</span>
-            <span className="tabular-nums font-medium">{peso(visit.amount_due)}</span>
-          </div>
-        </div>
-
-        {/* Brought back by whichever collector picked it up */}
-        <div className="rounded-xl bg-muted/50 p-3 space-y-1.5 text-xs">
-          <p className="font-medium text-foreground flex items-center gap-1.5">
-            <Camera className="w-3.5 h-3.5" /> Collected
-          </p>
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Collected by</span>
-            <span className="font-medium">
-              {visit.collector?.full_name ?? 'Not yet picked up'}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">
-              {visit.status === 'partial' ? 'Collected so far' : 'Amount received'}
-            </span>
-            <span className="tabular-nums font-medium">
-              {visit.amount_collected === null ? '—' : peso(visit.amount_collected)}
-            </span>
-          </div>
-          {/* The reason a partial store stays on the list: it still owes this. */}
-          {visit.status === 'partial' && (
-            <div className="flex justify-between font-semibold">
-              <span className={TONE_TEXT.amber}>Balance still owed</span>
-              <span className={`tabular-nums ${TONE_TEXT.amber}`}>{peso(remainingBalance(visit))}</span>
-            </div>
-          )}
-          {shortfall !== 0 && (
-            <>
-              <div className={`flex justify-between font-semibold ${TONE_TEXT.red}`}>
-                <span>Against due</span>
-                <span className="tabular-nums">{pesoDelta(shortfall)}</span>
-              </div>
-              <p className="text-[11px] text-muted-foreground leading-relaxed pt-0.5">
-                The collector was not shown the due amount, so this gap is what the
-                store paid — not a miscount to hold them to.
+        {/* Two columns on a wide screen: the money trail (left) beside the
+            field evidence (right). Stacks to one column when it can't fit. */}
+        <div className="grid gap-3 sm:grid-cols-2 sm:items-start">
+          {/* Left — the money trail: listed → collected → each handover. */}
+          <div className="space-y-3">
+            {/* Published by the office */}
+            <div className="rounded-xl bg-muted/50 p-3 space-y-1.5 text-xs">
+              <p className="font-medium text-foreground flex items-center gap-1.5">
+                <UserCog className="w-3.5 h-3.5" /> Listed
               </p>
-            </>
-          )}
-        </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Collection day</span>
+                <span className="font-medium">{format(new Date(visit.scheduled_for), 'MMM d, yyyy')}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Listed by</span>
+                <span className="font-medium">{listedByName ?? '—'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Amount due</span>
+                <span className="tabular-nums font-medium">{peso(visit.amount_due)}</span>
+              </div>
+            </div>
 
-        {/* Installment history — one row per handover, each with its own proof
-            (migration 070). Only present on a store paid in parts; a single-visit
-            store carries no payment rows and this is skipped. This is where the
-            admin verifies each partial's capture, since the top-level proof grid
-            only shows the latest one. */}
-        {visit.payments && visit.payments.length > 0 && (
-          <div className="rounded-xl bg-muted/50 p-3 space-y-2 text-xs">
-            <p className="font-medium text-foreground flex items-center gap-1.5">
-              <Banknote className="w-3.5 h-3.5" /> Payments ({visit.payments.length})
-            </p>
-            <div className="space-y-2.5">
-              {visit.payments.map(p => (
-                <div
-                  key={p.id}
-                  className="border-t border-border/60 pt-2 first:border-t-0 first:pt-0 space-y-1.5"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="tabular-nums font-medium text-foreground">{peso(p.amount)}</span>
-                    <span className="text-[11px] text-muted-foreground">
-                      {format(new Date(p.paid_at), 'MMM d, h:mm a')}
-                    </span>
+            {/* Brought back by whichever collector picked it up */}
+            <div className="rounded-xl bg-muted/50 p-3 space-y-1.5 text-xs">
+              <p className="font-medium text-foreground flex items-center gap-1.5">
+                <Camera className="w-3.5 h-3.5" /> Collected
+              </p>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Collected by</span>
+                <span className="font-medium">
+                  {visit.collector?.full_name ?? 'Not yet picked up'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">
+                  {visit.status === 'partial' ? 'Collected so far' : 'Amount received'}
+                </span>
+                <span className="tabular-nums font-medium">
+                  {visit.amount_collected === null ? '—' : peso(visit.amount_collected)}
+                </span>
+              </div>
+              {/* No per-visit "balance still owed" here: a partial closes for the
+                  day, and what the store still owes is the running store balance
+                  shown up top — repeating it against this one visit's due would
+                  read as a second, competing figure. */}
+              {shortfall !== 0 && (
+                <>
+                  <div className={`flex justify-between font-semibold ${TONE_TEXT.red}`}>
+                    <span>Against due</span>
+                    <span className="tabular-nums">{pesoDelta(shortfall)}</span>
                   </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    {paymentMethodLabel(p.payment_method)} · {p.collector?.full_name ?? '—'}
+                  <p className="text-[11px] text-muted-foreground leading-relaxed pt-0.5">
+                    The collector was not shown the due amount, so this gap is what the
+                    store paid — not a miscount to hold them to.
                   </p>
-                  {(p.payment_photo_url || p.delivery_receipt_photo_url) && (
-                    <div className="flex gap-2">
-                      {p.payment_photo_url && (
-                        <RemittanceProofThumb
-                          url={p.payment_photo_url}
-                          label="Payment"
-                          caption={captionFor(p.collector?.full_name, p.paid_at)}
-                          icon={<Camera className="w-3 h-3" />}
-                          onOpen={onOpenPhoto}
-                        />
-                      )}
-                      {p.delivery_receipt_photo_url && (
-                        <RemittanceProofThumb
-                          url={p.delivery_receipt_photo_url}
-                          label="Receipt"
-                          caption={captionFor(p.collector?.full_name, p.paid_at)}
-                          icon={<Camera className="w-3 h-3" />}
-                          onOpen={onOpenPhoto}
-                        />
+                </>
+              )}
+            </div>
+
+            {/* Installment history — one row per handover, each with its own proof
+                (migration 070). Only present on a store paid in parts; a single-visit
+                store carries no payment rows and this is skipped. This is where the
+                admin verifies each partial's capture, since the top-level proof grid
+                only shows the latest one. */}
+            {visit.payments && visit.payments.length > 0 && (
+              <div className="rounded-xl bg-muted/50 p-3 space-y-2 text-xs">
+                <p className="font-medium text-foreground flex items-center gap-1.5">
+                  <Banknote className="w-3.5 h-3.5" /> Payments ({visit.payments.length})
+                </p>
+                <div className="space-y-2.5">
+                  {visit.payments.map(p => (
+                    <div
+                      key={p.id}
+                      className="border-t border-border/60 pt-2 first:border-t-0 first:pt-0 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="tabular-nums font-medium text-foreground">{peso(p.amount)}</span>
+                        <span className="text-[11px] text-muted-foreground">
+                          {format(new Date(p.paid_at), 'MMM d, h:mm a')}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        {paymentMethodLabel(p.payment_method)} · {p.collector?.full_name ?? '—'}
+                      </p>
+                      {(p.payment_photo_url || p.delivery_receipt_photo_url) && (
+                        <div className="flex gap-2">
+                          {p.payment_photo_url && (
+                            <RemittanceProofThumb
+                              url={p.payment_photo_url}
+                              label="Payment"
+                              caption={captionFor(p.collector?.full_name, p.paid_at)}
+                              icon={<Camera className="w-3 h-3" />}
+                              onOpen={onOpenPhoto}
+                            />
+                          )}
+                          {p.delivery_receipt_photo_url && (
+                            <RemittanceProofThumb
+                              url={p.delivery_receipt_photo_url}
+                              label="Receipt"
+                              caption={captionFor(p.collector?.full_name, p.paid_at)}
+                              icon={<Camera className="w-3 h-3" />}
+                              onOpen={onOpenPhoto}
+                            />
+                          )}
+                        </div>
                       )}
                     </div>
-                  )}
+                  ))}
                 </div>
-              ))}
+              </div>
+            )}
+          </div>
+
+          {/* Right — the field evidence: what the phone captured, and where. */}
+          <div className="space-y-3">
+            {/* Which captures are required depends on the payment method — see
+                visitProofs. A capture that arrived but is no longer required (an
+                older Counter visit's receipt photo) is still shown. */}
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-foreground">Proof captures</p>
+              {missing.length > 0 && (
+                <p className={`flex items-center gap-1.5 text-[11px] font-medium ${TONE_TEXT.red}`}>
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  {missing.length === 1 ? '1 required capture is' : `${missing.length} required captures are`} missing
+                </p>
+              )}
+              <div className="grid grid-cols-2 gap-2">
+                {proofs.map(proof => (
+                  <ProofTile
+                    key={proof.label}
+                    label={proof.label}
+                    url={proof.url}
+                    signature={proof.signature}
+                    missing={visit.status === 'collected' && proof.required}
+                    caption={captionFor(visit.collector?.full_name, visit.visited_at ?? visit.scheduled_for)}
+                    onOpen={onOpenPhoto}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
-        )}
 
-        {/* Which captures are required depends on the payment method — see
-            visitProofs. A capture that arrived but is no longer required (an
-            older Counter visit's receipt photo) is still shown. */}
-        <div className="space-y-1.5">
-          <p className="text-xs font-medium text-foreground">Proof captures</p>
-          {missing.length > 0 && (
-            <p className={`flex items-center gap-1.5 text-[11px] font-medium ${TONE_TEXT.red}`}>
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-              {missing.length === 1 ? '1 required capture is' : `${missing.length} required captures are`} missing
-            </p>
-          )}
-          <div className="grid grid-cols-2 gap-2">
-            {proofs.map(proof => (
-              <ProofTile
-                key={proof.label}
-                label={proof.label}
-                url={proof.url}
-                signature={proof.signature}
-                missing={visit.status === 'collected' && proof.required}
-                caption={captionFor(visit.collector?.full_name, visit.visited_at ?? visit.scheduled_for)}
-                onOpen={onOpenPhoto}
-              />
-            ))}
+            <div className="space-y-1.5 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground">Auto-captured</p>
+              <p className="flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 shrink-0" />
+                {visit.gps_lat !== null
+                  ? `${visit.gps_lat.toFixed(4)}° N, ${visit.gps_lng?.toFixed(4)}° E`
+                  : 'No GPS captured'}
+              </p>
+              <p className="flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 shrink-0" />
+                {visit.visited_at
+                  ? format(new Date(visit.visited_at), 'MMM d, yyyy · h:mm a')
+                  : 'Not yet visited'}
+              </p>
+            </div>
+
+            <StoreLocationPanel clientId={visit.client_id} />
+
+            {visit.rescheduled_to && (
+              <p className="text-xs">
+                <span className="text-muted-foreground">Rescheduled to </span>
+                <span className="font-medium">
+                  {format(new Date(visit.rescheduled_to), 'MMM d, yyyy')}
+                </span>
+              </p>
+            )}
+
+            {visit.remarks && (
+              <p className="text-xs">
+                <span className="text-muted-foreground">Remarks: </span>
+                {visit.remarks}
+              </p>
+            )}
+
+            {visit.status === 'collected' && (
+              <PendingNote label="SMS pending">
+                The customer&apos;s payment-confirmation SMS is part of this flow, but no
+                provider has been chosen — so nothing is sent yet and no delivery
+                status is shown here.
+              </PendingNote>
+            )}
           </div>
         </div>
-
-        <div className="space-y-1.5 text-xs text-muted-foreground">
-          <p className="font-medium text-foreground">Auto-captured</p>
-          <p className="flex items-center gap-1.5">
-            <MapPin className="w-3.5 h-3.5 shrink-0" />
-            {visit.gps_lat !== null
-              ? `${visit.gps_lat.toFixed(4)}° N, ${visit.gps_lng?.toFixed(4)}° E`
-              : 'No GPS captured'}
-          </p>
-          <p className="flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5 shrink-0" />
-            {visit.visited_at
-              ? format(new Date(visit.visited_at), 'MMM d, yyyy · h:mm a')
-              : 'Not yet visited'}
-          </p>
-        </div>
-
-        <StoreLocationPanel clientId={visit.client_id} />
-
-        {visit.rescheduled_to && (
-          <p className="text-xs">
-            <span className="text-muted-foreground">Rescheduled to </span>
-            <span className="font-medium">
-              {format(new Date(visit.rescheduled_to), 'MMM d, yyyy')}
-            </span>
-          </p>
-        )}
-
-        {visit.remarks && (
-          <p className="text-xs">
-            <span className="text-muted-foreground">Remarks: </span>
-            {visit.remarks}
-          </p>
-        )}
-
-        {visit.status === 'collected' && (
-          <PendingNote label="SMS pending">
-            The customer&apos;s payment-confirmation SMS is part of this flow, but no
-            provider has been chosen — so nothing is sent yet and no delivery
-            status is shown here.
-          </PendingNote>
-        )}
       </div>
     </>
   )
