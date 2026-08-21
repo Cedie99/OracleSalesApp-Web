@@ -13,6 +13,7 @@ import { usePurchaseOrders } from '@/lib/hooks/use-delivery'
 import { collectionTrips } from '@/lib/collection'
 import { deliveryTrips } from '@/lib/delivery'
 import { peso } from '@/lib/money'
+import { stopAddress, stopLocality } from '@/lib/client-info'
 import type { TripStop } from '@/lib/trips'
 import { ADMIN_MODULES, type AdminModule } from '@/lib/permissions'
 import { Loader2 } from 'lucide-react'
@@ -105,11 +106,21 @@ function MapsPageContent() {
         .filter(v => v.status === 'pending')
         .map<TripStop>(v => ({
           id: v.id,
+          clientId: v.client_id,
           sequence: 0,
           label: v.client?.company_name ?? 'Unknown store',
-          sublabel: v.client?.office_address ?? '',
+          // The whole client record, not `office_address` alone — see the note
+          // on `stopAddress`. Reading that one column is what made this list say
+          // "No address on file" for stores whose city the database knows.
+          sublabel: stopAddress(v.client, v.area),
+          // No captured GPS by definition: nobody has been here to take a photo.
+          // Where the store IS travels on `storeLat`/`storeLng` instead, which
+          // is what lets the map plot a store nobody has reached.
           lat: null,
           lng: null,
+          storeLat: v.client_lat,
+          storeLng: v.client_lng,
+          locality: stopLocality(v.client, v.area),
           at: null,
           startedAt: null,
           durationMinutes: null,
@@ -132,11 +143,17 @@ function MapsPageContent() {
         .filter(po => po.status === 'pending')
         .map<TripStop>(po => ({
           id: po.id,
+          clientId: po.client_id,
           sequence: 0,
           label: po.client?.company_name ?? 'Unknown customer',
-          sublabel: po.area,
+          // `po.area` is the admin's own delivery area for the stop, kept as the
+          // fallback inside `stopAddress` — the client's real address wins.
+          sublabel: stopAddress(po.client, po.area),
           lat: null,
           lng: null,
+          storeLat: po.client_lat,
+          storeLng: po.client_lng,
+          locality: stopLocality(po.client, po.area),
           at: null,
           startedAt: null,
           durationMinutes: null,

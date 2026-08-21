@@ -19,9 +19,15 @@ import type {
  * column mobile adds reach the UI untyped instead of surfacing as a loud error.
  */
 
+// `address_line1/2` + `landmark` ride along with `office_address` because a
+// store's address is spread across two generations of columns and `clientAddress`
+// composes them — selecting only the legacy free-text field made the maps page
+// report "No address on file" for stores that carry a perfectly good structured
+// one. All of these are long-deployed (013) and already selected by use-clients.
 const CLIENT_JOIN = `
   id, company_name, contact_person, contact_position, contact_number,
-  office_address, customer_type, sales_channel, assigned_agent_id, status,
+  office_address, address_line1, address_line2, landmark,
+  customer_type, sales_channel, assigned_agent_id, status,
   city, province, lost_at, reassignable_at, created_at, updated_at
 `
 
@@ -52,12 +58,20 @@ const VISIT_COLUMNS = `
 // no additional state; once 068 is live the primary select succeeds and the
 // Delivered/Viewed board lights up with no redeploy. This removes any
 // app/migration deploy-ordering coupling.
-const ADDITIONAL_COLUMNS = `is_additional, additional_received_at, additional_seen_at`
+//
+// `client_lat`/`client_lng` (migration 114 — the store's default map pin) join
+// the same group for the same reason: 114 ships in this repo and CI applies it
+// on merge, but the Vercel build and the migration push race, so for a few
+// minutes the new code can be live against the old schema.
+const ADDITIONAL_COLUMNS = `
+  is_additional, additional_received_at, additional_seen_at,
+  client_lat, client_lng
+`
 
-/** True when a select failed only because 068's columns aren't there yet. */
+/** True when a select failed only because 068's/114's columns aren't there yet. */
 function isMissingAdditionalColumn(error: { message?: string } | null): boolean {
   return !!error?.message
-    && /is_additional|additional_received_at|additional_seen_at/.test(error.message)
+    && /is_additional|additional_received_at|additional_seen_at|client_lat|client_lng/.test(error.message)
 }
 
 // The installments behind a partial store (migration 070). Fetched in one pass
@@ -155,6 +169,8 @@ function normalizeVisit(
     amount_collected: num(row.amount_collected),
     gps_lat: num(row.gps_lat),
     gps_lng: num(row.gps_lng),
+    // Absent while the pre-114 fallback select is in play; null then reads as
+    // "no default pin known", which is exactly how the maps page treats it.
     client_lat: num(row.client_lat),
     client_lng: num(row.client_lng),
     client: one<Client>(row.client),

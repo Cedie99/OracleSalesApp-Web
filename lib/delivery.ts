@@ -18,6 +18,7 @@
 import type { CodRemittance, PurchaseOrder } from '@/types'
 import { numberStopsByWorker, type WorkerStopNumber } from '@/lib/board-numbering'
 import { peso } from '@/lib/money'
+import { stopAddress, stopLocality } from '@/lib/client-info'
 import { groupByWorkerDay, tripColor, workerColors, type Trip, type TripStop } from '@/lib/trips'
 
 /**
@@ -397,13 +398,15 @@ function deliveryStop(po: PurchaseOrder, sequence: number): TripStop {
 
   return {
     id: po.id,
+    clientId: po.client_id,
     sequence,
     label: po.client?.company_name ?? 'Unknown customer',
-    sublabel: po.area,
-    // Where the driver STOOD (visit GPS) once the stop is worked; before that,
-    // the store's default pin (migration 114) so a pending stop still plots.
-    lat: po.gps_lat ?? po.client_lat,
-    lng: po.gps_lng ?? po.client_lng,
+    sublabel: stopAddress(po.client, po.area),
+    lat: po.gps_lat,
+    lng: po.gps_lng,
+    storeLat: po.client_lat,
+    storeLng: po.client_lng,
+    locality: stopLocality(po.client, po.area),
     at: po.time_out,
     startedAt: po.time_in,
     durationMinutes: dwell,

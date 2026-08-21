@@ -12,6 +12,7 @@ import type { AdditionalAckState, CollectionVisit, PaymentMethod, Remittance } f
 import { numberStopsByWorker, type WorkerStopNumber } from '@/lib/board-numbering'
 import { peso } from '@/lib/money'
 import { paymentMethodLabel } from '@/lib/status-styles'
+import { stopAddress, stopLocality } from '@/lib/client-info'
 import { groupByWorkerDay, tripColor, workerColors, type Trip, type TripStop } from '@/lib/trips'
 
 /** Remitted minus collected. Negative means the collector handed over less. */
@@ -352,14 +353,15 @@ function collectionStop(visit: CollectionVisit, sequence: number): TripStop {
 
   return {
     id: visit.id,
+    clientId: visit.client_id,
     sequence,
     label: visit.client?.company_name ?? 'Unknown store',
-    sublabel: visit.client?.office_address ?? '',
-    // Where the collector STOOD (visit GPS) once they worked the stop; before
-    // that, the store's default pin (migration 114) so a pending store still
-    // plots. This is what makes an unvisited store appear on the trip map at all.
-    lat: visit.gps_lat ?? visit.client_lat,
-    lng: visit.gps_lng ?? visit.client_lng,
+    sublabel: stopAddress(visit.client, visit.area),
+    lat: visit.gps_lat,
+    lng: visit.gps_lng,
+    storeLat: visit.client_lat,
+    storeLng: visit.client_lng,
+    locality: stopLocality(visit.client, visit.area),
     at: visit.visited_at,
     // Collection captures one timestamp per store, not a window — see
     // `TripStop.startedAt`. Nothing here to derive a dwell from.
