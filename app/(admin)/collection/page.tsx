@@ -34,7 +34,7 @@ import {
 } from '@/components/needs-attention'
 import { isNotWorked, isStaleClaim, staleClaimCount } from '@/lib/claims'
 import {
-  buildDays, collectionTrips, hasMissingProof, remainingBalance, remittanceVariance,
+  buildDays, collectionTrips, hasMissingProof, remittanceVariance,
   type CollectionDay,
 } from '@/lib/collection'
 import { peso, pesoDelta } from '@/lib/money'
@@ -340,13 +340,13 @@ export default function CollectionPage() {
       totalVariance: remittances.reduce((sum, r) => sum + remittanceVariance(r), 0),
       // Money the collector is still holding: collected but not yet handed over.
       unremitted: collected - remitted,
-      // What the lists still have to bring in: a pending store's whole due plus a
-      // partial store's remaining balance.
-      outstanding: filteredVisits.reduce((sum, v) => {
-        if (v.status === 'pending') return sum + v.amount_due
-        if (v.status === 'partial') return sum + remainingBalance(v)
-        return sum
-      }, 0),
+      // What the lists still have to bring in: only their pending stores, each
+      // owing its whole due. A partial has closed for the day — its leftover is
+      // the store's balance, collected when it is re-listed, not still out today.
+      outstanding: filteredVisits.reduce(
+        (sum, v) => (v.status === 'pending' ? sum + v.amount_due : sum),
+        0,
+      ),
       pending: filteredVisits.filter(v => v.status === 'pending').length,
       partial: filteredVisits.filter(v => v.status === 'partial').length,
       missingProof: filteredVisits.filter(hasMissingProof).length,
@@ -571,7 +571,7 @@ export default function CollectionPage() {
               <p className="text-2xl font-semibold tabular-nums">{peso(stats.outstanding)}</p>
               <p className="text-[11px] text-muted-foreground mt-0.5">
                 {stats.pending} listed {stats.pending === 1 ? 'store' : 'stores'} not yet collected
-                {stats.partial > 0 && ` · ${stats.partial} partly paid`}
+                {stats.partial > 0 && ` · ${stats.partial} partly paid today`}
               </p>
             </CardContent>
           </Card>

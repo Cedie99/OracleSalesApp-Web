@@ -63,6 +63,24 @@ export function StorePaymentCalendar({ entries }: { entries: ClientCreditEntry[]
     return sum
   }, [paidByDay, month])
 
+  // What the admin set the store owes overall — the running total of the
+  // non-collection movements (opening/set adjustments + charges for new goods).
+  // The collections below draw the remaining balance down; this figure does not
+  // move when the store pays, so it stays the "of X, this is what's been paid"
+  // reference for the month totals.
+  const amountDue = useMemo(
+    () => entries
+      .filter(e => e.entry_type !== 'collection')
+      .reduce((sum, e) => sum + e.amount, 0),
+    [entries]
+  )
+
+  // Every peso the store has ever paid — the magnitude of all its collections.
+  const totalPaid = useMemo(
+    () => collections.reduce((sum, e) => sum + paidAmount(e), 0),
+    [collections]
+  )
+
   const dayPayments = useMemo(() => {
     if (!selectedDay) return []
     return collections
@@ -100,10 +118,20 @@ export function StorePaymentCalendar({ entries }: { entries: ClientCreditEntry[]
             <ChevronRight className="h-4 w-4" />
           </button>
         </div>
-        <span className="text-xs text-muted-foreground">
-          Paid this month:{' '}
-          <span className="font-medium tabular-nums text-foreground">{peso(monthTotal)}</span>
-        </span>
+        <div className="flex flex-col items-end gap-0.5 text-xs text-muted-foreground">
+          <span>
+            Amount due:{' '}
+            <span className="font-medium tabular-nums text-foreground">{peso(amountDue)}</span>
+          </span>
+          <span>
+            Total paid:{' '}
+            <span className="font-medium tabular-nums text-foreground">{peso(totalPaid)}</span>
+          </span>
+          <span>
+            Paid this month:{' '}
+            <span className="font-medium tabular-nums text-foreground">{peso(monthTotal)}</span>
+          </span>
+        </div>
       </div>
 
       {/* Weekday labels */}
