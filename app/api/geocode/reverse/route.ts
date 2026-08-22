@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { reverseGeocode, formatPlace } from '@/lib/geocode/nominatim'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,13 +28,6 @@ export const dynamic = 'force-dynamic'
  */
 
 /**
- * Nominatim's policy: max 1 request/second, and a blocked IP is blocked for the
- * whole deployment. 1100ms leaves room for clock jitter.
- */
-const MIN_REQUEST_GAP_MS = 1100
-const NOMINATIM_TIMEOUT_MS = 5000
-
-/**
  * Place names do not change, so entries never expire — the cap is only here to
  * stop an unbounded Map on a long-lived server. Coordinates are rounded to 4dp
  * (~11m) before they become a key, which is far finer than the barangay-level
@@ -42,102 +36,19 @@ const NOMINATIM_TIMEOUT_MS = 5000
 const CACHE_LIMIT = 5000
 const cache = new Map<string, string | null>()
 
-/** Serialises every outbound call into one queue — see MIN_REQUEST_GAP_MS. */
-let lastRequestAt = 0
-let queue: Promise<unknown> = Promise.resolve()
-
 function cacheKey(lat: number, lng: number): string {
   return `${lat.toFixed(4)},${lng.toFixed(4)}`
 }
 
-interface NominatimAddress {
-  village?: string
-  hamlet?: string
-  suburb?: string
-  neighbourhood?: string
-  city?: string
-  town?: string
-  municipality?: string
-  county?: string
-  /** In the Philippines this is the PROVINCE ("Pampanga"), not the region. */
-  state?: string
-  region?: string
-  country?: string
-}
-
 /**
- * "Barangay, Municipality, Province" — how a Filipino reads a location out loud,
- * and the level a supervisor checks a visit against.
- *
- * Verified against live responses for two of our own meeting coordinates: PH
- * results put the province in `state` and the region ("Central Luzon") in
- * `region`, which is why `region` is not used. The barangay arrives under
- * `village` in one and is absent in the other, and the municipality under `city`
- * in one and `town` in the other — hence the fallback chains rather than fixed
- * keys. Duplicates are dropped because a chartered city ("San Fernando") can
- * repeat across two of the three slots.
+ * The Nominatim call, its 1-req/s throttle, and the address parsing now live in
+ * lib/geocode/nominatim.ts so this route and the Store Locations derive pass
+ * share ONE rate limiter (a blocked IP is blocked for the whole deployment). The
+ * local `cache` above still holds this route's formatted labels.
  */
-function formatPlace(address: NominatimAddress | undefined, displayName?: string): string | null {
-  if (!address) return displayName?.trim() || null
-
-  const barangay = address.village || address.hamlet || address.suburb || address.neighbourhood
-  const municipality = address.city || address.town || address.municipality || address.county
-  const province = address.state
-
-  const parts: string[] = []
-  for (const part of [barangay, municipality, province]) {
-    const value = part?.trim()
-    if (value && !parts.includes(value)) parts.push(value)
-  }
-
-  if (parts.length > 0) return parts.join(', ')
-  // Nothing administrative matched — a sea/border fix, or a country we have no
-  // shape for. The full display name beats showing nothing.
-  return displayName?.trim() || address.country?.trim() || null
-}
-
-async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
-  const url = new URL('https://nominatim.openstreetmap.org/reverse')
-  url.searchParams.set('format', 'jsonv2')
-  url.searchParams.set('lat', String(lat))
-  url.searchParams.set('lon', String(lng))
-  // Barangay level. Higher zooms return a building or road, which is noise for
-  // "was this agent where they said" and is often just missing in PH data.
-  url.searchParams.set('zoom', '14')
-  url.searchParams.set('addressdetails', '1')
-
-  const response = await fetch(url, {
-    headers: {
-      // Required by Nominatim's usage policy. See the note at the top.
-      'User-Agent': 'OracleSalesApp-Web (oraclesalesapp-web.vercel.app)',
-      'Accept-Language': 'en',
-    },
-    signal: AbortSignal.timeout(NOMINATIM_TIMEOUT_MS),
-  })
-
-  if (!response.ok) throw new Error(`Nominatim responded ${response.status}`)
-
-  const body = (await response.json()) as { address?: NominatimAddress; display_name?: string }
-  return formatPlace(body.address, body.display_name)
-}
-
-/**
- * Runs `reverseGeocode` at most once per MIN_REQUEST_GAP_MS across all callers,
- * by chaining onto a single promise. Concurrent requests wait their turn rather
- * than being rejected — the map asks for one pin at a time, so the queue stays
- * short, and a queued answer is better than a failed one.
- */
-function enqueue(lat: number, lng: number): Promise<string | null> {
-  const result = queue.then(async () => {
-    const wait = lastRequestAt + MIN_REQUEST_GAP_MS - Date.now()
-    if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait))
-    lastRequestAt = Date.now()
-    return reverseGeocode(lat, lng)
-  })
-  // The queue must keep draining even when a link in it rejects, so the chain
-  // swallows the failure. `result` still carries it to the caller.
-  queue = result.catch(() => {})
-  return result
+async function labelFor(lat: number, lng: number): Promise<string | null> {
+  const { address, displayName } = await reverseGeocode(lat, lng)
+  return formatPlace(address, displayName)
 }
 
 export async function GET(request: Request) {
@@ -161,7 +72,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const label = await enqueue(lat, lng)
+    const label = await labelFor(lat, lng)
     // A null answer is cached too: coordinates Nominatim cannot name will not
     // become nameable on a retry, and re-asking burns the rate limit.
     if (cache.size >= CACHE_LIMIT) cache.clear()

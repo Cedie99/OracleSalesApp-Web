@@ -14,6 +14,7 @@ import { CompanionLine, ManagerGateIcon } from '@/components/tag-along-indicator
 import { formatDistanceMeters, formatDurationMinutes } from '@/lib/utils'
 import { clientAddress } from '@/lib/client-info'
 import { StoreLocationPanel } from '@/components/maps/store-location-panel'
+import { ClientFieldLocations } from '@/components/clients/client-field-locations'
 import type { Client, Meeting, MeetingOutcome, TagAlongRequest } from '@/types'
 import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, Tag, X as XIcon, Clock, ChevronRight, FileText, ListChecks } from 'lucide-react'
 import { format } from 'date-fns'
@@ -406,6 +407,14 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                             GPS, which is where the agent stood, not where the
                             store is. */}
                         <StoreLocationPanel clientId={client.id} />
+
+                        {/* Store Locations Option 2: the DERIVED field
+                            municipality + any reported additional branches,
+                            shown alongside the registered clients.city above. */}
+                        <ClientFieldLocations
+                          clientId={client.id}
+                          registeredCity={clientAddress(client).locality}
+                        />
                       </div>
 
                       <div>

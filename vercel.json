@@ -3,6 +3,7 @@
     { "path": "/api/cron/prospect-cleanup", "schedule": "0 17 * * *" },
     { "path": "/api/cron/lost-opportunity-sweep", "schedule": "0 18 * * *" },
     { "path": "/api/cron/promote-new-clients", "schedule": "1 16 31 12 *" },
-    { "path": "/api/cron/remittance-sms", "schedule": "0 22 * * *" }
+    { "path": "/api/cron/remittance-sms", "schedule": "0 22 * * *" },
+    { "path": "/api/geocode/derive-area", "schedule": "0 19 * * *" }
   ]
 }
