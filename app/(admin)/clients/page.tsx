@@ -156,38 +156,6 @@ export default function ClientsPage() {
     return map
   }, [tagAlongsByInviteeId])
 
-  // Every visible client's manager, computed once regardless of this page's
-  // own search/type/channel/status filters — so scoping the stat row to a
-  // manager below doesn't inherit those filters either, same convention as
-  // the unscoped totals previously had. A client also lands in a manager's
-  // own bucket when they recorded a meeting for it or were tagged along on
-  // it — otherwise a manager who only holds clients directly (no agents, or
-  // clients their agents don't own) shows an all-zero stat row for clients
-  // that very much involve them.
-  const clientsByManagerKey = useMemo(() => {
-    const byId = new Map(visibleClients.map(c => [c.id, c]))
-    const idsByKey = new Map<string, Set<string>>()
-    const add = (key: string, id: string) => {
-      let set = idsByKey.get(key)
-      if (!set) { set = new Set(); idsByKey.set(key, set) }
-      set.add(id)
-    }
-    for (const c of visibleClients) {
-      add(managerForTeam(c.agent?.team_id, managers)?.id ?? 'unassigned', c.id)
-    }
-    for (const mt of meetings) {
-      if (mt.agent_id) add(mt.agent_id, mt.client_id)
-      if (mt.recorded_by) add(mt.recorded_by, mt.client_id)
-    }
-    for (const [inviteeId, ids] of tagAlongClientIds) {
-      for (const id of ids) add(inviteeId, id)
-    }
-    const result = new Map<string, Client[]>()
-    for (const [key, ids] of idsByKey) {
-      result.set(key, [...ids].map(id => byId.get(id)).filter((c): c is Client => !!c))
-    }
-    return result
-  }, [visibleClients, managers, meetings, tagAlongClientIds])
 
 
   const filtered = visibleClients.filter(c => {
@@ -253,25 +221,22 @@ export default function ClientsPage() {
       // their own "Agents under" section) — those clients belong to the
       // manager's personal count too, even absent a meeting or tag-along.
       const directClientIds = new Set(filtered.filter(c => c.assigned_agent_id === m.id).map(c => c.id))
-      const managerClientCount = filtered.filter(
+      const managerOwnClients = filtered.filter(
         c => ownClientIds.has(c.id) || (invited?.has(c.id) ?? false) || directClientIds.has(c.id)
-      ).length
-      // Team total: clients reached via an agent under this manager, unioned
-      // with the manager's own direct clients — a manager with no agents (or
-      // whose agents have none) still has their own clients counted here, and
-      // a client who's both agent-assigned and directly held isn't double-counted.
-      // `groups` excludes the manager's own assigned_agent_id rows (they'd
-      // otherwise show up as a fake "agent" under the manager), so directClientIds
-      // has to be unioned in here explicitly to keep them in the team total.
-      const teamClientIds = new Set(managerGroups.flatMap(g => g.clients.map(c => c.id)))
-      const clientCount = filtered.filter(
-        c => teamClientIds.has(c.id) || ownClientIds.has(c.id) || (invited?.has(c.id) ?? false) || directClientIds.has(c.id)
-      ).length
+      )
+      const managerClientCount = managerOwnClients.length
+      // Team total: the manager's own clients plus every agent's own clients,
+      // concatenated (not deduped) so this always equals managerClientCount
+      // summed with each agent group's count below it — a client the manager
+      // tagged along on / recorded a meeting for is counted here once for the
+      // manager and again under whichever agent it's assigned to, by design.
+      const teamClients = [...managerOwnClients, ...managerGroups.flatMap(g => g.clients)]
       return {
         key: m.id,
         label: m.full_name,
         agentCount: managerGroups.length,
-        clientCount,
+        clientCount: teamClients.length,
+        clients: teamClients,
         ownClientCount,
         tagAlongCount,
         managerClientCount,
@@ -279,11 +244,13 @@ export default function ClientsPage() {
     })
     const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
     if (unassignedGroups.length > 0) {
+      const clients = unassignedGroups.flatMap(g => g.clients)
       buckets.push({
         key: 'unassigned',
         label: 'Unassigned',
         agentCount: unassignedGroups.length,
-        clientCount: unassignedGroups.reduce((sum, g) => sum + g.clients.length, 0),
+        clientCount: clients.length,
+        clients,
         ownClientCount: 0,
         tagAlongCount: 0,
         managerClientCount: 0,
@@ -318,9 +285,10 @@ export default function ClientsPage() {
   // fully selected agent or manager uses their own footprint (activeClients,
   // the exact set the table renders), so the two numbers never disagree. A
   // manager who's only expanded in the list (previewing, not yet drilled in)
-  // uses the team-wide total instead; otherwise it's the global total.
+  // uses that same team total shown on the card (managerBuckets' clients,
+  // manager + agents concatenated) instead; otherwise it's the global total.
   const statsClients =
-    activeClients ?? (expandedManagerKey ? clientsByManagerKey.get(expandedManagerKey) ?? [] : visibleClients)
+    activeClients ?? (expandedManagerKey ? managerBuckets.find(b => b.key === expandedManagerKey)?.clients ?? [] : visibleClients)
 
   const counts = {
     total: statsClients.length,
