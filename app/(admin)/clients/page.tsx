@@ -27,7 +27,7 @@ import { recordAuditLog } from '@/lib/audit/actions'
 import { buildChanges, type AuditField, type KnownAuditAction } from '@/lib/audit/entries'
 import type { Client, CustomerType, SalesChannel, ClientStatus, Profile } from '@/types'
 import {
-  Search, Building2, Phone, MapPin, Map as MapIcon, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users,
+  Search, Building2, Phone, MapPin, Map as MapIcon, User, Plus, RefreshCw, Loader2, ChevronRight, ChevronDown, ArrowLeft, Users, Upload,
   TrendingUp, Handshake, Target, CheckCircle2, XCircle,
 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -43,6 +43,7 @@ import {
   VALUE_LABEL as LABEL,
 } from '@/lib/status-styles'
 import { managerForTeam } from '@/lib/teams'
+import { canImportClients } from '@/lib/permissions'
 import { PSGC_LOCALITIES } from '@/lib/data/psgc-localities'
 
 const ASSIGNABLE_ROLES = ['sales_specialist', 'sales_manager', 'rsr']
@@ -725,6 +726,20 @@ export default function ClientsPage() {
             <Plus className="w-4 h-4" />
             New Client
           </Button> */}
+          {/* Bulk spreadsheet import. Superadmin only (canImportClients) — the
+              page and proxy.ts enforce the same rule, so this is about not
+              offering a link that would bounce, not about security. */}
+          {canImportClients(profile?.role) ? (
+            <Button
+              onClick={() => router.push('/clients/import')}
+              size="sm"
+              variant="outline"
+              className="h-9 gap-2"
+            >
+              <Upload className="w-4 h-4" />
+              Import
+            </Button>
+          ) : null}
         </div>
 
         {!selectedGroup && !selectedManagerBucket ? (

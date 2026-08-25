@@ -1,6 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
-import { adminScope, canAccessRoute, hasWebAccess, homeRouteForScope } from '@/lib/permissions'
+import { adminScope, canAccessRoute, canImportClients, hasWebAccess, homeRouteForScope } from '@/lib/permissions'
 import type { AdminScope, UserRole } from '@/types'
 
 export async function proxy(request: NextRequest) {
@@ -116,6 +116,16 @@ export async function proxy(request: NextRequest) {
     // for this page, and typing a URL shouldn't look like an access failure.
     if (!canAccessRoute(role, scope, pathname)) {
       return redirectTo(homeRouteForScope(adminScope(role, scope)))
+    }
+
+    // The bulk client import is superadmin-only, and it is a SUBPATH of a page
+    // plain admins legitimately use — so canAccessRoute above lets it through
+    // (it matches on `/clients` prefixes) and the narrower rule has to be
+    // stated here. Sent back to /clients rather than /unauthorized for the same
+    // reason as the scope redirect: they are an authorised admin standing on a
+    // page that isn't theirs, not an access failure.
+    if (pathname.startsWith('/clients/import') && !canImportClients(role)) {
+      return redirectTo('/clients')
     }
   }
 
