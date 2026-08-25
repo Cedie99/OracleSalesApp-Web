@@ -18,6 +18,26 @@ export function canManageUsers(role: UserRole | null | undefined): boolean {
 }
 
 /**
+ * True when this admin may bulk-import clients from a spreadsheet.
+ *
+ * Superadmin only, and deliberately narrower than the Clients page itself. A
+ * plain admin can create clients one at a time, where every row is read before
+ * it is saved; the import writes thousands in one action against a table whose
+ * duplicate guard is a partial unique index and whose inserts fan out into
+ * `client_cycles` (migration 051). That is an owner-of-the-system action, so it
+ * sits with user administration rather than with day-to-day client work.
+ *
+ * Enforced in three places, because each one alone is insufficient: the nav
+ * (hides the entry point), `proxy.ts` (blocks a typed URL), and the page itself
+ * (a client component can be reached before the proxy on a soft navigation).
+ * The database is the real backstop — RLS on `clients` still limits writes to
+ * admin and superadmin regardless of what the browser tries.
+ */
+export function canImportClients(role: UserRole | null | undefined): boolean {
+  return role === 'superadmin'
+}
+
+/**
  * True when this admin may run the Collection module's write actions — putting
  * stores on a list, releasing claims, and marking a store "additional". That is
  * the unrestricted admin ('all'), a Collection Admin, or a superadmin. A

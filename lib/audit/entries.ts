@@ -19,6 +19,12 @@ export const AUDIT_ACTIONS = {
   'client.marked_lost': { label: 'Marked as lost opportunity', module: 'sales' },
   'client.reinstated': { label: 'Reinstated lost client', module: 'sales' },
   'client.reassigned': { label: 'Reassigned client', module: 'sales' },
+  // Bulk spreadsheet import (superadmin). One entry per created client, so an
+  // imported row reads in the log exactly like a hand-created one, plus a single
+  // summary entry for the batch itself.
+  'client.imported': { label: 'Imported client', module: 'sales' },
+  'clients.import_completed': { label: 'Completed client import', module: 'sales' },
+  'clients.import_undone': { label: 'Undid client import', module: 'sales' },
   'edit_request.approved': { label: 'Approved edit request', module: 'sales' },
   'edit_request.rejected': { label: 'Rejected edit request', module: 'sales' },
   // Normally a manager's call on mobile; an admin deciding one here is the
