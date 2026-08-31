@@ -98,6 +98,7 @@ export default function ClientsPage() {
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [channelFilter, setChannelFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [sourceFilter, setSourceFilter] = useState<string>('all')
   const { profile } = useCurrentProfile()
   const isAdmin = profile?.role === 'admin' || profile?.role === 'superadmin'
   const { clients, loading, error, refresh } = useClients()
@@ -173,7 +174,13 @@ export default function ClientsPage() {
       (typeFilter === 'prospect' && c.customer_type === 'in_progress')
     const matchChannel = channelFilter === 'all' || c.sales_channel === channelFilter
     const matchStatus = statusFilter === 'all' || c.status === statusFilter
-    return matchSearch && matchType && matchChannel && matchStatus
+    // 'unknown' is its own option rather than a catch-all "everything else":
+    // a null created_source means the row predates migration 127 or came from
+    // mobile, which is genuinely different from "a person typed it in here".
+    const matchSource =
+      sourceFilter === 'all' ||
+      (sourceFilter === 'unknown' ? !c.created_source : c.created_source === sourceFilter)
+    return matchSearch && matchType && matchChannel && matchStatus && matchSource
   })
 
   // Group clients by agent so the grid isn't a wall of 60+ cards at once —
@@ -302,7 +309,7 @@ export default function ClientsPage() {
   }
 
   const { pageItems: pageClients, page: clientPage, pageCount: clientPageCount, from: clientFrom, to: clientTo, total: clientTotal, setPage: setClientPage } = usePagination(
-    activeClients ?? [], 9, `${selectedAgentId}|${selectedManagerKey}|${search}|${typeFilter}|${channelFilter}|${statusFilter}`,
+    activeClients ?? [], 9, `${selectedAgentId}|${selectedManagerKey}|${search}|${typeFilter}|${channelFilter}|${statusFilter}|${sourceFilter}`,
   )
 
   function openCreate() {
@@ -721,6 +728,17 @@ export default function ClientsPage() {
               <SelectItem value="lost">Lost</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={sourceFilter} onValueChange={v => setSourceFilter(v ?? 'all')}>
+            <SelectTrigger className="w-36 h-9 bg-card border-border">
+              <SelectValue placeholder="Source" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Sources</SelectItem>
+              <SelectItem value="import">Imported</SelectItem>
+              <SelectItem value="manual">Added here</SelectItem>
+              <SelectItem value="unknown">Not recorded</SelectItem>
+            </SelectContent>
+          </Select>
           {/* Hidden for now, will bring back later */}
           {/* <Button onClick={openCreate} size="sm" className="h-9 gap-2">
             <Plus className="w-4 h-4" />
@@ -911,9 +929,24 @@ export default function ClientsPage() {
                           </div>
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-foreground truncate leading-tight">{client.company_name}</p>
-                            <Badge variant="tone" className={`h-4 mt-0.5 ${TONE_CLASS[CLIENT_STATUS_TONE[client.status]]}`}>
-                              {LABEL[client.status]}
-                            </Badge>
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <Badge variant="tone" className={`h-4 ${TONE_CLASS[CLIENT_STATUS_TONE[client.status]]}`}>
+                                {LABEL[client.status]}
+                              </Badge>
+                              {/* Provenance (127). Only rendered when we actually
+                                  know — a null created_source means "not
+                                  recorded", which is not a claim worth a pill. */}
+                              {client.created_source === 'import' && (
+                                <Badge
+                                  variant="tone"
+                                  className={`h-4 gap-0.5 ${TONE_CLASS.neutral}`}
+                                  title="Added by a superadmin spreadsheet import"
+                                >
+                                  <Upload className="w-2.5 h-2.5" />
+                                  Imported
+                                </Badge>
+                              )}
+                            </div>
                           </div>
                         </div>
 

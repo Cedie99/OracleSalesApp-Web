@@ -45,6 +45,12 @@ export type ClientStatus = 'active' | 'lost' | 'deleted'
  * migration 052. See `Client.office_lat`.
  */
 export type OfficePinSource = 'manual' | 'client_office_meeting'
+
+/**
+ * How a client row was created (migration 127). NULL on every row that
+ * predates the column and on anything mobile writes — absent, not 'manual'.
+ */
+export type ClientCreatedSource = 'import' | 'manual'
 export type MeetingType = 'f2f' | 'online'
 export type OnlinePlatform = 'zoom' | 'googlemeet'
 export type LocationType = 'client_office' | 'other'
@@ -779,6 +785,15 @@ export interface Client {
   office_pin_source?: OfficePinSource | null
   /** Last write to the pin specifically, distinct from `updated_at`. */
   office_pin_updated_at?: string | null
+  /**
+   * How the row was created (migration 127).
+   *
+   * `'import'` is the superadmin spreadsheet bulk import. NULL means "not
+   * recorded" — every row that predates the column, plus anything mobile
+   * writes — and must never be rendered as "created by hand"; we simply do not
+   * know for those. Only ever set at insert; nothing updates it later.
+   */
+  created_source?: ClientCreatedSource | null
   customer_type: CustomerType
   sales_channel: SalesChannel
   assigned_agent_id: string

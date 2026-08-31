@@ -71,6 +71,7 @@ const FORBIDDEN_HEADERS = [
   'id', 'status', 'normalized_company_name', 'details_deadline_at', 'details_completed_at',
   'credit_balance', 'current_cycle_id', 'cycle_started_at', 'lost_at', 'reassignable_at',
   'created_at', 'updated_at', 'in_progress_at', 'office_pin_source', 'assigned_agent_id',
+  'created_source',
 ]
 
 /** Roles that may hold a client — the same list the Clients page assigns from. */
@@ -120,6 +121,8 @@ export interface ClientInsert {
   office_pin_updated_at: string | null
   details_completed_at: string | null
   status: 'active'
+  /** Provenance (migration 127). Always 'import' on this path, by definition. */
+  created_source: 'import'
 }
 
 export interface ImportRow {
@@ -433,6 +436,10 @@ export function validateRows(parsed: ParsedSheet, ctx: ValidationContext): Impor
         office_pin_source: lat !== null ? ('manual' as const) : null,
         office_pin_updated_at: lat !== null ? now : null,
         status: 'active' as const,
+        // 127. Set here rather than at the call site so it cannot be forgotten
+        // by a second caller: a row this function builds came from a
+        // spreadsheet, and that is the only thing this value ever means.
+        created_source: 'import' as const,
       }
       values = { ...base, details_completed_at: isRecordComplete(base) ? now : null }
     }
