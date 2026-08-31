@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh } from '@/lib/hooks/use-auto-refresh'
+import { fetchAllPages } from '@/lib/supabase/paginate'
 import type { Client, CustomerType, Profile } from '@/types'
 
 /**
@@ -83,16 +84,24 @@ export function useClients(): UseClientsResult {
   // lint (react-hooks/set-state-in-effect) rejects outright.
   const load = useCallback(async () => {
     const supabase = createClient()
-    const { data, error: queryError } = await supabase
-      .from('clients')
-      .select(CLIENT_COLUMNS)
-      .order('created_at', { ascending: false })
-
-    if (queryError) {
-      setError(queryError.message)
-    } else {
+    try {
+      // Paged, because PostgREST stops at 1,000 rows without saying so. The
+      // `id` tiebreaker is load-bearing: a bulk import stamps every row in a
+      // batch with the same created_at (200 at a time), so ordering on the
+      // timestamp alone leaves ties that can reshuffle between pages and make
+      // one row arrive twice while another never arrives at all.
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        supabase
+          .from('clients')
+          .select(CLIENT_COLUMNS)
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
+      )
       setError('')
-      setClients((data ?? []).map(row => normalizeClient(row as Record<string, unknown>)))
+      setClients(rows.map(row => normalizeClient(row)))
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Could not load clients.')
     }
     setLoading(false)
   }, [])
@@ -112,8 +121,8 @@ export function useClients(): UseClientsResult {
 
   // Mobile writes this table all day — new prospects, phase-B detail fills,
   // lifecycle promotions. The probe is what keeps that affordable: the full
-  // query above joins profiles and is unpaginated, so it only re-runs when the
-  // clients table has genuinely moved.
+  // query above joins profiles and walks every page, so it only re-runs when
+  // the clients table has genuinely moved.
   useAutoRefresh(load, { watch: [{ table: 'clients' }] })
 
   return { clients, loading, error, refresh, setClients }

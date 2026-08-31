@@ -12,6 +12,7 @@ import { Pagination } from '@/components/ui/pagination'
 import { usePagination } from '@/lib/hooks/use-pagination'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useProfiles } from '@/lib/hooks/use-profiles'
+import { fetchAllPages } from '@/lib/supabase/paginate'
 import { createClient as createSupabaseClient } from '@/lib/supabase/client'
 import { recordAuditLog } from '@/lib/audit/actions'
 import { canImportClients } from '@/lib/permissions'
@@ -104,18 +105,31 @@ export default function ClientImportPage() {
    * Read the live half of the unique index.
    *
    * `get_company_directory()` (migration 030) is the right source: it is
-   * SECURITY DEFINER, already exposes exactly `normalized_company_name` and
-   * `city` for every non-deleted client, and exists precisely so a caller does
-   * not have to re-derive the normalisation. It is also unpaginated, which
-   * matters — a plain `.from('clients').select()` caps at PostgREST's default
-   * 1,000 rows, and a truncated directory would report duplicates as importable
-   * and then fail them one by one at insert time.
+   * SECURITY DEFINER and exposes exactly `normalized_company_name` and `city`
+   * for every non-deleted client, so a caller does not have to re-derive the
+   * normalisation.
+   *
+   * It still has to be paged. PostgREST's `max-rows` ceiling applies to a
+   * set-returning function just as it does to a table read, so a single call
+   * silently stops at 1,000 rows — and a short directory reports real
+   * duplicates as importable, then fails them one at a time against
+   * `unique_company_name_city` at insert. The RPC has no ORDER BY of its own,
+   * so paging it needs one imposed here or a page boundary can drop a row.
    */
   const loadExistingKeys = useCallback(async (): Promise<Set<string>> => {
-    const { data, error } = await createSupabaseClient().rpc('get_company_directory')
-    if (error) throw new Error(`Could not read existing clients: ${error.message}`)
+    const supabase = createSupabaseClient()
+    type DirectoryRow = { id: string; normalized_company_name: string | null; city: string | null }
+    let rows: DirectoryRow[]
+    try {
+      rows = await fetchAllPages<DirectoryRow>((from, to) =>
+        supabase.rpc('get_company_directory').order('id', { ascending: true }).range(from, to),
+      )
+    } catch (readError) {
+      throw new Error(`Could not read existing clients: ${
+        readError instanceof Error ? readError.message : String(readError)}`)
+    }
     const keys = new Set<string>()
-    for (const row of (data ?? []) as { normalized_company_name: string | null; city: string | null }[]) {
+    for (const row of rows) {
       keys.add(`${row.normalized_company_name ?? ''}||${row.city ?? ''}`)
     }
     return keys
