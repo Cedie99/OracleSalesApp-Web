@@ -196,5 +196,89 @@ export function useEditRequests() {
     [load, requests]
   )
 
-  return { requests, loading, error, refresh, review }
+  /**
+   * Approve several requests in one gesture.
+   *
+   * There is no bulk RPC and this deliberately does not add one:
+   * `decide_client_edit_request()` re-checks the base-conflict, reassignment
+   * and lost-client guards per request against the CURRENT client row (102),
+   * and those checks are the whole reason a stale request must not be applied.
+   * A set-based RPC would either duplicate that logic or skip it. So a bulk
+   * approve is N independent decisions, each of which can refuse on its own.
+   *
+   * That makes partial success the normal outcome, not an edge case — a
+   * manager approving one of them on mobile a second earlier yields
+   * 'already_decided', and an agent editing the client since yields
+   * 'base_conflict'. The caller gets both lists and must report both; silently
+   * showing "7 approved" when 5 landed is the failure mode worth avoiding.
+   *
+   * Sequential rather than Promise.all: each call takes a `for update` row
+   * lock and then writes `public.clients`, and two requests from the same
+   * agent frequently target the SAME client. Firing those concurrently has
+   * them racing to read the base value the other is about to change, which
+   * turns a clean 'base_conflict' into an order-dependent one. Bulk sizes here
+   * are a screen's worth of cards, so the round-trips are affordable.
+   *
+   * Only one `load()` runs, at the end, so the grid does not reshuffle under
+   * the admin between items.
+   */
+  const reviewMany = useCallback(
+    async (ids: string[]) => {
+      const supabase = createClient()
+      const approved: string[] = []
+      const failures: { id: string; name: string; message: string }[] = []
+
+      for (const id of ids) {
+        // Captured before the write — the log names what was decided.
+        const target = requests.find(r => r.id === id)
+        const clientName = target?.client?.company_name ?? 'a client'
+
+        const { data: outcome, error: rpcError } = await supabase
+          .rpc('decide_client_edit_request', {
+            p_request_id: id,
+            p_decision: 'approved',
+            p_note: null,
+          })
+
+        if (rpcError || outcome !== 'approved') {
+          failures.push({
+            id,
+            name: clientName,
+            message: rpcError
+              ? rpcError.message
+              : DECISION_FAILURE_MESSAGE[outcome as string] ?? `Decision failed (${outcome}).`,
+          })
+          continue
+        }
+
+        approved.push(id)
+        // One entry per request, identical in shape to the single-request
+        // path's: a bulk approval is still N decisions, and an audit trail
+        // that collapsed them into one row could not answer "was THIS client's
+        // change approved?".
+        void recordAuditLog({
+          action: 'edit_request.approved',
+          entityTable: 'client_edit_requests',
+          entityId: id,
+          entityLabel: clientName,
+          summary:
+            `Approved the edit request for ${clientName}` +
+            (target?.requester?.full_name ? ` from ${target.requester.full_name}` : '') +
+            ` — one of ${ids.length} approved together`,
+          changes: Object.entries(target?.changes ?? {}).map(([field, value]) => ({
+            field,
+            label: field.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()),
+            from: value.old == null || value.old === '' ? null : String(value.old),
+            to: value.new == null || value.new === '' ? null : String(value.new),
+          })),
+        })
+      }
+
+      await load()
+      return { approved, failures }
+    },
+    [load, requests]
+  )
+
+  return { requests, loading, error, refresh, review, reviewMany }
 }
