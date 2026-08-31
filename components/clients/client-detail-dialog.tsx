@@ -16,7 +16,7 @@ import { clientAddress } from '@/lib/client-info'
 import { StoreLocationPanel } from '@/components/maps/store-location-panel'
 import { ClientFieldLocations } from '@/components/clients/client-field-locations'
 import type { Client, Meeting, MeetingOutcome, TagAlongRequest } from '@/types'
-import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, Tag, X as XIcon, Clock, ChevronRight, FileText, ListChecks } from 'lucide-react'
+import { Building2, Phone, MapPin, User, CalendarCheck, Navigation, Camera, Pencil, Tag, X as XIcon, Clock, ChevronRight, FileText, ListChecks, Upload } from 'lucide-react'
 import { format } from 'date-fns'
 import {
   CHANNEL_TONE,
@@ -332,6 +332,19 @@ export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = f
                           <Badge variant="tone" className={TONE_CLASS[CHANNEL_TONE[client.sales_channel]]}>
                             {LABEL[client.sales_channel]}
                           </Badge>
+                          {/* Provenance (127). Absent when created_source is
+                              null — that means "not recorded", not "typed in
+                              by hand", so it gets no pill of its own. */}
+                          {client.created_source === 'import' && (
+                            <Badge
+                              variant="tone"
+                              className={`gap-1 ${TONE_CLASS.neutral}`}
+                              title="Added by a superadmin spreadsheet import, not entered by an agent"
+                            >
+                              <Upload className="w-3 h-3" />
+                              Imported
+                            </Badge>
+                          )}
                         </div>
                       </div>
                     </div>
