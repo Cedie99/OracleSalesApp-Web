@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Pagination } from '@/components/ui/pagination'
 import { usePagination } from '@/lib/hooks/use-pagination'
 import { useEditRequests } from '@/lib/hooks/use-edit-requests'
@@ -22,11 +23,12 @@ import { teamsWithManagers } from '@/lib/teams'
 import { roleLabel } from '@/lib/permissions'
 import { PhotoLightbox, captionFor, type LightboxPhoto } from '@/components/photo-lightbox'
 import type { ApprovalStatus, ClientEditRequest, PoConfirmationRequest } from '@/types'
-import { ClipboardCheck, Check, X, Clock, ArrowRight, Loader2, FileCheck, Camera, Maximize2, Hourglass, Search } from 'lucide-react'
+import { ClipboardCheck, Check, CheckCheck, X, Clock, ArrowRight, Loader2, FileCheck, Camera, Maximize2, Hourglass, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { format, formatDistanceToNowStrict } from 'date-fns'
 import { toast } from 'sonner'
 import { APPROVAL_TONE, CUSTOMER_TYPE_LABEL, OUTCOME_LABEL_SHORT, TONE_CLASS, VALUE_LABEL } from '@/lib/status-styles'
+import { cn } from '@/lib/utils'
 
 /** Which record kind the queue is narrowed to. */
 type KindFilter = 'all' | 'edit' | 'po'
@@ -45,6 +47,22 @@ function WaitingSince({ since }: { since: string }) {
   )
 }
 
+/**
+ * One changed value, as a manager should read it.
+ *
+ * `String(change.old)` was rendering the literal text "null" for any field
+ * that was previously blank — which is most of them, since the common case is
+ * an agent FILLING IN a detail that was never set (spotted on a device
+ * 2026-08-31). An em dash is what "there was nothing here before" looks like,
+ * and it matches what mobile already showed via
+ * `formatClientEditFieldValue()` in lib/client-edit-field-labels.ts.
+ */
+function changeValueLabel(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—'
+  const asString = String(value)
+  return VALUE_LABEL[asString] ?? asString
+}
+
 const FIELD_LABEL: Record<string, string> = {
   sales_channel: 'Sales Channel',
   customer_type: 'Customer Type',
@@ -58,7 +76,7 @@ export default function ApprovalsPage() {
   // No useCurrentProfile() here: decide_client_edit_request() stamps
   // reviewed_by from current_profile_id() server-side, so the reviewer's
   // identity is never the client's to assert.
-  const { requests, loading, error, review } = useEditRequests()
+  const { requests, loading, error, review, reviewMany } = useEditRequests()
   const { requests: poRequests, loading: poLoading, error: poError, decide } = usePoConfirmations()
   // Only for the requester picker's team headings, never for the queue itself.
   const { teams } = useTeams()
@@ -80,6 +98,29 @@ export default function ApprovalsPage() {
   // window would hide the oldest items — exactly the ones most in need of a
   // decision. Same default the Meetings and Clock Records pages use.
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+
+  /**
+   * Bulk-approve selection — CLIENT EDITS ONLY, and one agent at a time.
+   *
+   * Two deliberate exclusions:
+   *
+   *   - PO confirmations are never selectable. A client edit is a field diff
+   *     that is fully readable on the card; a PO is a photo you have to open,
+   *     and approving it fires `promote_on_po_confirmed` (040), which promotes
+   *     the client In Progress -> New in the same transaction. Bulk-approving
+   *     POs is bulk-approving evidence nobody looked at, and nothing on this
+   *     page undoes the promotion. They keep their single Approve/Reject.
+   *
+   *   - Rejection has no bulk path. A rejection is only actionable to the
+   *     agent if it says WHY (RequestCard renders `review_note` for exactly
+   *     that reason), and one note cannot honestly cover a batch.
+   *
+   * Locking the selection to a single requester is the rule Adrian asked for
+   * and it is also the safe one: "everything Adrian filed today" is a
+   * defensible unit of review, "nine cards I happened to tick" is not.
+   */
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   /**
    * One queue, two record types.
@@ -198,6 +239,88 @@ export default function ApprovalsPage() {
   const filterKey = `${term}|${kindFilter}|${agentFilter}|${dateFilter.key}`
   const pendingPage = usePagination(pending, 9, `pending|${filterKey}`)
   const resolvedPage = usePagination(resolved, 9, `resolved|${filterKey}`)
+
+  /**
+   * The selection, resolved against what is actually on screen.
+   *
+   * `selected` is never pruned by an effect. It is intersected with the
+   * currently-visible pending edits on every render instead, so narrowing a
+   * filter, or a request being decided out from under this tab by a manager on
+   * mobile, drops it from the selection with no extra state write and no
+   * chance of the two disagreeing. Ticks are remembered if the filter is
+   * widened again.
+   *
+   * Deliberately the WHOLE filtered set, not `pendingPage.pageItems`: "select
+   * all 12 from this agent" must mean all twelve, including the three on page
+   * two. Pagination is a viewport here, not a scope.
+   */
+  const pendingEdits = pending.flatMap(item => (item.kind === 'edit' ? [item.edit] : []))
+  const visibleIds = new Set(pendingEdits.map(r => r.id))
+  const selectedIds = [...selected].filter(id => visibleIds.has(id))
+  const selectedSet = new Set(selectedIds)
+
+  // Whose queue the current selection belongs to — read off the first ticked
+  // card rather than tracked separately, so it cannot drift from `selected`.
+  // Null means nothing is ticked and every pending edit is up for grabs.
+  const selectionAgentId = selectedIds.length
+    ? pendingEdits.find(r => r.id === selectedIds[0])?.requested_by ?? null
+    : null
+  const selectionAgentName =
+    pendingEdits.find(r => r.requested_by === selectionAgentId)?.requester?.full_name ?? 'this agent'
+  const agentPendingEdits = selectionAgentId
+    ? pendingEdits.filter(r => r.requested_by === selectionAgentId)
+    : []
+  // Someone else has pending work in view, so the dimming needs explaining.
+  const othersPending = pendingEdits.length > agentPendingEdits.length
+
+  function toggleSelected(id: string, checked: boolean) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
+  /**
+   * Approve every ticked request.
+   *
+   * `reviewMany` returns both lists because partial success is the normal
+   * outcome, not an edge case — see its own note. What survives the call is
+   * the useful part: the failures stay ticked, so once the toast fades the
+   * cards still selected are exactly the ones that need a second look, with
+   * their reason on screen rather than only in a dismissed toast.
+   */
+  async function handleBulkApprove() {
+    const ids = selectedIds
+    if (!ids.length) return
+    // Captured before the await: `load()` re-renders the page and this name is
+    // derived from rows that are about to be replaced.
+    const agentName = selectionAgentName
+
+    setBulkBusy(true)
+    const { approved, failures } = await reviewMany(ids)
+    setBulkBusy(false)
+    setSelected(new Set(failures.map(f => f.id)))
+
+    // Distinct reasons rather than one line per request: the failures are
+    // still ticked on screen, so the toast has to answer "why", not "which".
+    const reasons = [...new Set(failures.map(f => f.message))].join(' ')
+
+    if (!failures.length) {
+      toast.success(`Approved ${approved.length} request${approved.length === 1 ? '' : 's'} from ${agentName}`)
+    } else if (approved.length) {
+      toast.warning(
+        `${approved.length} approved, ${failures.length} skipped`,
+        { description: `${reasons} The skipped requests are still selected.` }
+      )
+    } else {
+      toast.error(
+        `Couldn't approve ${failures.length} request${failures.length === 1 ? '' : 's'}`,
+        { description: reasons }
+      )
+    }
+  }
 
   async function handleReview(id: string, action: 'approved' | 'rejected') {
     const reviewError = await review(id, action)
@@ -398,18 +521,52 @@ export default function ApprovalsPage() {
     )
   }
 
-  function RequestCard({ req }: { req: ClientEditRequest }) {
+  /**
+   * `selectable` is passed only by the Pending tab. The Resolved tab renders
+   * the identical card with no tick box, because there is nothing left to
+   * decide there.
+   */
+  function RequestCard({ req, selectable = false }: { req: ClientEditRequest; selectable?: boolean }) {
+    const showCheckbox = selectable && req.status === 'pending'
+    const checked = selectedSet.has(req.id)
+    // Another agent's request while a selection is open. Dimmed AND disabled
+    // rather than hidden: the queue still has to read as one backlog, and an
+    // admin needs to see that the card is there before deciding to clear the
+    // selection and get to it.
+    const locked = showCheckbox && selectionAgentId !== null && req.requested_by !== selectionAgentId
+
     return (
-      <Card key={req.id} className="bg-card border-border h-full flex flex-col">
+      <Card
+        key={req.id}
+        className={cn(
+          'bg-card border-border h-full flex flex-col transition-opacity',
+          checked && 'border-primary/50 ring-1 ring-primary/30',
+          locked && 'opacity-45'
+        )}
+      >
         <CardContent className="p-4 flex flex-col flex-1">
-          <div className="flex items-start justify-between mb-3">
-            <div>
-              <p className="font-semibold text-foreground text-sm">{req.client?.company_name}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Requested by <span className="text-foreground">{req.requester?.full_name}</span>
-                {req.requester?.role && <span className="opacity-70"> ({roleLabel(req.requester.role)})</span>}
-                {' · '}{format(new Date(req.created_at), 'MMM d, h:mm a')}
-              </p>
+          <div className="flex items-start justify-between gap-2 mb-3">
+            <div className="flex items-start gap-2.5 min-w-0">
+              {showCheckbox && (
+                <Checkbox
+                  checked={checked}
+                  disabled={locked || bulkBusy}
+                  onCheckedChange={value => toggleSelected(req.id, value)}
+                  // The company name alone would give the grid nine identical
+                  // "Select" controls to a screen reader once two requests
+                  // touch the same client.
+                  aria-label={`Select the ${Object.keys(req.changes).map(f => FIELD_LABEL[f] ?? f).join(', ')} change for ${req.client?.company_name ?? 'this client'}`}
+                  className="mt-0.5"
+                />
+              )}
+              <div className="min-w-0">
+                <p className="font-semibold text-foreground text-sm">{req.client?.company_name}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Requested by <span className="text-foreground">{req.requester?.full_name}</span>
+                  {req.requester?.role && <span className="opacity-70"> ({roleLabel(req.requester.role)})</span>}
+                  {' · '}{format(new Date(req.created_at), 'MMM d, h:mm a')}
+                </p>
+              </div>
             </div>
             <Badge variant="tone" className={TONE_CLASS[APPROVAL_TONE[req.status]]}>
               {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
@@ -423,11 +580,11 @@ export default function ApprovalsPage() {
                 <p className="text-muted-foreground mb-1.5 font-medium">{FIELD_LABEL[field] ?? field}</p>
                 <div className="flex items-center gap-2">
                   <span className="bg-destructive/10 text-destructive px-2 py-0.5 rounded line-through">
-                    {VALUE_LABEL[change.old as string] ?? String(change.old)}
+                    {changeValueLabel(change.old)}
                   </span>
                   <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
                   <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-medium">
-                    {VALUE_LABEL[change.new as string] ?? String(change.new)}
+                    {changeValueLabel(change.new)}
                   </span>
                 </div>
               </div>
@@ -442,9 +599,14 @@ export default function ApprovalsPage() {
           {req.status === 'pending' && (
             <div className="mt-auto">
               <WaitingSince since={req.created_at} />
+              {/* Disabled while another agent's batch is staged or running:
+                  a one-off decision taken mid-selection is the case where the
+                  admin has lost track of what the buttons apply to. Clearing
+                  the selection re-enables them. */}
               <div className="flex gap-2">
                 <Button
                   size="sm"
+                  disabled={locked || bulkBusy}
                   onClick={() => handleReview(req.id, 'approved')}
                   className="flex-1 h-8 bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 text-xs"
                   variant="outline"
@@ -453,6 +615,7 @@ export default function ApprovalsPage() {
                 </Button>
                 <Button
                   size="sm"
+                  disabled={locked || bulkBusy}
                   onClick={() => handleReview(req.id, 'rejected')}
                   className="flex-1 h-8 bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/30 text-xs"
                   variant="outline"
@@ -564,11 +727,52 @@ export default function ApprovalsPage() {
               </div>
             ) : (
               <>
+                {/* Sticky under the 61px Header (which is itself sticky
+                    top-0), so ticking a card at the bottom of page 1 does not
+                    scroll the Approve button out of reach. Bled to the
+                    gutters with -mx-6/px-6 and given an opaque backdrop, or
+                    the cards would show through it as they scroll under. */}
+                {selectedIds.length > 0 && (
+                  <div className="sticky top-[61px] z-10 -mx-6 mb-4 bg-background/95 px-6 py-2 backdrop-blur-sm">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3">
+                      <span className="text-xs font-semibold text-foreground">
+                        {selectedIds.length} selected from {selectionAgentName}
+                      </span>
+                      {selectedIds.length < agentPendingEdits.length && (
+                        <Button size="xs" variant="ghost" disabled={bulkBusy} onClick={() => setSelected(new Set(agentPendingEdits.map(r => r.id)))}>
+                          Select all {agentPendingEdits.length}
+                        </Button>
+                      )}
+                      {othersPending && (
+                        <span className="text-[11px] text-muted-foreground">
+                          Other agents&apos; requests are locked until you clear this.
+                        </span>
+                      )}
+                      <div className="ml-auto flex items-center gap-2">
+                        <Button size="sm" disabled={bulkBusy} onClick={handleBulkApprove}>
+                          {bulkBusy
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <CheckCheck className="w-3.5 h-3.5" />}
+                          {bulkBusy ? 'Approving…' : `Approve ${selectedIds.length}`}
+                        </Button>
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          disabled={bulkBusy}
+                          onClick={() => setSelected(new Set())}
+                          aria-label="Clear selection"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                   {pendingPage.pageItems.map(item =>
                     item.kind === 'po'
                       ? <PoCard key={item.key} po={item.po} />
-                      : <RequestCard key={item.key} req={item.edit} />
+                      : <RequestCard key={item.key} req={item.edit} selectable />
                   )}
                 </div>
                 <Pagination
