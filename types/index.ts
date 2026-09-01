@@ -1040,6 +1040,15 @@ export interface PoConfirmationRequest {
   meeting_date?: string | null
   meeting_outcome?: MeetingOutcome | null
   meeting_contact_person?: string | null
+  /**
+   * The client's stage frozen at the close-deal meeting (`meetings.
+   * client_status_at_meeting`, migration 067) — what the stage WAS when this
+   * PO was raised, as opposed to `customer_type` above, which is the client's
+   * live stage and has already moved on once the PO is approved.
+   *
+   * Null on meetings recorded before 067 added the column.
+   */
+  stage_at_meeting?: CustomerType | null
 }
 
 export interface ClockRecord {

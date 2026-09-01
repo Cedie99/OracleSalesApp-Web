@@ -27,7 +27,7 @@ import { ClipboardCheck, Check, CheckCheck, X, Clock, ArrowRight, Loader2, FileC
 import { useMemo, useState } from 'react'
 import { format, formatDistanceToNowStrict } from 'date-fns'
 import { toast } from 'sonner'
-import { APPROVAL_TONE, CUSTOMER_TYPE_LABEL, OUTCOME_LABEL_SHORT, TONE_CLASS, VALUE_LABEL } from '@/lib/status-styles'
+import { APPROVAL_TONE, CUSTOMER_TYPE_LABEL, FIELD_LABEL, OUTCOME_LABEL_SHORT, TONE_CLASS, VALUE_LABEL } from '@/lib/status-styles'
 import { cn } from '@/lib/utils'
 
 /** Which record kind the queue is narrowed to. */
@@ -61,15 +61,6 @@ function changeValueLabel(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
   const asString = String(value)
   return VALUE_LABEL[asString] ?? asString
-}
-
-const FIELD_LABEL: Record<string, string> = {
-  sales_channel: 'Sales Channel',
-  customer_type: 'Customer Type',
-  contact_person: 'Contact Person',
-  contact_number: 'Contact Number',
-  office_address: 'Office Address',
-  contact_position: 'Contact Position',
 }
 
 export default function ApprovalsPage() {
@@ -391,9 +382,30 @@ export default function ApprovalsPage() {
               <p className="text-muted-foreground mb-1.5 font-medium">Customer Type</p>
               <div className="flex items-center gap-2">
                 <span className="bg-destructive/10 text-destructive px-2 py-0.5 rounded line-through">
-                  {/* A PO can only be pending from in_progress —
-                      advance_in_progress_to_new() requires it (040). */}
-                  {CUSTOMER_TYPE_LABEL[po.customer_type ?? 'in_progress']}
+                  {/* The stage FROZEN at the close-deal meeting (067), not the
+                      client's live `customer_type`.
+
+                      The live value was wrong twice over. The old comment here
+                      claimed "a PO can only be pending from in_progress —
+                      advance_in_progress_to_new() requires it (040)", which
+                      migration 110 made false: a prospect's close-deal PO
+                      routes through advance_prospect_to_new() and never
+                      touches in_progress at all. And on a DECIDED request the
+                      live value has already been advanced by
+                      trg_promote_on_po_confirmed, so an approved card rendered
+                      its own outcome on both sides — the "New -> New" Adrian
+                      hit on an approved close-deal PO (2026-09-01).
+
+                      Pre-067 meetings have no frozen stage. Falling back to
+                      the live value is right only while the PO is still
+                      pending (nothing has moved yet); on a decided one there
+                      is no honest answer, so it shows the same em dash
+                      changeValueLabel() uses for "nothing recorded". */}
+                  {po.stage_at_meeting
+                    ? CUSTOMER_TYPE_LABEL[po.stage_at_meeting]
+                    : po.status === 'pending' && po.customer_type
+                      ? CUSTOMER_TYPE_LABEL[po.customer_type]
+                      : '—'}
                 </span>
                 <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
                 <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-medium">
@@ -535,6 +547,18 @@ export default function ApprovalsPage() {
     // selection and get to it.
     const locked = showCheckbox && selectionAgentId !== null && req.requested_by !== selectionAgentId
 
+    /**
+     * A close-deal PO waiting on the SAME client, when this request is the one
+     * kind a promotion can invalidate (customer_type -> existing).
+     *
+     * Scoped to pending-vs-pending: a decided PO has already had its effect,
+     * and 129's trigger has already superseded this request if it was going to.
+     */
+    const competingPo =
+      req.status === 'pending' &&
+      req.changes.customer_type?.new === 'existing' &&
+      poRequests.some(p => p.client_id === req.client_id && p.status === 'pending')
+
     return (
       <Card
         key={req.id}
@@ -590,6 +614,28 @@ export default function ApprovalsPage() {
               </div>
             ))}
           </div>
+
+          {/* The order-of-decision warning.
+              Both of these are pending on the same client, and approving the
+              PO first promotes them to New — which migration 129 then treats
+              as superseding this request. So the sequence silently decides the
+              outcome, and an admin working down a queue has no way to see that
+              from the two cards alone. This is the only place the collision is
+              visible before it happens.
+
+              Deliberately a warning and not a block: both decisions are
+              legitimate, and which one should win is a judgement about this
+              client that belongs to the person reading the card. */}
+          {competingPo && (
+            <p className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-500 bg-amber-500/10 rounded-lg px-3 py-2 mb-3">
+              <FileCheck className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span>
+                This client also has a PO confirmation waiting. Approving that
+                first promotes them to New and supersedes this request — decide
+                them together.
+              </span>
+            </p>
+          )}
 
           <StoreLocationPanel clientId={req.client_id} hideMap className="mb-3" />
 

@@ -1,7 +1,9 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { format } from 'date-fns'
 import { createClient } from '@/lib/supabase/client'
+import { FIELD_LABEL } from '@/lib/status-styles'
 import { useAutoRefresh, LIVE_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { subscribeToNotifications } from '@/lib/realtime/notification-feed'
 import { recordAuditLog } from '@/lib/audit/actions'
@@ -31,6 +33,52 @@ const DECISION_FAILURE_MESSAGE: Record<string, string> = {
   not_found: 'That request no longer exists.',
   role_not_eligible: 'Your account is not permitted to review this request.',
   invalid_decision: 'Unrecognised decision.',
+}
+
+/**
+ * Turn a `base_conflict` into the sentence that names what actually happened.
+ *
+ * `decide_client_edit_request()` returns one flat `base_conflict` for three
+ * unrelated conditions — reassignment, a lost client, and a per-field mismatch
+ * — and it has to keep doing that: mobile validates the code against a
+ * hardcoded list and THROWS on anything else
+ * (lib/client-edit-decision-service.ts), so widening the code set is a
+ * cross-repo break. Migration 128 adds `explain_client_edit_conflict()`
+ * instead, which is read-only and additive, and this asks it only on the
+ * failure path — one extra round-trip that no successful decision pays for.
+ *
+ * The generic copy stays the fallback: a null/unknown reason must still say
+ * something true rather than nothing.
+ */
+async function explainConflict(id: string): Promise<string> {
+  const { data, error } = await createClient()
+    .rpc('explain_client_edit_conflict', { p_request_id: id })
+
+  if (error || !data || typeof data !== 'object') return DECISION_FAILURE_MESSAGE.base_conflict
+
+  const detail = data as { reason?: string; current_agent_name?: string | null; po_decided_at?: string | null; field?: string; current_value?: string | null }
+
+  switch (detail.reason) {
+    case 'reassigned':
+      return detail.current_agent_name
+        ? `This client now belongs to ${detail.current_agent_name} — the request was filed against the previous agent's assignment.`
+        : 'This client was reassigned to another agent since the request was made.'
+    case 'lost':
+      return 'This client has been marked as lost, so their details can no longer be changed.'
+    case 'stage_already_new':
+      // No date when the client reached 'new' through 040's tag-along path
+      // rather than a PO — the sentence has to read correctly either way.
+      return detail.po_decided_at
+        ? `This client was already promoted to New by a PO approved on ${format(new Date(detail.po_decided_at), 'MMM d')} — reject this request if it is no longer needed.`
+        : 'This client has already closed a deal and is now New — reject this request if it is no longer needed.'
+    case 'field_changed':
+      return `${FIELD_LABEL[detail.field ?? ''] ?? detail.field} is now ${detail.current_value ?? 'blank'}, which is not what this request was filed against — the agent should resubmit.`
+    case 'none':
+      // The conflict cleared between the decision and this lookup.
+      return 'That conflict has cleared — try approving again.'
+    default:
+      return DECISION_FAILURE_MESSAGE.base_conflict
+  }
 }
 
 function normalizeRequest(row: Record<string, unknown>): ClientEditRequest {
@@ -165,6 +213,7 @@ export function useEditRequests() {
         // Reload regardless: 'already_decided' means someone else got there
         // first, and the queue is now showing a stale row.
         await load()
+        if (outcome === 'base_conflict') return explainConflict(id)
         return DECISION_FAILURE_MESSAGE[outcome as string] ?? `Decision failed (${outcome}).`
       }
 
@@ -241,13 +290,16 @@ export function useEditRequests() {
           })
 
         if (rpcError || outcome !== 'approved') {
-          failures.push({
-            id,
-            name: clientName,
-            message: rpcError
-              ? rpcError.message
-              : DECISION_FAILURE_MESSAGE[outcome as string] ?? `Decision failed (${outcome}).`,
-          })
+          // The bulk toast de-duplicates by message, so a specific reason here
+          // is what lets "3 skipped" resolve into three distinct causes rather
+          // than one generic line repeated.
+          const message = rpcError
+            ? rpcError.message
+            : outcome === 'base_conflict'
+              ? await explainConflict(id)
+              : DECISION_FAILURE_MESSAGE[outcome as string] ?? `Decision failed (${outcome}).`
+
+          failures.push({ id, name: clientName, message })
           continue
         }
 
