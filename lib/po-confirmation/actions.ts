@@ -75,6 +75,13 @@ interface JoinedMeeting {
   meeting_date: string | null
   outcome: string | null
   contact_person: string | null
+  /**
+   * The client's lifecycle stage FROZEN at the moment of the meeting (067).
+   * The PO card's before/after needs this rather than `clients.customer_type`,
+   * which is the live value and has already been advanced by the time anyone
+   * looks at a decided request.
+   */
+  client_status_at_meeting: string | null
 }
 
 /** PostgREST returns an embedded to-one as an object, but types it as an array. */
@@ -87,7 +94,7 @@ const PO_COLUMNS = `
   requester:profiles!requester_id ( full_name, role, team_id ),
   decider:profiles!decided_by ( full_name, role ),
   client:clients!client_id ( company_name, customer_type, office_address ),
-  meeting:meetings!meeting_id ( meeting_date, outcome, contact_person )
+  meeting:meetings!meeting_id ( meeting_date, outcome, contact_person, client_status_at_meeting )
 `
 
 /**
@@ -139,6 +146,8 @@ export async function fetchPoConfirmations(): Promise<{
       meeting_date: meeting?.meeting_date ?? null,
       meeting_outcome: (meeting?.outcome as MeetingOutcome | null) ?? null,
       meeting_contact_person: meeting?.contact_person ?? null,
+      // Nullable on meetings recorded before 067 added the column.
+      stage_at_meeting: (meeting?.client_status_at_meeting as CustomerType | null) ?? null,
     }
   })
 
