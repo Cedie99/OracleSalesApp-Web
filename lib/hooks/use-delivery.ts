@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh, LIVE_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
+import { fetchAllPages } from '@/lib/supabase/paginate'
 import { recordAuditLog } from '@/lib/audit/actions'
 import { singleChange } from '@/lib/audit/entries'
 import { peso } from '@/lib/money'
@@ -95,12 +96,27 @@ async function loadCodPayments(
   supabase: ReturnType<typeof createClient>,
 ): Promise<Map<string, CodPayment[]>> {
   const byPo = new Map<string, CodPayment[]>()
-  const { data, error } = await supabase
-    .from('cod_payments')
-    .select(COD_PAYMENT_COLUMNS)
-    .order('paid_at', { ascending: false })
 
-  if (error || !data) return byPo
+  // Paged, because PostgREST stops at `db-max-rows` (1,000) by returning a
+  // short result rather than an error — so an unpaged read here would quietly
+  // strip the oldest COD instalments off their POs and leave a balance that
+  // does not reconcile. Mirrors loadPayments in use-collection.ts.
+  let data: Record<string, unknown>[]
+  try {
+    data = await fetchAllPages<Record<string, unknown>>((from, to) =>
+      supabase
+        .from('cod_payments')
+        .select(COD_PAYMENT_COLUMNS)
+        .order('paid_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(from, to),
+    )
+  } catch {
+    // Unchanged behaviour: a table that does not exist yet yields an empty map
+    // rather than failing the page.
+    return byPo
+  }
+
   for (const raw of data) {
     const payment = normalizeCodPayment(raw as Record<string, unknown>)
     const list = byPo.get(payment.po_id)
@@ -184,25 +200,54 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
 
   const load = useCallback(async () => {
     const supabase = createClient()
-    const primary = await supabase
-      .from('purchase_orders')
-      .select(`${PO_COLUMNS}, ${COORDINATE_COLUMNS}`)
-      .order('scheduled_for', { ascending: false })
+
+    // Both arms are paged — see the note in loadCodPayments. The board is
+    // ordered newest-first, so an unpaged read silently drops the OLDEST POs.
+    // `columns` is a runtime string, so PostgREST's row type cannot be inferred
+    // from it — hence the cast, exactly as the two separate selects here did
+    // before they were paged.
+    const readOrders = (columns: string) =>
+      fetchAllPages<Record<string, unknown>>(async (from, to) => {
+        const { data, error } = await supabase
+          .from('purchase_orders')
+          .select(columns)
+          .order('scheduled_for', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to)
+        return { data: data as Record<string, unknown>[] | null, error }
+      })
 
     // The two selects infer different row shapes, so hold the rows at the shape
     // normalizePo already accepts rather than let the union fight itself.
-    let rows = primary.data as Record<string, unknown>[] | null
-    let queryError = primary.error
+    let rows: Record<string, unknown>[] = []
+    let queryError: { message: string } | null = null
 
-    // Pre-114 fallback: retry without the default-pin columns rather than fail
-    // the whole page. See COORDINATE_COLUMNS.
-    if (queryError && isMissingCoordinateColumn(queryError)) {
-      const fallback = await supabase
-        .from('purchase_orders')
-        .select(PO_COLUMNS)
-        .order('scheduled_for', { ascending: false })
-      rows = fallback.data as Record<string, unknown>[] | null
-      queryError = fallback.error
+    try {
+      rows = await readOrders(`${PO_COLUMNS}, ${COORDINATE_COLUMNS}`)
+    } catch (primaryError) {
+      // Pre-114 fallback: retry without the default-pin columns rather than
+      // fail the whole page. See COORDINATE_COLUMNS. fetchAllPages rethrows
+      // PostgREST's failure as a plain Error, which keeps the message the
+      // detector matches on.
+      if (isMissingCoordinateColumn(primaryError instanceof Error ? primaryError : null)) {
+        try {
+          rows = await readOrders(PO_COLUMNS)
+        } catch (fallbackError) {
+          queryError = {
+            message:
+              fallbackError instanceof Error
+                ? fallbackError.message
+                : 'Could not load purchase orders.',
+          }
+        }
+      } else {
+        queryError = {
+          message:
+            primaryError instanceof Error
+              ? primaryError.message
+              : 'Could not load purchase orders.',
+        }
+      }
     }
 
     if (queryError) {
@@ -210,7 +255,7 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
     } else {
       setError('')
       const paymentsByPo = await loadCodPayments(supabase)
-      setOrders((rows ?? []).map(row => normalizePo(row, paymentsByPo)))
+      setOrders(rows.map(row => normalizePo(row, paymentsByPo)))
     }
     setLoading(false)
   }, [])
@@ -365,18 +410,21 @@ export function useCodRemittances(): UseCodRemittancesResult {
 
   const load = useCallback(async () => {
     const supabase = createClient()
-    const { data, error: queryError } = await supabase
-      .from('cod_remittances')
-      .select(COD_REMITTANCE_COLUMNS)
-      .order('submitted_at', { ascending: false })
 
-    if (queryError) {
-      setError(queryError.message)
-    } else {
-      setError('')
-      setCodRemittances(
-        (data ?? []).map(row => normalizeCodRemittance(row as Record<string, unknown>))
+    // Paged — see the note in loadCodPayments.
+    try {
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        supabase
+          .from('cod_remittances')
+          .select(COD_REMITTANCE_COLUMNS)
+          .order('submitted_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
       )
+      setError('')
+      setCodRemittances(rows.map(row => normalizeCodRemittance(row)))
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Could not load COD remittances.')
     }
     setLoading(false)
   }, [])

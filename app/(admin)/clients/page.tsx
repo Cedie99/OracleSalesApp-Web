@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Header } from '@/components/header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -14,14 +14,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { CircularProgress } from '@/components/ui/circular-progress'
 import { Pagination } from '@/components/ui/pagination'
-import { usePagination } from '@/lib/hooks/use-pagination'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
-import { getQualifiedAgendaMilestones } from '@/lib/client-progress'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
-import { useClients } from '@/lib/hooks/use-clients'
-import { useMeetings } from '@/lib/hooks/use-meetings'
+import {
+  useClientsOverview,
+  useClientsPage,
+  EMPTY_CLIENT_STATS,
+  CLIENTS_PAGE_SIZE,
+  type ClientScope,
+} from '@/lib/hooks/use-clients-view'
 import { useProfiles } from '@/lib/hooks/use-profiles'
-import { useTagAlongs } from '@/lib/hooks/use-tag-alongs'
 import { createClient as createSupabaseClient } from '@/lib/supabase/client'
 import { recordAuditLog } from '@/lib/audit/actions'
 import { buildChanges, type AuditField, type KnownAuditAction } from '@/lib/audit/entries'
@@ -42,7 +44,6 @@ import {
   TONE_TEXT,
   VALUE_LABEL as LABEL,
 } from '@/lib/status-styles'
-import { managerForTeam } from '@/lib/teams'
 import { canImportClients } from '@/lib/permissions'
 import { PSGC_LOCALITIES } from '@/lib/data/psgc-localities'
 
@@ -101,13 +102,9 @@ export default function ClientsPage() {
   const [sourceFilter, setSourceFilter] = useState<string>('all')
   const { profile } = useCurrentProfile()
   const isAdmin = profile?.role === 'admin' || profile?.role === 'superadmin'
-  const { clients, loading, error, refresh } = useClients()
-  // Meetings drive the progress ring (see lib/client-progress.ts), so the page
-  // needs them even though it never lists a meeting.
-  const { meetings } = useMeetings()
-  const { byInvitee: tagAlongsByInviteeId } = useTagAlongs()
   const { byRole } = useProfiles()
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
+  const [clientPage, setClientPage] = useState(1)
   const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [selectedManagerKey, setSelectedManagerKey] = useState<string | null>(null)
@@ -119,198 +116,90 @@ export default function ClientsPage() {
   const [phoneTouched, setPhoneTouched] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  const selectedClient = clients.find(c => c.id === selectedClientId) ?? null
-
   const assignableAgents = byRole(ASSIGNABLE_ROLES)
   const canEditClient = (client: Client) => isAdmin || profile?.id === client.assigned_agent_id
 
-  // The actual managers, so the top of the hierarchy lists real people ("Test
-  // manager Two") instead of a generic RSR/Sales bucket. byRole() is stable
-  // across renders unless `profiles` itself changes, so this only recomputes
-  // on a real profile refresh.
-  const managers = useMemo(
-    () => [...byRole(['sales_manager'])].sort((a, b) => a.full_name.localeCompare(b.full_name)),
-    [byRole],
+  // The hierarchy, its counts, and one screen of rows — all computed by
+  // Postgres. This page used to fetch every client, every meeting and the whole
+  // tag-along ledger to render nine cards, because the manager and agent bucket
+  // counts are aggregates over the entire filtered set. They are
+  // get_clients_overview() now (migration 131); the cards are
+  // get_clients_page(). Deleted clients are excluded server-side, since the
+  // Status filter has no "Deleted" option and "All Status" must not silently
+  // include them — they surface only through the header's notification bell.
+  const filters = useMemo(
+    () => ({ search, type: typeFilter, channel: channelFilter, status: statusFilter, source: sourceFilter }),
+    [search, typeFilter, channelFilter, statusFilter, sourceFilter],
   )
 
-  // Deleted clients (see app/api/cron/prospect-cleanup) are gone from this
-  // page entirely — there's no "Deleted" option in the Status filter, so
-  // "All Status" must not silently include them. They're only surfaced via
-  // the header's notification bell.
-  const visibleClients = clients.filter(c => c.status !== 'deleted')
+  const scope: ClientScope = selectedAgentId
+    ? { kind: 'agent', id: selectedAgentId }
+    : selectedManagerKey
+      ? { kind: 'manager', id: selectedManagerKey }
+      : null
 
-  /**
-   * Clients each person was actually invited along to, from the tag-along
-   * ledger — both contexts, since a companion can be picked when the client is
-   * created as well as per meeting. Read straight off `related_client_id`; no
-   * detour through meetings, which would miss the client-creation rows entirely.
-   */
-  const tagAlongClientIds = useMemo(() => {
-    const map = new Map<string, Set<string>>()
-    for (const [inviteeId, requests] of tagAlongsByInviteeId) {
-      const ids = new Set(
-        requests
-          .filter(r => r.related_client_id && (r.status === 'accepted' || r.status === 'pending'))
-          .map(r => r.related_client_id as string)
-      )
-      if (ids.size > 0) map.set(inviteeId, ids)
-    }
-    return map
-  }, [tagAlongsByInviteeId])
+  const { overview, loading, error, refresh: refreshOverview } = useClientsOverview(filters)
+  const {
+    rows: pageClients,
+    total: clientTotal,
+    stats: scopeStats,
+    refresh: refreshPage,
+  } = useClientsPage(filters, scope, clientPage)
 
+  const managerBuckets = overview.managers
+  const groups = overview.agents
 
+  // Re-read both halves after a write. The hierarchy counts move when a client
+  // is created or reassigned, so refreshing only the visible page would leave
+  // the bucket above it stale.
+  const refresh = useCallback(async () => {
+    await Promise.all([refreshOverview(), refreshPage()])
+  }, [refreshOverview, refreshPage])
 
-  const filtered = visibleClients.filter(c => {
-    const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
-      c.contact_person.toLowerCase().includes(search.toLowerCase()) ||
-      (c.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase())
-    // 'Prospect' is the family, not the single value: it returns in-progress rows
-    // too, matching how their badge reads. The 'in_progress' option isolates the
-    // subset — the near-term pipeline, which is the reason to keep it filterable
-    // at all now that it no longer has a pill of its own.
-    const matchType =
-      typeFilter === 'all' ||
-      c.customer_type === typeFilter ||
-      (typeFilter === 'prospect' && c.customer_type === 'in_progress')
-    const matchChannel = channelFilter === 'all' || c.sales_channel === channelFilter
-    const matchStatus = statusFilter === 'all' || c.status === statusFilter
-    // 'unknown' is its own option rather than a catch-all "everything else":
-    // a null created_source means the row predates migration 127 or came from
-    // mobile, which is genuinely different from "a person typed it in here".
-    const matchSource =
-      sourceFilter === 'all' ||
-      (sourceFilter === 'unknown' ? !c.created_source : c.created_source === sourceFilter)
-    return matchSearch && matchType && matchChannel && matchStatus && matchSource
-  })
-
-  // Group clients by agent so the grid isn't a wall of 60+ cards at once —
-  // the hierarchy view (manager -> agent -> clients) reveals one level at a
-  // time on click. Each agent is bucketed under whichever manager shares
-  // their team_id ('unassigned' if no manager leads that team).
-  interface AgentGroup { agentId: string; agentName: string; managerKey: string; clients: Client[] }
-  const groups = useMemo(() => {
-    const managerIds = new Set(managers.map(m => m.id))
-    const map = new Map<string, AgentGroup>()
-    for (const c of filtered) {
-      const agentId = c.assigned_agent_id ?? 'unassigned'
-      // A manager can end up directly assigned_agent_id on a client (legacy
-      // data). That's the manager's own client, not a separate agent under
-      // them — skip it here so a manager never shows up listed as an "agent"
-      // under themselves. managerBuckets' directClientIds picks these up instead.
-      if (managerIds.has(agentId)) continue
-      const agentName = c.agent?.full_name ?? 'Unassigned'
-      let group = map.get(agentId)
-      if (!group) {
-        const managerKey = managerForTeam(c.agent?.team_id, managers)?.id ?? 'unassigned'
-        group = { agentId, agentName, managerKey, clients: [] }
-        map.set(agentId, group)
-      }
-      group.clients.push(c)
-    }
-    return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
-  }, [filtered, managers])
-
-  // Level 0: one bucket per real manager, plus "Unassigned" only if it has anyone in it.
-  const managerBuckets = useMemo(() => {
-    const buckets = managers.map(m => {
-      const managerGroups = groups.filter(g => g.managerKey === m.id)
-      // Two figures, not one. `recorded_by` means the manager filled in the
-      // meeting form — it had been standing in for "tagged along", which it is
-      // not: a manager invited along on an agent's visit records nothing and
-      // counted as zero. Real tag-alongs now come from the ledger.
-      const ownClientIds = new Set(
-        meetings.filter(mt => mt.agent_id === m.id || mt.recorded_by === m.id).map(mt => mt.client_id)
-      )
-      const ownClientCount = filtered.filter(c => ownClientIds.has(c.id)).length
-      const invited = tagAlongClientIds.get(m.id)
-      const tagAlongCount = invited ? filtered.filter(c => invited.has(c.id)).length : 0
-      // A manager can also be directly assigned_agent_id on a client (a legacy
-      // "manager as agent" record, same source that leaves them listed under
-      // their own "Agents under" section) — those clients belong to the
-      // manager's personal count too, even absent a meeting or tag-along.
-      const directClientIds = new Set(filtered.filter(c => c.assigned_agent_id === m.id).map(c => c.id))
-      const managerOwnClients = filtered.filter(
-        c => ownClientIds.has(c.id) || (invited?.has(c.id) ?? false) || directClientIds.has(c.id)
-      )
-      const managerClientCount = managerOwnClients.length
-      // Team total: the manager's own clients plus every agent's own clients,
-      // concatenated (not deduped) so this always equals managerClientCount
-      // summed with each agent group's count below it — a client the manager
-      // tagged along on / recorded a meeting for is counted here once for the
-      // manager and again under whichever agent it's assigned to, by design.
-      const teamClients = [...managerOwnClients, ...managerGroups.flatMap(g => g.clients)]
-      return {
-        key: m.id,
-        label: m.full_name,
-        agentCount: managerGroups.length,
-        clientCount: teamClients.length,
-        clients: teamClients,
-        ownClientCount,
-        tagAlongCount,
-        managerClientCount,
-      }
-    })
-    const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
-    if (unassignedGroups.length > 0) {
-      const clients = unassignedGroups.flatMap(g => g.clients)
-      buckets.push({
-        key: 'unassigned',
-        label: 'Unassigned',
-        agentCount: unassignedGroups.length,
-        clientCount: clients.length,
-        clients,
-        ownClientCount: 0,
-        tagAlongCount: 0,
-        managerClientCount: 0,
-      })
-    }
-    return buckets
-  }, [managers, groups, meetings, filtered, tagAlongClientIds])
-
-  // The selected agent's clients (drill-down screen, unchanged regardless of
-  // which team's dropdown is open).
-  const selectedGroup = selectedAgentId ? groups.find(g => g.agentId === selectedAgentId) ?? null : null
-
-  // A manager's own records — clients they personally met with, whether solo
-  // or tagging along on an agent's visit. Deliberately *not* the whole
-  // team's clients — just the manager's own footprint, matching the mobile app.
+  const selectedGroup = selectedAgentId
+    ? groups.find(g => g.agentId === selectedAgentId) ?? null
+    : null
   const selectedManagerBucket = selectedManagerKey
     ? managerBuckets.find(b => b.key === selectedManagerKey) ?? null
     : null
-  const managerClients = useMemo(() => {
-    if (!selectedManagerKey) return []
-    const ownClientIds = new Set(
-      meetings.filter(mt => mt.agent_id === selectedManagerKey || mt.recorded_by === selectedManagerKey).map(mt => mt.client_id)
-    )
-    const invited = tagAlongClientIds.get(selectedManagerKey)
-    return filtered.filter(
-      c => ownClientIds.has(c.id) || invited?.has(c.id) || c.assigned_agent_id === selectedManagerKey
-    )
-  }, [selectedManagerKey, meetings, filtered, tagAlongClientIds])
-  const activeClients = selectedGroup?.clients ?? (selectedManagerBucket ? managerClients : null)
 
-  // The stat row must match whatever the table below it actually shows — a
-  // fully selected agent or manager uses their own footprint (activeClients,
-  // the exact set the table renders), so the two numbers never disagree. A
-  // manager who's only expanded in the list (previewing, not yet drilled in)
-  // uses that same team total shown on the card (managerBuckets' clients,
-  // manager + agents concatenated) instead; otherwise it's the global total.
-  const statsClients =
-    activeClients ?? (expandedManagerKey ? managerBuckets.find(b => b.key === expandedManagerKey)?.clients ?? [] : visibleClients)
+  // The stat row must match whatever the table below it actually shows. A fully
+  // selected agent or manager uses the scope's own breakdown — the exact set
+  // the table renders — so the two can never disagree. A manager who is only
+  // expanded in the list (previewing, not yet drilled in) uses that manager's
+  // team total, the same figure printed on their card; otherwise it is the
+  // global total across every visible client.
+  const counts =
+    scope
+      ? scopeStats
+      : expandedManagerKey
+        ? managerBuckets.find(b => b.key === expandedManagerKey)?.stats ?? EMPTY_CLIENT_STATS
+        : overview.stats
 
-  const counts = {
-    total: statsClients.length,
-    existing: statsClients.filter(c => c.customer_type === 'existing').length,
-    new: statsClients.filter(c => c.customer_type === 'new').length,
-    inProgress: statsClients.filter(c => c.customer_type === 'in_progress').length,
-    prospect: statsClients.filter(c => c.customer_type === 'prospect').length,
-    active: statsClients.filter(c => c.status === 'active').length,
-    lost: statsClients.filter(c => c.status === 'lost').length,
+  // Server-side paging: `clientTotal` is the count behind the window, not the
+  // length of it, so the pager is driven by the query rather than by an array
+  // the browser happens to be holding.
+  const clientPageCount = Math.max(1, Math.ceil(clientTotal / CLIENTS_PAGE_SIZE))
+  const clientFrom = clientTotal === 0 ? 0 : (clientPage - 1) * CLIENTS_PAGE_SIZE + 1
+  const clientTo = Math.min(clientPage * CLIENTS_PAGE_SIZE, clientTotal)
+
+  // Snap back to page 1 whenever the filters or the scope change, so narrowing
+  // a result set from page 5 cannot leave the view on an empty window. Done
+  // during render (React's recommended alternative to an effect) so the reset
+  // lands in the same commit as the new filter — the same rule usePagination
+  // followed when this paging was client-side.
+  const pageResetKey = `${selectedAgentId}|${selectedManagerKey}|${search}|${typeFilter}|${channelFilter}|${statusFilter}|${sourceFilter}`
+  // Seeded with the current key rather than an empty string, so mounting does
+  // not immediately look like a filter change and throw away the first render.
+  const [prevPageResetKey, setPrevPageResetKey] = useState(pageResetKey)
+  if (prevPageResetKey !== pageResetKey) {
+    setPrevPageResetKey(pageResetKey)
+    setClientPage(1)
   }
 
-  const { pageItems: pageClients, page: clientPage, pageCount: clientPageCount, from: clientFrom, to: clientTo, total: clientTotal, setPage: setClientPage } = usePagination(
-    activeClients ?? [], 9, `${selectedAgentId}|${selectedManagerKey}|${search}|${typeFilter}|${channelFilter}|${statusFilter}|${sourceFilter}`,
-  )
+  // Only the current page's rows are in memory now, which is all this needs:
+  // the detail dialog is opened by clicking a card on that page.
+  const selectedClient = pageClients.find(c => c.id === selectedClientId) ?? null
 
   function openCreate() {
     setForm({ ...EMPTY_CLIENT_FORM, assigned_agent_id: assignableAgents[0]?.id ?? '' })
@@ -650,7 +539,7 @@ export default function ClientsPage() {
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Clients" subtitle={`${filtered.length} of ${visibleClients.length} clients`} />
+      <Header title="Clients" subtitle={`${overview.filteredTotal} of ${overview.visibleTotal} clients`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Stats */}
@@ -845,7 +734,7 @@ export default function ClientsPage() {
                                 <div className="min-w-0">
                                   <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
                                   <p className="text-xs text-muted-foreground">
-                                    {group.clients.length} client{group.clients.length === 1 ? '' : 's'}
+                                    {group.clientCount} client{group.clientCount === 1 ? '' : 's'}
                                   </p>
                                 </div>
                               </div>
@@ -886,7 +775,7 @@ export default function ClientsPage() {
                     {selectedGroup?.agentName ?? selectedManagerBucket?.label}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {(activeClients ?? []).length} client{(activeClients ?? []).length === 1 ? '' : 's'}
+                    {clientTotal} client{clientTotal === 1 ? '' : 's'}
                   </p>
                 </div>
                 {/* Same deep link for a manager as an agent — SalesMapView's `agent`
@@ -975,7 +864,7 @@ export default function ClientsPage() {
                         </div>
                       </div>
 
-                      <CircularProgress value={getQualifiedAgendaMilestones(client.id, meetings).percent} size={80} strokeWidth={7} className="shrink-0" />
+                      <CircularProgress value={client.progressPercent} size={80} strokeWidth={7} className="shrink-0" />
                     </div>
 
                     <div className="flex-1" />
@@ -1014,11 +903,11 @@ export default function ClientsPage() {
           </Alert>
         )}
 
-        {!loading && !error && filtered.length === 0 && (
+        {!loading && !error && overview.filteredTotal === 0 && (
           <div className="text-center py-16 text-muted-foreground">
             <Building2 className="w-8 h-8 mx-auto mb-2 opacity-40" />
             <p className="text-sm">
-              {visibleClients.length === 0 ? 'No clients yet' : 'No clients match these filters'}
+              {overview.visibleTotal === 0 ? 'No clients yet' : 'No clients match these filters'}
             </p>
           </div>
         )}
@@ -1026,7 +915,6 @@ export default function ClientsPage() {
 
       <ClientDetailDialog
         client={selectedClient}
-        meetings={meetings}
         onOpenChange={open => { if (!open) setSelectedClientId(null) }}
         canEdit={!!selectedClient && canEditClient(selectedClient)}
         onEdit={openEdit}

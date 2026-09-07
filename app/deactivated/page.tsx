@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { UserX, LogOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { createClient } from '@/lib/supabase/client'
+import { clearResourceCache } from '@/lib/hooks/use-cached-resource'
 
 /**
  * Web's counterpart to mobile's AccountSuspendedScreen (ADR-051).
@@ -20,6 +21,9 @@ export default function DeactivatedPage() {
   async function handleLogout() {
     const supabase = createClient()
     await supabase.auth.signOut()
+    // See the note in components/sidebar.tsx — the resource cache outlives the
+    // session unless it is cleared on the way out.
+    clearResourceCache()
     router.push('/login')
   }
 
