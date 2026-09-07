@@ -1,9 +1,13 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh, SLOW_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
+import { useCachedResource } from '@/lib/hooks/use-cached-resource'
 import type { Profile, UserRole } from '@/types'
+
+/** Stable identity, so the fallback never re-triggers a downstream useMemo. */
+const EMPTY: Profile[] = []
 
 /**
  * All profiles, for the agent pickers on the Clients and Reports pages.
@@ -15,43 +19,31 @@ import type { Profile, UserRole } from '@/types'
  * role. Fetching everyone and narrowing locally keeps that visible.
  */
 export function useProfiles() {
-  const [profiles, setProfiles] = useState<Profile[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  /**
+   * Cached across mounts. This list is mounted by nearly every page — as the
+   * agent picker, as the name lookup behind a team column — and before the
+   * cache each of those navigations re-read the whole profiles table to render
+   * names it had already fetched a moment earlier.
+   */
+  const { data: profiles, loading, error, reload, refresh } = useCachedResource<Profile[]>(
+    'profiles',
+    async () => {
+      const supabase = createClient()
+      const { data, error: queryError } = await supabase
+        .from('profiles')
+        .select('id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at')
+        .order('full_name')
 
-  // State is only touched after the await — see the note in use-clients.ts.
-  const load = useCallback(async () => {
-    const supabase = createClient()
-    const { data, error: queryError } = await supabase
-      .from('profiles')
-      .select('id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at')
-      .order('full_name')
-
-    if (queryError) {
-      setError(queryError.message)
-    } else {
-      setError('')
-      setProfiles((data ?? []) as Profile[])
-    }
-    setLoading(false)
-  }, [])
-
-  /** Re-fetch and show the spinner. Safe from event handlers, not from effects. */
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    await load()
-  }, [load])
-
-  useEffect(() => {
-    // See the note in use-clients.ts.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    load()
-  }, [load])
+      if (queryError) throw new Error(queryError.message)
+      return (data ?? []) as Profile[]
+    },
+    EMPTY,
+  )
 
   // People and their roles change on the scale of weeks, and this list is
   // mounted almost everywhere as a lookup for names — so it takes the slow lane.
   // The probe still catches a deactivation the same tick it happens.
-  useAutoRefresh(load, { watch: [{ table: 'profiles' }], intervalMs: SLOW_INTERVAL_MS })
+  useAutoRefresh(reload, { watch: [{ table: 'profiles' }], intervalMs: SLOW_INTERVAL_MS })
 
   /** Active profiles holding any of the given roles. */
   const byRole = useCallback(
