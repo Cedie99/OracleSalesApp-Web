@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useCutoffAttributions, useCutoffPeriods, useQuotaSettings } from '@/lib/hooks/use-cutoff'
+import { useCutoffPeriods, useQuotaSettings } from '@/lib/hooks/use-cutoff'
 import { useTeams } from '@/lib/hooks/use-teams'
+import { useCutoffQuotaData } from '@/lib/hooks/use-cutoff-quota-data'
 import {
   ATTRIBUTION_LABEL,
   ATTRIBUTION_ORDER,
@@ -32,7 +33,7 @@ import {
   workingDaysInMonth,
 } from '@/lib/cutoff'
 import { downloadSheet } from '@/components/reports/report-grid'
-import type { Client, Meeting, MeetingCutoffAttribution, Profile, TagAlongRequest } from '@/types'
+import type { MeetingCutoffAttribution, Profile } from '@/types'
 import {
   Gauge,
   FileSpreadsheet,
@@ -110,25 +111,27 @@ const BUCKET_HINT: Record<string, string> = {
 }
 
 interface CutoffQuotaReportProps {
-  clients: Client[]
   agents: Profile[]
-  /** Only for dating the ledger's rows — see `meetingDates`. */
-  meetings: Meeting[]
-  /**
-   * meeting_id -> its tag-along requests, for the attendees the LEDGER DOES NOT
-   * HOLD — see `periodRowsWithAttendees`.
-   */
-  tagAlongsByMeeting: Map<string, TagAlongRequest[]>
 }
 
-export function CutoffQuotaReport({
-  clients,
-  agents,
-  meetings,
-  tagAlongsByMeeting,
-}: CutoffQuotaReportProps) {
+/**
+ * Bounded to the selected cutoff, not to the whole database.
+ *
+ * This panel used to read clients, meetings, the tag-along ledger and the whole
+ * attribution table — four whole-table reads — even though it only ever renders
+ * ONE period, which it knows before it needs any of them.
+ * `get_cutoff_quota_data()` (migration 141) returns that period's slice.
+ *
+ * The arithmetic below is deliberately unchanged. Pools and ceilings, working
+ * days against holidays, credit spread, the disqualification gate, 076's
+ * manager-tag-along counting — all of it stays in lib/cutoff.ts, where it is
+ * commented against the migrations that shaped it. Re-expressing that in SQL
+ * would be a second implementation of the most business-critical maths in the
+ * app, to keep in step forever. Bounding the fetch gets the speed without
+ * taking on that risk.
+ */
+export function CutoffQuotaReport({ agents }: CutoffQuotaReportProps) {
   const { periods, loading: periodsLoading } = useCutoffPeriods()
-  const { attributions, unattributedMeetingCount, loading: ledgerLoading } = useCutoffAttributions()
   const { teamName } = useTeams()
   const { holidays } = useQuotaSettings()
   const [periodId, setPeriodId] = useState<string>('')
@@ -137,6 +140,15 @@ export function CutoffQuotaReport({
   // Only periods that have started — a future one has nothing to report on.
   const options = useMemo(() => reviewablePeriods(periods), [periods])
   const period = options.find(p => p.id === periodId) ?? options[0] ?? null
+
+  // Everything below reads one period's slice. Declared here rather than at the
+  // top of the component because it needs `period`, which the picker resolves.
+  const {
+    data: quotaData,
+    tagAlongsByMeeting,
+    loading: ledgerLoading,
+  } = useCutoffQuotaData(period?.id ?? null)
+  const { attributions, meetings, clients, unattributedMeetingCount } = quotaData
 
   /**
    * meeting_id -> the MANILA date it happened on.

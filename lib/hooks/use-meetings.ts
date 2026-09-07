@@ -7,7 +7,7 @@ import { fetchAllPages } from '@/lib/supabase/paginate'
 import type { Meeting, Profile, Client } from '@/types'
 
 /** Explicit column list — see the note in use-clients.ts for why not `*`. */
-const MEETING_COLUMNS = `
+export const MEETING_COLUMNS = `
   id, client_id, agent_id, recorded_by, meeting_type, online_platform,
   location_type, location_name, gps_lat, gps_lng, photo_url, agenda, remarks,
   outcome, contact_person, contact_position, meeting_date, created_at,
@@ -90,9 +90,21 @@ interface UseMeetingsResult {
 }
 
 /** Every meeting, most recent first, with client / agent / recorder joined in. */
-export function useMeetings(clientId?: string): UseMeetingsResult {
+/**
+ * `enabled: false` skips the fetch entirely and leaves the result empty.
+ *
+ * For a surface that only needs this data behind a tab or a click: the Maps
+ * page's Needs Attention lens reads clients, meetings and the attribution
+ * ledger, and loading all three on every visit to the page was most of what
+ * made Maps slow to open. Defaults to true, so every existing caller is
+ * unchanged.
+ */
+export function useMeetings(
+  clientId?: string,
+  { enabled = true }: { enabled?: boolean } = {},
+): UseMeetingsResult {
   const [meetings, setMeetings] = useState<Meeting[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState('')
 
   // State is only touched after the await — see the note in use-clients.ts.
@@ -133,15 +145,17 @@ export function useMeetings(clientId?: string): UseMeetingsResult {
   }, [load])
 
   useEffect(() => {
+    if (!enabled) return
     // See the note in use-clients.ts.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
-  }, [load])
+  }, [load, enabled])
 
   // The probe carries the same client filter as the query, so a detail dialog
   // open on one client is not woken by every meeting logged company-wide.
   useAutoRefresh(load, {
     watch: [{ table: 'meetings', ...(clientId ? { match: { client_id: clientId } } : {}) }],
+    enabled,
   })
 
   return { meetings, loading, error, refresh }

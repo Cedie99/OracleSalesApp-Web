@@ -6,7 +6,7 @@ import { useAutoRefresh } from '@/lib/hooks/use-auto-refresh'
 import type { ClockRecord, Profile } from '@/types'
 
 /** Explicit column list — see the note in use-clients.ts for why not `*`. */
-const CLOCK_RECORD_COLUMNS = `
+export const CLOCK_RECORD_COLUMNS = `
   id, agent_id, type, action, gps_lat, gps_lng, photo_url, event_name,
   timestamp, created_at,
   agent:profiles!agent_id ( id, user_id, full_name, role, team_id, avatar_url, created_at )

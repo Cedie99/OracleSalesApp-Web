@@ -10,11 +10,10 @@ import { Pagination } from '@/components/ui/pagination'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
-import { useMeetings } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
+import { useSalesDashboard, FIELD_AGENT_ROLES } from '@/lib/hooks/use-sales-dashboard'
 import { useTeams } from '@/lib/hooks/use-teams'
 import { teamsWithManagers } from '@/lib/teams'
-import { useEditRequests } from '@/lib/hooks/use-edit-requests'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from 'recharts'
@@ -22,7 +21,7 @@ import {
   CalendarCheck, TrendingUp, Target, Trophy, Handshake,
   Users, CheckCircle2, Clock, BarChart3, Loader2
 } from 'lucide-react'
-import { format, isSameMonth, startOfMonth, subMonths } from 'date-fns'
+import { format } from 'date-fns'
 import type { CustomerType, MeetingOutcome } from '@/types'
 import {
   APPROVAL_TONE,
@@ -36,7 +35,6 @@ import {
 
 const ALL_TEAMS_VIEW = { id: 'all', label: 'All Teams & Agencies', shortLabel: 'All Teams', teamId: null as string | null }
 
-const FIELD_AGENT_ROLES = ['sales_specialist', 'rsr'] as const
 
 interface SalesDashboardProps {
   /** The module switcher, when this admin has more than one lens. */
@@ -48,12 +46,9 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
   const [viewAs, setViewAs] = useState<string>('all')
   const [perfAgentFilter, setPerfAgentFilter] = useState<string>('all')
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
-  const { inRange: inDateRange } = dateFilter
 
-  const { meetings, loading: meetingsLoading, error: meetingsError } = useMeetings()
   const { profiles } = useProfiles()
   const { teams, teamName } = useTeams()
-  const { requests: editRequests } = useEditRequests()
 
   // Built from the real `teams` rows rather than a hardcoded list, so a team
   // renamed or added on the mobile side shows up here without a code change —
@@ -94,116 +89,55 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
     [teams, profiles]
   )
 
-  // All meetings within the current team scope (not affected by the Agent
-  // Performance table's own agent/date filters below) — drives the metric
-  // cards, monthly trend, success rate, and outcome counts.
-  const teamMeetings = useMemo(
-    () => meetings.filter(mtg => currentView.teamId === null || mtg.agent?.team_id === currentView.teamId),
-    [meetings, currentView]
+  // Every figure on this page is a COUNT or a GROUP BY, so Postgres computes
+  // them. This component used to download every meeting in the company and
+  // every edit request to derive about thirty numbers. See migration 134.
+  //
+  // Three scopes live in that one call, and they are not interchangeable: the
+  // metric cards, the trend and the recent list follow the TEAM filter only,
+  // the cards narrow further to the current calendar month, and the Agent
+  // Performance table alone also applies the agent and date filters below.
+  const dashboardFilters = useMemo(
+    () => ({
+      teamId: currentView.teamId,
+      agentId: perfAgentFilter === 'all' ? null : perfAgentFilter,
+      range: dateFilter.range,
+    }),
+    [currentView.teamId, perfAgentFilter, dateFilter.range],
   )
 
-  const scopedMeetings = useMemo(
-    () =>
-      teamMeetings.filter(mtg => {
-        const inAgent = perfAgentFilter === 'all' || mtg.agent_id === perfAgentFilter
-        return inAgent && inDateRange(mtg.meeting_date)
-      }),
-    [teamMeetings, perfAgentFilter, inDateRange]
+  const {
+    data: dashboard,
+    loading: meetingsLoading,
+    error: meetingsError,
+  } = useSalesDashboard(dashboardFilters)
+
+  const { metrics, monthlyTrend: trendRaw, agentPerformance, recentMeetings } = dashboard
+  const { byType: meetingsByType, successfulByType } = metrics
+  const closedDeals = metrics.closedDeals
+  const pending = metrics.pending
+
+  // The month label is formatted here rather than in SQL, so every date on the
+  // page goes through date-fns exactly once.
+  const monthlyTrend = useMemo(
+    () => trendRaw.map(({ monthStart, total, successful }) => ({
+      month: format(new Date(monthStart), 'MMM'),
+      total,
+      successful,
+    })),
+    [trendRaw],
   )
 
-  const agentPerformance = useMemo(
-    () =>
-      scopedAgents
-        .map(agent => {
-          const meetings = scopedMeetings.filter(mtg => mtg.agent_id === agent.id)
-          const successful = meetings.filter(mtg => mtg.outcome === 'successful').length
-          const followUp = meetings.filter(mtg => mtg.outcome === 'follow_up').length
-          const noDecision = meetings.filter(mtg => mtg.outcome === 'no_decision').length
-          const lost = meetings.filter(mtg => mtg.outcome === 'lost_opportunity').length
-          const rate = meetings.length > 0 ? Math.round((successful / meetings.length) * 100) : 0
-          return { agent, total: meetings.length, successful, followUp, noDecision, lost, rate }
-        })
-        .sort((a, b) => b.total - a.total),
-    [scopedAgents, scopedMeetings]
-  )
-
+  // Still paginated in the browser: this list is one row per agent, bounded by
+  // headcount rather than by the meetings table, so it never grows the way the
+  // record lists do.
   const agentPage = usePagination(
     agentPerformance, 8, `${viewAs}|${perfAgentFilter}|${dateFilter.key}`,
   )
 
-  const recentMeetings = useMemo(
-    () =>
-      [...teamMeetings]
-        .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
-        .slice(0, 5),
-    [teamMeetings]
-  )
-
-  const pending = useMemo(
-    () =>
-      editRequests.filter(
-        r => r.status === 'pending' && (currentView.teamId === null || r.requester?.team_id === currentView.teamId)
-      ).length,
-    [editRequests, currentView]
-  )
-
-  // Just this calendar month, within the team scope — drives the metric
-  // cards, success rate, and outcome counts (all "current month" stats).
-  const monthMeetings = useMemo(
-    () => teamMeetings.filter(mtg => isSameMonth(new Date(mtg.meeting_date), new Date())),
-    [teamMeetings]
-  )
-
-  // One bucket per lifecycle stage, all four carded below. A meeting on a client
-  // whose type is still unset (mobile's Phase-A insert) counts toward Total
-  // Meetings but no stage — the `if (type)` guard drops it rather than guessing.
-  const meetingsByType = useMemo(() => {
-    const counts: Record<CustomerType, number> = { existing: 0, new: 0, in_progress: 0, prospect: 0 }
-    monthMeetings.forEach(mtg => {
-      const type = mtg.client?.customer_type
-      if (type) counts[type] += 1
-    })
-    return counts
-  }, [monthMeetings])
-
-  const successfulByType = useMemo(() => {
-    const counts: Record<CustomerType, number> = { existing: 0, new: 0, in_progress: 0, prospect: 0 }
-    monthMeetings.forEach(mtg => {
-      const type = mtg.client?.customer_type
-      if (mtg.outcome === 'successful' && type) counts[type] += 1
-    })
-    return counts
-  }, [monthMeetings])
-
-  const closedDeals = useMemo(
-    () => monthMeetings.filter(mtg => mtg.outcome === 'successful').length,
-    [monthMeetings]
-  )
-
-  // Always 12 buckets (this month + the trailing 11), zero-filled, so the
-  // trend chart shows a real year regardless of how the data is distributed.
-  const monthlyTrend = useMemo(() => {
-    const months = Array.from({ length: 12 }, (_, i) => subMonths(startOfMonth(new Date()), 11 - i))
-    const buckets = months.map(d => ({
-      key: `${d.getFullYear()}-${d.getMonth()}`,
-      month: format(d, 'MMM'),
-      total: 0,
-      successful: 0,
-    }))
-    const bucketByKey = new Map(buckets.map(b => [b.key, b]))
-    teamMeetings.forEach(mtg => {
-      const d = new Date(mtg.meeting_date)
-      const bucket = bucketByKey.get(`${d.getFullYear()}-${d.getMonth()}`)
-      if (!bucket) return
-      bucket.total += 1
-      if (mtg.outcome === 'successful') bucket.successful += 1
-    })
-    return buckets.map(({ month, total, successful }) => ({ month, total, successful }))
-  }, [teamMeetings])
-
   const metricCards = [
     {
-      title: 'Total Meetings', value: monthMeetings.length, icon: CalendarCheck,
+      title: 'Total Meetings', value: metrics.monthTotal, icon: CalendarCheck,
       sub: 'This month', color: 'text-primary',
     },
     // Derived from CUSTOMER_TYPE_TONE rather than restated, so a prospect reads
@@ -341,7 +275,7 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
               <div className="pt-3 border-t border-border space-y-2">
                 <p className="text-xs font-medium text-foreground">Meeting Outcomes</p>
                 {(Object.entries(OUTCOME_LABEL) as [MeetingOutcome, string][]).map(([key, label]) => {
-                  const count = monthMeetings.filter(mtg => mtg.outcome === key).length
+                  const count = metrics.outcomes[key]
                   return (
                     <div key={key} className="flex items-center justify-between">
                       <Badge variant="tone" className={TONE_CLASS[OUTCOME_TONE[key]]}>
@@ -396,14 +330,14 @@ export function SalesDashboard({ headerAction }: SalesDashboardProps) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {agentPage.pageItems.map(({ agent, total, successful, followUp, noDecision, lost, rate }) => (
-                    <tr key={agent.id} className="hover:bg-muted/20 transition-colors">
+                  {agentPage.pageItems.map(({ agentId, agentName, agentRole, teamId, total, successful, followUp, noDecision, lost, rate }) => (
+                    <tr key={agentId} className="hover:bg-muted/20 transition-colors">
                       <td className="px-5 py-3">
-                        <p className="font-medium text-foreground leading-tight">{agent.full_name}</p>
-                        <p className="text-xs text-muted-foreground capitalize">{agent.role.replace('_', ' ')}</p>
+                        <p className="font-medium text-foreground leading-tight">{agentName}</p>
+                        <p className="text-xs text-muted-foreground capitalize">{agentRole.replace('_', ' ')}</p>
                       </td>
                       <td className="px-5 py-3 hidden md:table-cell text-xs text-muted-foreground">
-                        {teamName(agent.team_id)}
+                        {teamName(teamId)}
                       </td>
                       <td className="px-5 py-3 text-right font-medium text-foreground">{total}</td>
                       <td className="px-5 py-3 text-right hidden lg:table-cell text-muted-foreground">{successful}</td>

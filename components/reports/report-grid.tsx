@@ -8,9 +8,10 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import type { DateRangeFilterState } from '@/lib/hooks/use-date-range-filter'
-import { FileBarChart2, Download, FileSpreadsheet } from 'lucide-react'
+import { FileBarChart2, Download, FileSpreadsheet, Loader2 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { format } from 'date-fns'
+import { toast } from 'sonner'
 
 /** One downloadable export, as the grid renders it. */
 export interface ReportDefinition {
@@ -25,7 +26,21 @@ export interface ReportDefinition {
    * that does not add up. The row is flex, so it takes four as readily as three.
    */
   stats: { label: string; value: number | string }[]
-  onDownload: () => void
+  /**
+   * Fetches the rows and writes the sheet — asynchronous by design.
+   *
+   * The rows behind an export used to be loaded on mount, so opening Reports
+   * downloaded several whole tables just so these buttons COULD work, whether
+   * or not anyone pressed one. They are fetched on the click instead. That
+   * makes the page instant and moves the cost onto the person who actually
+   * asked for the file, which is the only one who benefits from it.
+   *
+   * A returned promise is awaited by the grid, which shows a spinner on that
+   * card and blocks a second click for the duration. Throwing surfaces as a
+   * toast rather than a silent no-op — a Download button that appears to do
+   * nothing is the worst outcome here.
+   */
+  onDownload: () => Promise<void> | void
 }
 
 /**
@@ -169,6 +184,25 @@ export function ReportFilters({
 
 /** The report cards themselves — identical in every module. */
 export function ReportGrid({ reports }: { reports: ReportDefinition[] }) {
+  // Keyed by title, which is what the grid already uses as its React key.
+  // Per-card rather than one flag for the grid: two exports can be fetched at
+  // once, and a spinner on the card you did not press is a lie.
+  const [busy, setBusy] = React.useState<string | null>(null)
+
+  async function run(title: string, onDownload: ReportDefinition['onDownload']) {
+    if (busy) return
+    setBusy(title)
+    try {
+      await onDownload()
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : `Could not build the ${title} export.`
+      )
+    } finally {
+      setBusy(null)
+    }
+  }
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       {reports.map(({ title, description, icon: Icon, count, countLabel, onDownload, stats }) => (
@@ -196,13 +230,23 @@ export function ReportGrid({ reports }: { reports: ReportDefinition[] }) {
               ))}
             </div>
             <Button
-              onClick={onDownload}
+              onClick={() => void run(title, onDownload)}
+              disabled={busy !== null}
               className="w-full h-9 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 text-xs font-medium"
               variant="outline"
             >
-              <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5" />
-              <Download className="w-3.5 h-3.5 mr-1.5" />
-              Download Excel
+              {busy === title ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                  Preparing…
+                </>
+              ) : (
+                <>
+                  <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5" />
+                  <Download className="w-3.5 h-3.5 mr-1.5" />
+                  Download Excel
+                </>
+              )}
             </Button>
           </CardContent>
         </Card>

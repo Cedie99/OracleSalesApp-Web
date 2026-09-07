@@ -15,14 +15,19 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Pagination } from '@/components/ui/pagination'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
-import { useMeetings, meetingGpsDriftMeters, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
-import { useProfiles } from '@/lib/hooks/use-profiles'
-import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
+import { meetingGpsDriftMeters, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
+import {
+  useMeetingsOverview,
+  useMeetingsPage,
+  useMeetingDetail,
+  EMPTY_MEETING_STATS,
+  MEETINGS_PAGE_SIZE,
+  type MeetingScope,
+  type MeetingRow,
+} from '@/lib/hooks/use-meetings-view'
 import { CompanionLine, CompanionList, ManagerGateIcon } from '@/components/tag-along-indicator'
 import { MANAGER_GATE_LABEL, MANAGER_GATE_TONE, managerGate } from '@/lib/tag-along'
-import type { Meeting, MeetingOutcome } from '@/types'
 import {
   Search, CalendarCheck, MapPin, MapPinCheck, Map as MapIcon, Camera, Video, Navigation, Users, CheckCircle2, Loader2,
   Clock, HelpCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown, ArrowLeft, User,
@@ -32,7 +37,6 @@ import { format } from 'date-fns'
 import {
   CUSTOMER_TYPE_LABEL, meetingStageBadge, OUTCOME_LABEL, OUTCOME_TONE, TONE_CLASS, TONE_TEXT,
 } from '@/lib/status-styles'
-import { managerForTeam } from '@/lib/teams'
 import { formatDistanceMeters, formatDurationMinutes } from '@/lib/utils'
 
 const MeetingRouteMap = dynamic(() => import('@/components/maps/meeting-route-map'), {
@@ -64,7 +68,6 @@ const DEFAULT_SORT_DIR: Record<SortKey, SortState['dir']> = {
 }
 
 /** Severity order for the Outcome column — not alphabetical, so sorting groups worst-to-best (or reverse). */
-const OUTCOME_ORDER: MeetingOutcome[] = ['successful', 'follow_up', 'no_decision', 'lost_opportunity']
 
 /** One field in the Meeting Detail dialog's grid — matches the Clients page's meeting popup exactly. */
 function DetailLine({ icon: Icon, label, value }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string }) {
@@ -91,7 +94,7 @@ function MeetingsPageContent() {
   const [search, setSearch] = useState('')
   const [outcomeFilter, setOutcomeFilter] = useState<string>('all')
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
-  const [picked, setPicked] = useState<Meeting | null>(null)
+  const [picked, setPicked] = useState<MeetingRow | null>(null)
   const [sort, setSort] = useState<SortState>({ key: 'date', dir: 'desc' })
   const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
   /**
@@ -99,11 +102,7 @@ function MeetingsPageContent() {
    * it, which is what lets a deep link stand in — see `linkedDrill`.
    */
   const [drill, setDrill] = useState<{ agentId: string | null; managerKey: string | null } | null>(null)
-  const { meetings, loading, error } = useMeetings()
-  const { byRole } = useProfiles()
-  // Companions load alongside meetings rather than per-row: the panel and the
-  // table both need them, and a lookup per meeting would be a request per row.
-  const { byMeeting: tagAlongsByMeetingId, byInvitee: tagAlongsByInviteeId } = useTagAlongs()
+  const [page, setPage] = useState(1)
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
 
   /**
@@ -126,16 +125,16 @@ function MeetingsPageContent() {
   const searchParams = useSearchParams()
   const linkedMeetingId = searchParams.get('meeting')
   const [dismissedLink, setDismissedLink] = useState(false)
-  const linkedMeeting = useMemo(
-    () => (linkedMeetingId ? meetings.find(m => m.id === linkedMeetingId) ?? null : null),
-    [linkedMeetingId, meetings],
-  )
+  // Fetched on its own rather than found in the list: with the table paged
+  // server-side the linked record is usually not in the current window. Stays
+  // unscoped by this page's filters, which is what the lookup in `meetings`
+  // (rather than in `filtered`) used to guarantee.
+  const { meeting: linkedMeeting, loading: linkLoading } = useMeetingDetail(linkedMeetingId)
   /**
    * A link is only a miss once the records are actually in — before that the id
    * is simply not looked up yet, and `error` means nothing loaded at all, which
    * the page's own alert already explains.
    */
-  const linkMissing = !!linkedMeetingId && !linkedMeeting && !loading && !error
   const selected = picked ?? (dismissedLink ? null : linkedMeeting)
   /**
    * A link lands inside the agent's meetings, not on the manager list: the
@@ -148,199 +147,83 @@ function MeetingsPageContent() {
   const { agentId: selectedAgentId, managerKey: selectedManagerKey } =
     drill ?? linkedDrill ?? { agentId: null, managerKey: null }
 
-  // The actual managers, so the top of the hierarchy lists real people instead
-  // of a generic RSR/Sales bucket — same rule as the Clients page.
-  const managers = useMemo(
-    () => [...byRole(['sales_manager'])].sort((a, b) => a.full_name.localeCompare(b.full_name)),
-    [byRole],
+  // The hierarchy, its counts, and one screen of rows — all computed by
+  // Postgres. This page used to download every meeting in the company (three
+  // joins, and silently truncated at PostgREST's 1,000-row ceiling because it
+  // never paged) plus the entire tag-along ledger, in order to render ten rows.
+  // See migration 133.
+  const filters = useMemo(
+    () => ({ search, outcome: outcomeFilter, type: typeFilter, range: dateFilter.range }),
+    [search, outcomeFilter, typeFilter, dateFilter.range],
   )
 
-  /**
-   * Which meetings each person was genuinely invited along on, from the
-   * tag-along ledger.
-   *
-   * Accepted and pending both count — the manager was asked either way, and a
-   * pending invite is precisely the one worth seeing. Declined and cancelled do
-   * not: nobody attended those.
-   */
-  const tagAlongMeetingIds = useMemo(() => {
-    const map = new Map<string, Set<string>>()
-    for (const [inviteeId, requests] of tagAlongsByInviteeId) {
-      const ids = new Set(
-        requests
-          .filter(r => r.related_meeting_id && (r.status === 'accepted' || r.status === 'pending'))
-          .map(r => r.related_meeting_id as string)
-      )
-      if (ids.size > 0) map.set(inviteeId, ids)
-    }
-    return map
-  }, [tagAlongsByInviteeId])
+  const scope: MeetingScope = selectedAgentId
+    ? { kind: 'agent', id: selectedAgentId }
+    : selectedManagerKey
+      ? { kind: 'manager', id: selectedManagerKey }
+      : null
 
-  // Every meeting's manager, computed once regardless of this page's own
-  // search/outcome/type/date filters — so scoping the stat row to a manager
-  // below doesn't inherit those filters either. Same convention as the
-  // Clients page's clientsByManagerKey. A meeting also lands in a manager's
-  // own bucket when they recorded it or were tagged along on it — otherwise
-  // a manager who tagged along on another team's visit shows a stat row of
-  // all zeros for a meeting that very much involved them.
-  const meetingsByManagerKey = useMemo(() => {
-    const byId = new Map(meetings.map(m => [m.id, m]))
-    const idsByKey = new Map<string, Set<string>>()
-    const add = (key: string, id: string) => {
-      let set = idsByKey.get(key)
-      if (!set) { set = new Set(); idsByKey.set(key, set) }
-      set.add(id)
-    }
-    for (const m of meetings) {
-      add(managerForTeam(m.agent?.team_id, managers)?.id ?? 'unassigned', m.id)
-      if (m.agent_id) add(m.agent_id, m.id)
-      if (m.recorded_by) add(m.recorded_by, m.id)
-    }
-    for (const [inviteeId, ids] of tagAlongMeetingIds) {
-      for (const id of ids) add(inviteeId, id)
-    }
-    const result = new Map<string, Meeting[]>()
-    for (const [key, ids] of idsByKey) {
-      result.set(key, [...ids].map(id => byId.get(id)).filter((m): m is Meeting => !!m))
-    }
-    return result
-  }, [meetings, managers, tagAlongMeetingIds])
+  const { overview, loading, error } = useMeetingsOverview(filters)
+  const {
+    rows: pageItems,
+    total,
+    stats: scopeStats,
+    // "Had someone along", the reverse of a manager bucket's tagAlongCount
+    // ("was someone along") — an agent group only ever holds meetings it owns.
+    tagAlongCount: selectedAgentTagAlongCount,
+  } = useMeetingsPage(filters, scope, sort, page)
 
+  const managerBuckets = overview.managers
+  const groups = overview.agents
 
-  const filtered = meetings.filter(m => {
-    const matchSearch =
-      (m.client?.company_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
-      (m.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
-      m.contact_person.toLowerCase().includes(search.toLowerCase())
-    const matchOutcome = outcomeFilter === 'all' || m.outcome === outcomeFilter
-    const matchType = typeFilter === 'all' || m.meeting_type === typeFilter
-    return matchSearch && matchOutcome && matchType && dateFilter.inRange(m.meeting_date)
-  })
-
-  // Group meetings by agent so the table isn't a wall of every agent's rows at
-  // once — same manager -> agents -> records drill-down as the Clients page.
-  interface AgentGroup { agentId: string; agentName: string; managerKey: string; meetings: Meeting[] }
-  const groups = useMemo(() => {
-    const managerIds = new Set(managers.map(mgr => mgr.id))
-    const map = new Map<string, AgentGroup>()
-    for (const m of filtered) {
-      const agentId = m.agent_id ?? 'unassigned'
-      // A manager who personally conducted a meeting (agent_id is them) is not
-      // a separate agent under themselves — skip it here so they don't show up
-      // listed as an "agent" in their own team. Their own meetings still count
-      // via ownMeetingCount/ownMeetingIds in managerBuckets below.
-      if (managerIds.has(agentId)) continue
-      const agentName = m.agent?.full_name ?? 'Unassigned'
-      let group = map.get(agentId)
-      if (!group) {
-        const managerKey = managerForTeam(m.agent?.team_id, managers)?.id ?? 'unassigned'
-        group = { agentId, agentName, managerKey, meetings: [] }
-        map.set(agentId, group)
-      }
-      group.meetings.push(m)
-    }
-    return Array.from(map.values()).sort((a, b) => a.agentName.localeCompare(b.agentName))
-  }, [filtered, managers])
-
-  const managerBuckets = useMemo(() => {
-    const buckets = managers.map(m => {
-      const managerGroups = groups.filter(g => g.managerKey === m.id)
-      // Two separate figures, because they were one number for a while and that
-      // number was wrong. `recorded_by` means the manager filled in the form; it
-      // was standing in for "tagged along", which it is not — a manager invited
-      // along on twenty agent visits records none of them, and read as zero.
-      // Real tag-alongs come from the ledger; this stays what it always was.
-      const ownMeetings = filtered.filter(mt => mt.agent_id === m.id || mt.recorded_by === m.id)
-      const ownMeetingCount = ownMeetings.length
-      const invited = tagAlongMeetingIds.get(m.id)
-      const tagAlongCount = invited ? filtered.filter(mt => invited.has(mt.id)).length : 0
-      // Team total: meetings reached via an agent under this manager, unioned
-      // with the manager's own recorded/tagged-along meetings — a manager with
-      // no agents (or whose agents logged nothing) still shows their own
-      // meetings here, without double-counting one that's both.
-      const teamMeetingIds = new Set(managerGroups.flatMap(g => g.meetings.map(mt => mt.id)))
-      const ownMeetingIds = new Set(ownMeetings.map(mt => mt.id))
-      const meetingCount = filtered.filter(
-        mt => teamMeetingIds.has(mt.id) || ownMeetingIds.has(mt.id) || (invited?.has(mt.id) ?? false)
-      ).length
-      return {
-        key: m.id,
-        label: m.full_name,
-        agentCount: managerGroups.length,
-        meetingCount,
-        ownMeetingCount,
-        tagAlongCount,
-      }
-    })
-    const unassignedGroups = groups.filter(g => g.managerKey === 'unassigned')
-    if (unassignedGroups.length > 0) {
-      buckets.push({
-        key: 'unassigned',
-        label: 'Unassigned',
-        agentCount: unassignedGroups.length,
-        meetingCount: unassignedGroups.reduce((sum, g) => sum + g.meetings.length, 0),
-        ownMeetingCount: 0,
-        tagAlongCount: 0,
-      })
-    }
-    return buckets
-  }, [managers, groups, filtered, tagAlongMeetingIds])
-
-  const selectedGroup = selectedAgentId ? groups.find(g => g.agentId === selectedAgentId) ?? null : null
-
-  // A manager's own records — meetings they personally attended, whether
-  // solo (agent_id is them) or tagging along on an agent's visit
-  // (recorded_by is them). This is deliberately *not* the whole team's
-  // meetings — just the manager's own footprint, matching the mobile app.
+  const selectedGroup = selectedAgentId
+    ? groups.find(g => g.agentId === selectedAgentId) ?? null
+    : null
   const selectedManagerBucket = selectedManagerKey
     ? managerBuckets.find(b => b.key === selectedManagerKey) ?? null
     : null
-  const managerMeetings = useMemo(
-    () => {
-      if (!selectedManagerKey) return []
-      const invited = tagAlongMeetingIds.get(selectedManagerKey)
-      return filtered.filter(
-        mt =>
-          mt.agent_id === selectedManagerKey ||
-          mt.recorded_by === selectedManagerKey ||
-          invited?.has(mt.id),
-      )
-    },
-    [selectedManagerKey, filtered, tagAlongMeetingIds],
-  )
-  const activeMeetings = selectedGroup?.meetings ?? (selectedManagerBucket ? managerMeetings : null)
 
-  // The stat row must match whatever the table below it actually shows —
-  // a fully selected agent or manager uses their own footprint
-  // (activeMeetings, the exact set the table renders), so the two numbers
-  // never disagree. A manager who's only expanded in the list (previewing,
-  // not yet drilled in) uses the team-wide total instead; otherwise it's the
-  // global total.
-  const statsMeetings =
-    activeMeetings ?? (expandedManagerKey ? meetingsByManagerKey.get(expandedManagerKey) ?? [] : meetings)
+  // The stat row must match whatever the table below it actually shows. A fully
+  // drilled-into agent or manager uses the scope's own breakdown — the exact
+  // set the table renders — so the two can never disagree. A manager who is
+  // only expanded in the list (previewing, not yet drilled in) uses that
+  // manager's own set, which the server computes UNFILTERED on purpose: scoping
+  // the stat row to a manager does not inherit this page's search / outcome /
+  // type / date filters. Otherwise it is the global total.
+  const counts =
+    scope
+      ? scopeStats
+      : expandedManagerKey
+        ? managerBuckets.find(b => b.key === expandedManagerKey)?.stats ?? EMPTY_MEETING_STATS
+        : overview.stats
 
-  const counts = {
-    total: statsMeetings.length,
-    f2f: statsMeetings.filter(m => m.meeting_type === 'f2f').length,
-    // Mirrors the table row's own fallback (`m.online_platform === 'zoom' ? 'Zoom' : 'Google Meet'`)
-    // rather than checking for the literal 'googlemeet' value, since seeded/live rows often leave
-    // online_platform null and the rest of this page already treats "online, not Zoom" as Google Meet.
-    googleMeet: statsMeetings.filter(m => m.meeting_type === 'online' && m.online_platform !== 'zoom').length,
-    successful: statsMeetings.filter(m => m.outcome === 'successful').length,
-    followUp: statsMeetings.filter(m => m.outcome === 'follow_up').length,
-    noDecision: statsMeetings.filter(m => m.outcome === 'no_decision').length,
-    lost: statsMeetings.filter(m => m.outcome === 'lost_opportunity').length,
+  // Server-side paging: `total` is the count behind the window, not the length
+  // of it, and the six sort keys are applied in SQL rather than over an array
+  // the browser happens to be holding.
+  const pageCount = Math.max(1, Math.ceil(total / MEETINGS_PAGE_SIZE))
+  const from = total === 0 ? 0 : (page - 1) * MEETINGS_PAGE_SIZE + 1
+  const to = Math.min(page * MEETINGS_PAGE_SIZE, total)
+
+  // Snap back to page 1 whenever the filters, the scope or the sort change, so
+  // narrowing from page 5 cannot leave the view on an empty window. Done during
+  // render (React's recommended alternative to an effect) so the reset lands in
+  // the same commit as the new filter — the rule usePagination followed when
+  // this paging was client-side. Seeded with the current key so mounting does
+  // not read as a change and throw away the first render.
+  const pageResetKey = `${selectedAgentId}|${selectedManagerKey}|${search}|${outcomeFilter}|${typeFilter}|${dateFilter.key}|${sort.key}|${sort.dir}`
+  const [prevPageResetKey, setPrevPageResetKey] = useState(pageResetKey)
+  if (prevPageResetKey !== pageResetKey) {
+    setPrevPageResetKey(pageResetKey)
+    setPage(1)
   }
 
-  // How many of the selected agent's OWN meetings had someone else tag along
-  // with them — the reverse direction from the manager bucket's tagAlongCount
-  // (meetings the manager was invited to as a guest). An agent group only
-  // ever tracks meetings it owns (agent_id), so "tagged along" for an agent
-  // means "had a companion," not "was a companion" — tagAlongMeetingIds
-  // (keyed by invitee) answers the wrong question here.
-  const selectedAgentTagAlongCount = selectedGroup
-    ? selectedGroup.meetings.filter(mt => tagAlongsFor(tagAlongsByMeetingId, mt.id).some(r => r.status !== 'cancelled')).length
-    : 0
+  /**
+   * A link is only a miss once the record has actually been looked up — before
+   * that the id simply has no answer yet, and `error` means nothing loaded at
+   * all, which the page's own alert already explains. Sits below the data hooks
+   * because it reads their `error`.
+   */
+  const linkMissing = !!linkedMeetingId && !linkedMeeting && !linkLoading && !error
 
   function toggleSort(key: SortKey) {
     setSort(prev =>
@@ -350,51 +233,9 @@ function MeetingsPageContent() {
     )
   }
 
-  const sorted = [...(activeMeetings ?? [])].sort((a, b) => {
-    const dir = sort.dir === 'asc' ? 1 : -1
-    // Every column falls back to client name so equal rows keep a stable order.
-    const byClient = (a.client?.company_name ?? '').localeCompare(b.client?.company_name ?? '', undefined, { sensitivity: 'base' })
-
-    switch (sort.key) {
-      case 'client':
-        return dir * byClient
-
-      case 'agent': {
-        const agent = (a.agent?.full_name ?? '').localeCompare(b.agent?.full_name ?? '', undefined, { sensitivity: 'base' })
-        return agent ? dir * agent : byClient
-      }
-
-      case 'type': {
-        const type = a.meeting_type.localeCompare(b.meeting_type)
-        return type ? dir * type : byClient
-      }
-
-      case 'location': {
-        const aLoc = a.location_type === 'client_office' ? 'Client Office' : (a.location_name ?? '')
-        const bLoc = b.location_type === 'client_office' ? 'Client Office' : (b.location_name ?? '')
-        const loc = aLoc.localeCompare(bLoc, undefined, { sensitivity: 'base' })
-        return loc ? dir * loc : byClient
-      }
-
-      case 'date': {
-        const date = new Date(a.meeting_date).getTime() - new Date(b.meeting_date).getTime()
-        return date ? dir * date : byClient
-      }
-
-      case 'outcome': {
-        const rank = OUTCOME_ORDER.indexOf(a.outcome) - OUTCOME_ORDER.indexOf(b.outcome)
-        return rank ? dir * rank : byClient
-      }
-    }
-  })
-
-  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
-    sorted, 10, `${selectedAgentId}|${selectedManagerKey}|${search}|${outcomeFilter}|${typeFilter}|${dateFilter.key}|${sort.key}|${sort.dir}`,
-  )
-
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Meetings" subtitle={`${filtered.length} of ${meetings.length} records`} />
+      <Header title="Meetings" subtitle={`${overview.filteredTotal} of ${overview.allTotal} records`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Stats */}
@@ -566,10 +407,12 @@ function MeetingsPageContent() {
                           </p>
                           {bucketGroups.map(group => {
                             // Meetings this agent owns that also had a companion
-                            // — not tagAlongMeetingIds (that's meetings they were
-                            // invited to as a guest, the reverse direction). See
-                            // selectedAgentTagAlongCount above for the same fix.
-                            const tagAlong = group.meetings.filter(mt => tagAlongsFor(tagAlongsByMeetingId, mt.id).some(r => r.status !== 'cancelled')).length
+                            // — "had someone along", not "was someone along". A
+                            // manager bucket's tagAlongCount is the reverse
+                            // direction (meetings they were invited to as a
+                            // guest); the two are computed separately in
+                            // get_meetings_overview for exactly that reason.
+                            const tagAlong = group.tagAlongCount
                             return (
                             <button
                               key={group.agentId}
@@ -586,7 +429,7 @@ function MeetingsPageContent() {
                                 <div className="min-w-0">
                                   <p className="text-sm font-semibold text-foreground truncate">{group.agentName}</p>
                                   <p className="text-xs text-muted-foreground">
-                                    {group.meetings.length} meeting{group.meetings.length === 1 ? '' : 's'}
+                                    {group.meetingCount} meeting{group.meetingCount === 1 ? '' : 's'}
                                     {tagAlong > 0 && <> · {tagAlong} tagged along</>}
                                   </p>
                                 </div>
@@ -644,7 +487,7 @@ function MeetingsPageContent() {
                       // is a subset of it (meetings that also had a companion),
                       // not an additional bucket — unlike the manager case above.
                       <>
-                        {(activeMeetings ?? []).length} meeting{(activeMeetings ?? []).length === 1 ? '' : 's'}
+                        {total} meeting{total === 1 ? '' : 's'}
                         {selectedAgentTagAlongCount > 0 && <> · {selectedAgentTagAlongCount} tagged along</>}
                       </>
                     )}
@@ -754,13 +597,13 @@ function MeetingsPageContent() {
                                 that is where the reader is already asking "whose
                                 meeting is this" — not a column of its own, which
                                 would be empty on most rows. */}
-                            <CompanionLine requests={tagAlongsFor(tagAlongsByMeetingId, m.id)} />
+                            <CompanionLine requests={m.companions} />
                             {/* A visible label, not just the small Flags-column
                                 icon — readable at a glance straight off the list,
                                 in every context (agent-scoped, manager-scoped, or
                                 unscoped), not only when the scoped manager
                                 specifically isn't the owner. */}
-                            {tagAlongsFor(tagAlongsByMeetingId, m.id).some(r => r.status !== 'cancelled') && (
+                            {m.companions.some(r => r.status !== 'cancelled') && (
                               <Badge variant="tone" className={`${TONE_CLASS.neutral} text-[10px] px-1.5 h-4`}>
                                 Tagged along
                               </Badge>
@@ -825,7 +668,7 @@ function MeetingsPageContent() {
                                 ManagerGateIcon below it, which only ever fires
                                 for a manager companion and carries their
                                 accept/decline status specifically. */}
-                            {tagAlongsFor(tagAlongsByMeetingId, m.id).some(r => r.status !== 'cancelled') && (
+                            {m.companions.some(r => r.status !== 'cancelled') && (
                               <Users
                                 className="w-3.5 h-3.5 text-muted-foreground"
                                 aria-label="Someone tagged along"
@@ -835,7 +678,7 @@ function MeetingsPageContent() {
                             )}
                             {/* Only ever shown when a manager gate exists —
                                 see ManagerGateIcon. */}
-                            <ManagerGateIcon requests={tagAlongsFor(tagAlongsByMeetingId, m.id)} />
+                            <ManagerGateIcon requests={m.companions} />
                           </div>
                         </td>
                       </tr>
@@ -843,7 +686,7 @@ function MeetingsPageContent() {
                   </tbody>
                 </table>
 
-                {sorted.length === 0 && (
+                {total === 0 && (
                   <div className="text-center py-16 text-muted-foreground">
                     <CalendarCheck className="w-8 h-8 mx-auto mb-2 opacity-40" />
                     <p className="text-sm">No meetings match these filters</p>
@@ -876,7 +719,7 @@ function MeetingsPageContent() {
             const stage = meetingStageBadge(selected.client_status_at_meeting)
             const nowType = selected.client?.customer_type
             const stageMoved = nowType && selected.client_status_at_meeting !== nowType
-            const companions = tagAlongsFor(tagAlongsByMeetingId, selected.id)
+            const companions = selected.companions
             const gate = managerGate(companions)
             return (
             <>

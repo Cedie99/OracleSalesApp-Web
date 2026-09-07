@@ -41,7 +41,7 @@ const PROFILE_JOIN = `id, user_id, full_name, email, role, team_id, is_active, a
 // whole Collection page down with a "column does not exist" banner. Add it back
 // as the first step after 061 merges; `normalizeVisit` already defaults it to
 // null so nothing else has to change on the day.
-const VISIT_COLUMNS = `
+export const VISIT_COLUMNS = `
   id, client_id, client_name, area, status, scheduled_for, listed_by, listed_at, amount_due,
   claimed_by, claimed_at, claimed_by_name,
   collector_id, amount_collected, payment_method, payment_photo_url,
@@ -65,7 +65,7 @@ const VISIT_COLUMNS = `
 // the same group for the same reason: 114 ships in this repo and CI applies it
 // on merge, but the Vercel build and the migration push race, so for a few
 // minutes the new code can be live against the old schema.
-const ADDITIONAL_COLUMNS = `
+export const ADDITIONAL_COLUMNS = `
   is_additional, additional_received_at, additional_seen_at,
   client_lat, client_lng
 `
@@ -142,7 +142,7 @@ async function loadPayments(
   return byVisit
 }
 
-const REMITTANCE_COLUMNS = `
+export const REMITTANCE_COLUMNS = `
   id, collector_id, destination, amount_remitted, amount_collected, status,
   receiver_name, signed_proof_url, receiver_signature_url, visit_ids,
   submitted_at, created_at,
@@ -256,9 +256,19 @@ interface UseCollectionVisitsResult {
  * (`buildDays`), the maps page slices by date range, and the dashboard
  * aggregates — all three want the same unfiltered set.
  */
-export function useCollectionVisits(): UseCollectionVisitsResult {
+/**
+ * `enabled: false` skips the fetch entirely and leaves the result empty.
+ *
+ * For a surface that can reach this module's data but is not currently showing
+ * it — the Maps page fetches both operational lenses so flipping between them
+ * is instant, but an admin scoped to Sales can see neither and should pay for
+ * neither. Defaults to true, so existing callers are unchanged.
+ */
+export function useCollectionVisits(
+  { enabled = true }: { enabled?: boolean } = {},
+): UseCollectionVisitsResult {
   const [visits, setVisits] = useState<CollectionVisit[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState('')
 
   // State is only touched after the await — see the note in use-clients.ts.
@@ -331,10 +341,11 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   }, [load])
 
   useEffect(() => {
+    if (!enabled) return
     // See the note in use-clients.ts.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
-  }, [load])
+  }, [load, enabled])
 
   // The board an admin leaves open while the day is being worked, so it takes
   // the fast cadence. Payments are watched alongside the visits because a
@@ -344,6 +355,7 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   useAutoRefresh(load, {
     watch: [{ table: 'collection_visits' }, { table: 'collection_payments' }],
     intervalMs: LIVE_INTERVAL_MS,
+    enabled,
   })
 
   /** Returns an error message, or null on success. */

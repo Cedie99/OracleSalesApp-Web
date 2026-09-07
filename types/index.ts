@@ -888,6 +888,12 @@ export interface Notification {
 }
 
 export interface ClientEditRequest {
+  /**
+   * A close-deal PO waiting on the SAME client, computed by
+   * `get_approval_feed()` (137) rather than by scanning the PO list in the
+   * browser. Only present on rows that came from that feed.
+   */
+  competing_po?: boolean
   id: string
   client_id: string
   requested_by: string

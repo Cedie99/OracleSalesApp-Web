@@ -13,6 +13,7 @@ import { PersonSelect } from '@/components/ui/person-select'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useClients } from '@/lib/hooks/use-clients'
 import { useMeetings, meetingDurationMinutes, meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
+import { useSalesMapVisited } from '@/lib/hooks/use-sales-map'
 import { useTeams } from '@/lib/hooks/use-teams'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { teamsWithManagers } from '@/lib/teams'
@@ -612,8 +613,20 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   const highlight = drilldown?.marker ?? null
   const focusNonce = useRef(0)
 
-  const { clients } = useClients()
-  const { meetings } = useMeetings()
+  /**
+   * The Needs Attention lens is the only thing that still reads whole tables,
+   * and it now does so ONLY while its tab is open.
+   *
+   * Its signals rest on quota usage folded from the cutoff attribution ledger,
+   * which is not ported yet — so rather than leave those three reads on every
+   * visit to the page, they are gated behind the tab that needs them. The
+   * consequence is deliberate and visible: the Attention tab's count appears
+   * when you open the tab rather than on page load. That is the trade for
+   * Maps opening immediately.
+   */
+  const attentionActive = listMode === 'attention'
+  const { clients } = useClients({ enabled: attentionActive })
+  const { meetings } = useMeetings(undefined, { enabled: attentionActive })
   const { teams } = useTeams()
   // Only to name each team's manager in the agent picker — the pins themselves
   // come from clients, which already carry their agent.
@@ -623,7 +636,9 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   // and that must disable the lens rather than fall back to a guessed
   // 1-15/16-EOM — see the note on CutoffCalendar in types/index.ts.
   const { periods } = useCutoffPeriods()
-  const { attributions, unattributedMeetingCount } = useCutoffAttributions()
+  const { attributions, unattributedMeetingCount } = useCutoffAttributions({
+    enabled: attentionActive,
+  })
 
   // Periods worth reviewing, newest first. Empty until an admin defines one —
   // migrations 057-060 seed nothing, deliberately, so that no cutoff rule is
@@ -846,7 +861,38 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   // "what is wrong with this account", which the toolbar must not influence —
   // stepping the date filter to yesterday cannot make a 6-month lifecycle
   // deadline go away, and the cap is measured per CUTOFF PERIOD.
-  const { visited, attention } = useMemo(() => {
+  /**
+   * The Visited lens, decided by Postgres (migration 138).
+   *
+   * A pin is a client plotted at their most recent located visit inside the
+   * active filters, and the date window defaults to a single day — so this is
+   * tens of rows, not the whole table. It used to be derived by scanning every
+   * client and every meeting in the company.
+   */
+  const { visited: visitedRows } = useSalesMapVisited({
+    search: coord ? null : search,
+    status: statusFilter,
+    teamId: teamFilter,
+    agentId: agentFilter,
+    type: typeFilter,
+    range,
+  })
+
+  const visited = useMemo(
+    () =>
+      visitedRows.map(row => ({
+        client: row.client,
+        inRange: row.meetings,
+        plotMeeting: row.meetings.find(m => m.id === row.plotMeetingId) ?? null,
+        lastVisit: row.lastVisit,
+        viaTagAlong: row.viaTagAlong,
+      })),
+    [visitedRows],
+  )
+
+  // Attention only. Its inputs are empty unless that tab is open, which is what
+  // keeps the whole-table reads off the page-load path.
+  const { attention } = useMemo(() => {
     const q = coord ? '' : search.toLowerCase().trim()
     const vis: {
       client: Client
