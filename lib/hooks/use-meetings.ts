@@ -7,7 +7,7 @@ import { fetchAllPages } from '@/lib/supabase/paginate'
 import type { Meeting, Profile, Client } from '@/types'
 
 /** Explicit column list — see the note in use-clients.ts for why not `*`. */
-const MEETING_COLUMNS = `
+export const MEETING_COLUMNS = `
   id, client_id, agent_id, recorded_by, meeting_type, online_platform,
   location_type, location_name, gps_lat, gps_lng, photo_url, agenda, remarks,
   outcome, contact_person, contact_position, meeting_date, created_at,

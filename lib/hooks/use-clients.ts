@@ -16,7 +16,7 @@ import type { Client, CustomerType, Profile } from '@/types'
  * the mobile side surfaces as a loud PostgREST error instead of an undefined
  * cell halfway down a table.
  */
-const CLIENT_COLUMNS = `
+export const CLIENT_COLUMNS = `
   id, company_name, contact_person, contact_position, contact_number,
   office_address, customer_type, sales_channel, assigned_agent_id, status,
   lost_at, reassignable_at, created_at, updated_at,
