@@ -70,9 +70,19 @@ interface UseStoreCreditResult {
   adjustBalance: (input: CreditAdjustment) => Promise<string | null>
 }
 
-export function useStoreCredit(): UseStoreCreditResult {
+/**
+ * `enabled: false` skips the ledger read and leaves the lookup empty.
+ *
+ * The whole `client_credit_entries` ledger is read only by the balances tool,
+ * which is a dialog — so the Collection board loaded every credit entry in the
+ * database on open, for a panel most visits never open. `adjustBalance` is a
+ * write and keeps working either way. Defaults to true.
+ */
+export function useStoreCredit(
+  { enabled = true }: { enabled?: boolean } = {},
+): UseStoreCreditResult {
   const [entriesByClient, setEntriesByClient] = useState<Map<string, ClientCreditEntry[]>>(new Map())
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState('')
 
   // State is only touched after the await — see the note in use-clients.ts.
@@ -105,9 +115,10 @@ export function useStoreCredit(): UseStoreCreditResult {
   }, [load])
 
   useEffect(() => {
+    if (!enabled) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
-  }, [load])
+  }, [load, enabled])
 
   // A collection landing on a phone writes a 'collection' entry via the trigger,
   // so the ledger moves without an admin touching this page — watch it so an open
@@ -115,6 +126,7 @@ export function useStoreCredit(): UseStoreCreditResult {
   useAutoRefresh(load, {
     watch: [{ table: 'client_credit_entries' }],
     intervalMs: LIVE_INTERVAL_MS,
+    enabled,
   })
 
   const adjustBalance = useCallback(

@@ -18,7 +18,7 @@ import { AddPoDialog, type AddPoDraft } from '@/components/delivery/add-po-dialo
 import { PoDetailDialog } from '@/components/delivery/po-detail-dialog'
 import { TripBoard } from '@/components/delivery/trip-board'
 import { usePurchaseOrders, useCodRemittances } from '@/lib/hooks/use-delivery'
-import { useClients } from '@/lib/hooks/use-clients'
+import { useListableClients } from '@/lib/hooks/use-listable-clients'
 import { listableCustomers } from '@/lib/client-info'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -102,7 +102,10 @@ export default function DeliveryPage() {
   const {
     codRemittances, error: codError, setStatus: setCodRemittanceStatus,
   } = useCodRemittances()
-  const { clients } = useClients()
+  // Narrowed: only the customers a picker may offer, and only the columns the
+  // picker, the dialogs and the publish-time snapshot read. The rows on this
+  // board carry their own client join, so this was never what rendered it.
+  const { clients } = useListableClients()
   /**
    * Who the Add-PO picker may offer. Prospects and in-progress clients have
    * never placed an order, so no PO of theirs can exist; lost and deleted
