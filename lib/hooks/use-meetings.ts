@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh } from '@/lib/hooks/use-auto-refresh'
+import { fetchAllPages } from '@/lib/supabase/paginate'
 import type { Meeting, Profile, Client } from '@/types'
 
 /** Explicit column list — see the note in use-clients.ts for why not `*`. */
@@ -97,20 +98,30 @@ export function useMeetings(clientId?: string): UseMeetingsResult {
   // State is only touched after the await — see the note in use-clients.ts.
   const load = useCallback(async () => {
     const supabase = createClient()
-    let query = supabase
-      .from('meetings')
-      .select(MEETING_COLUMNS)
-      .order('meeting_date', { ascending: false })
+    try {
+      // Paged, because PostgREST stops at 1,000 rows without saying so. The
+      // unfiltered read behind the Meetings page is the one that outgrew the
+      // cap — it reported "1000 of 1000 records" while the table held more,
+      // and because the order is newest-first it was the oldest meetings that
+      // silently vanished. The `id` tiebreaker is load-bearing: mobile syncs a
+      // day's meetings up in one batch, so meeting_date alone leaves ties that
+      // can reshuffle between pages and make one row arrive twice while
+      // another never arrives at all.
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) => {
+        let query = supabase
+          .from('meetings')
+          .select(MEETING_COLUMNS)
+          .order('meeting_date', { ascending: false })
+          .order('id', { ascending: false })
 
-    if (clientId) query = query.eq('client_id', clientId)
+        if (clientId) query = query.eq('client_id', clientId)
 
-    const { data, error: queryError } = await query
-
-    if (queryError) {
-      setError(queryError.message)
-    } else {
+        return query.range(from, to)
+      })
       setError('')
-      setMeetings((data ?? []).map(row => normalizeMeeting(row as Record<string, unknown>)))
+      setMeetings(rows.map(row => normalizeMeeting(row)))
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Could not load meetings.')
     }
     setLoading(false)
   }, [clientId])

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh, LIVE_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
+import { fetchAllPages } from '@/lib/supabase/paginate'
 import { recordAuditLog } from '@/lib/audit/actions'
 import { singleChange } from '@/lib/audit/entries'
 import { peso } from '@/lib/money'
@@ -106,12 +107,32 @@ async function loadPayments(
   supabase: ReturnType<typeof createClient>,
 ): Promise<Map<string, CollectionPayment[]>> {
   const byVisit = new Map<string, CollectionPayment[]>()
-  const { data, error } = await supabase
-    .from('collection_payments')
-    .select(PAYMENT_COLUMNS)
-    .order('paid_at', { ascending: false })
 
-  if (error || !data) return byVisit
+  // Paged, because PostgREST stops at `db-max-rows` (1,000) without saying so
+  // — it returns a short result, not an error. This read is one row per
+  // instalment across every visit ever recorded, so it is among the first to
+  // cross that line, and the failure is silent and wrong rather than loud:
+  // visits would quietly lose their oldest payments and show a balance that
+  // does not reconcile. The `id` tiebreaker is required for the same reason
+  // lib/supabase/paginate.ts gives — `paid_at` alone leaves ties that can
+  // reshuffle between pages.
+  let data: Record<string, unknown>[]
+  try {
+    data = await fetchAllPages<Record<string, unknown>>((from, to) =>
+      supabase
+        .from('collection_payments')
+        .select(PAYMENT_COLUMNS)
+        .order('paid_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(from, to),
+    )
+  } catch {
+    // Unchanged behaviour: the pre-070 window where the table does not exist
+    // yet returns an empty map, so the page shows no instalment history rather
+    // than failing outright.
+    return byVisit
+  }
+
   for (const raw of data) {
     const payment = normalizePayment(raw as Record<string, unknown>)
     const list = byVisit.get(payment.visit_id)
@@ -243,25 +264,55 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   // State is only touched after the await — see the note in use-clients.ts.
   const load = useCallback(async () => {
     const supabase = createClient()
-    const primary = await supabase
-      .from('collection_visits')
-      .select(`${VISIT_COLUMNS}, ${ADDITIONAL_COLUMNS}`)
-      .order('scheduled_for', { ascending: false })
+
+    // Both arms are paged — see the note in loadPayments. The board is ordered
+    // newest-first, so an unpaged read silently drops the OLDEST visits, which
+    // is the half nobody notices is missing.
+    // `columns` is a runtime string, so PostgREST's row type cannot be inferred
+    // from it — hence the cast, exactly as the two separate selects here did
+    // before they were paged.
+    const readVisits = (columns: string) =>
+      fetchAllPages<Record<string, unknown>>(async (from, to) => {
+        const { data, error } = await supabase
+          .from('collection_visits')
+          .select(columns)
+          .order('scheduled_for', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to)
+        return { data: data as Record<string, unknown>[] | null, error }
+      })
 
     // The two selects infer different row shapes, so hold the rows at the shape
     // normalizeVisit already accepts rather than let the union fight itself.
-    let rows = primary.data as Record<string, unknown>[] | null
-    let queryError = primary.error
+    let rows: Record<string, unknown>[] = []
+    let queryError: { message: string } | null = null
 
-    // Pre-068 fallback: retry without the additional columns rather than fail
-    // the whole page. See ADDITIONAL_COLUMNS.
-    if (queryError && isMissingAdditionalColumn(queryError)) {
-      const fallback = await supabase
-        .from('collection_visits')
-        .select(VISIT_COLUMNS)
-        .order('scheduled_for', { ascending: false })
-      rows = fallback.data as Record<string, unknown>[] | null
-      queryError = fallback.error
+    try {
+      rows = await readVisits(`${VISIT_COLUMNS}, ${ADDITIONAL_COLUMNS}`)
+    } catch (primaryError) {
+      // Pre-068 fallback: retry without the additional columns rather than fail
+      // the whole page. See ADDITIONAL_COLUMNS.
+      // fetchAllPages rethrows PostgREST's failure as a plain Error, which
+      // keeps the message the regex below matches on (it never read `code`).
+      if (isMissingAdditionalColumn(primaryError instanceof Error ? primaryError : null)) {
+        try {
+          rows = await readVisits(VISIT_COLUMNS)
+        } catch (fallbackError) {
+          queryError = {
+            message:
+              fallbackError instanceof Error
+                ? fallbackError.message
+                : 'Could not load collection visits.',
+          }
+        }
+      } else {
+        queryError = {
+          message:
+            primaryError instanceof Error
+              ? primaryError.message
+              : 'Could not load collection visits.',
+        }
+      }
     }
 
     if (queryError) {
@@ -269,7 +320,7 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
     } else {
       setError('')
       const paymentsByVisit = await loadPayments(supabase)
-      setVisits((rows ?? []).map(row => normalizeVisit(row, paymentsByVisit)))
+      setVisits(rows.map(row => normalizeVisit(row, paymentsByVisit)))
     }
     setLoading(false)
   }, [])
@@ -437,16 +488,21 @@ export function useRemittances(): UseRemittancesResult {
 
   const load = useCallback(async () => {
     const supabase = createClient()
-    const { data, error: queryError } = await supabase
-      .from('remittances')
-      .select(REMITTANCE_COLUMNS)
-      .order('submitted_at', { ascending: false })
 
-    if (queryError) {
-      setError(queryError.message)
-    } else {
+    // Paged — see the note in loadPayments.
+    try {
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        supabase
+          .from('remittances')
+          .select(REMITTANCE_COLUMNS)
+          .order('submitted_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
+      )
       setError('')
-      setRemittances((data ?? []).map(row => normalizeRemittance(row as Record<string, unknown>)))
+      setRemittances(rows.map(row => normalizeRemittance(row)))
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Could not load remittances.')
     }
     setLoading(false)
   }, [])

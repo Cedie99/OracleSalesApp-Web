@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { ShieldAlert, Smartphone, LogOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { createClient } from '@/lib/supabase/client'
+import { clearResourceCache } from '@/lib/hooks/use-cached-resource'
 
 export default function UnauthorizedPage() {
   const router = useRouter()
@@ -11,6 +12,9 @@ export default function UnauthorizedPage() {
   async function handleLogout() {
     const supabase = createClient()
     await supabase.auth.signOut()
+    // See the note in components/sidebar.tsx — the resource cache outlives the
+    // session unless it is cleared on the way out.
+    clearResourceCache()
     router.push('/login')
   }
 

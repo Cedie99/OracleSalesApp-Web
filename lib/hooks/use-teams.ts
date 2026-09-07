@@ -1,9 +1,13 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh, SLOW_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
+import { useCachedResource } from '@/lib/hooks/use-cached-resource'
 import type { Team } from '@/types'
+
+/** Stable identity, so the fallback never re-triggers a downstream useMemo. */
+const EMPTY: Team[] = []
 
 /**
  * The real `teams` rows — the only source of team names and kinds.
@@ -16,40 +20,26 @@ import type { Team } from '@/types'
  * hook returns everything a caller needs.
  */
 export function useTeams() {
-  const [teams, setTeams] = useState<Team[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  // Cached across mounts — see the note in use-profiles.ts. Teams are the
+  // smallest and least volatile set the app reads, and one of the most often
+  // re-read: every page that groups anything by team mounts this.
+  const { data: teams, loading, error, reload, refresh } = useCachedResource<Team[]>(
+    'teams',
+    async () => {
+      const supabase = createClient()
+      const { data, error: queryError } = await supabase
+        .from('teams')
+        .select('id, name, kind, manager_id, created_at')
+        .order('name')
 
-  // State is only touched after the await — see the note in use-clients.ts.
-  const load = useCallback(async () => {
-    const supabase = createClient()
-    const { data, error: queryError } = await supabase
-      .from('teams')
-      .select('id, name, kind, manager_id, created_at')
-      .order('name')
-
-    if (queryError) {
-      setError(queryError.message)
-    } else {
-      setError('')
-      setTeams((data ?? []) as Team[])
-    }
-    setLoading(false)
-  }, [])
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    await load()
-  }, [load])
-
-  useEffect(() => {
-    // See the note in use-clients.ts.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    load()
-  }, [load])
+      if (queryError) throw new Error(queryError.message)
+      return (data ?? []) as Team[]
+    },
+    EMPTY,
+  )
 
   // Reference data, like profiles — slow lane.
-  useAutoRefresh(load, { watch: [{ table: 'teams' }], intervalMs: SLOW_INTERVAL_MS })
+  useAutoRefresh(reload, { watch: [{ table: 'teams' }], intervalMs: SLOW_INTERVAL_MS })
 
   /** Display name for a team id, falling back to an em-dash. */
   const teamName = useCallback(
