@@ -15,11 +15,9 @@ import {
 import {
   Store, Wallet, HandCoins, AlertTriangle, CircleDollarSign, CameraOff, BarChart3,
 } from 'lucide-react'
-import { format, subDays, startOfDay } from 'date-fns'
-import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
-import { hasMissingProof, remittanceVariance } from '@/lib/collection'
+import { format } from 'date-fns'
+import { useCollectionDashboard } from '@/lib/hooks/use-ops-dashboards'
 import { peso, pesoDelta } from '@/lib/money'
-import type { PaymentMethod } from '@/types'
 import {
   PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE, PAYMENT_METHODS,
   REMITTANCE_STATUS_LABEL, REMITTANCE_STATUS_TONE,
@@ -48,129 +46,29 @@ interface CollectionDashboardProps {
  */
 export function CollectionDashboard({ headerAction }: CollectionDashboardProps) {
   const dateFilter = useDateRangeFilter({ defaultPreset: '30d' })
-  const { inRange } = dateFilter
 
-  const { visits: allVisits } = useCollectionVisits()
-  const { remittances } = useRemittances()
+  // Every figure on this board is a COUNT, a SUM or a GROUP BY, so Postgres
+  // computes them. This component used to derive all of it from every visit and
+  // every remittance in the database. See migration 135 — and note the proof
+  // rule and the known-method list travel to the RPC as parameters rather than
+  // being reimplemented in SQL.
+  const { data: dashboard } = useCollectionDashboard({ range: dateFilter.range })
+  const { stats, variance, byMethod, collectorPerformance, topRemittances, recentVisits } = dashboard
 
-  const visits = useMemo(
-    () => allVisits.filter(v => inRange(v.scheduled_for)),
-    [allVisits, inRange]
+  // The day label is formatted here rather than in SQL, so every date on the
+  // page goes through date-fns exactly once.
+  const dailyTrend = useMemo(
+    () => dashboard.dailyTrend.map(({ day, due, collected }) => ({
+      day: format(new Date(`${day}T00:00:00`), 'MMM d'),
+      due,
+      collected,
+    })),
+    [dashboard.dailyTrend],
   )
 
-  const stats = useMemo(() => {
-    const collected = visits.filter(v => v.status === 'collected')
-    const rescheduled = visits.filter(v => v.status === 'rescheduled')
-    const pending = visits.filter(v => v.status === 'pending')
-    const partial = visits.filter(v => v.status === 'partial')
-
-    // Money handed over is tracked on the remittance, not on the visit — so a
-    // visit counts as "still held" until some remittance names it. A partial
-    // store's running total is real money in hand too, so it counts here
-    // (migration 070).
-    const remittedVisitIds = new Set(remittances.flatMap(r => r.visit_ids))
-    const stillHeld = visits
-      .filter(v => (v.amount_collected ?? 0) > 0 && !remittedVisitIds.has(v.id))
-      .reduce((sum, v) => sum + (v.amount_collected ?? 0), 0)
-
-    return {
-      listed: visits.length,
-      collectedCount: collected.length,
-      rescheduledCount: rescheduled.length,
-      pendingCount: pending.length,
-      partialCount: partial.length,
-      totalDue: visits.reduce((sum, v) => sum + v.amount_due, 0),
-      // Every collected AND partial store's real total — not just fully-paid ones.
-      totalCollected: visits.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0),
-      // Only a pending store is still out today; a partial has closed for the day
-      // and its leftover rides on the store's balance, brought in when re-listed.
-      outstanding: pending.reduce((sum, v) => sum + v.amount_due, 0),
-      stillHeld,
-      missingProof: visits.filter(hasMissingProof).length,
-    }
-  }, [visits, remittances])
-
-  // Remittances aren't date-filtered by the visit window: a shortfall stays the
-  // admin's problem regardless of which day's stores it came from.
-  const variance = useMemo(
-    () => remittances.reduce((sum, r) => sum + remittanceVariance(r), 0),
-    [remittances]
-  )
-
-  const dailyTrend = useMemo(() => {
-    const days = Array.from({ length: 14 }, (_, i) => startOfDay(subDays(new Date(), 13 - i)))
-    const buckets = days.map(d => ({
-      key: format(d, 'yyyy-MM-dd'),
-      day: format(d, 'MMM d'),
-      due: 0,
-      collected: 0,
-    }))
-    const byKey = new Map(buckets.map(b => [b.key, b]))
-    for (const visit of allVisits) {
-      const bucket = byKey.get(visit.scheduled_for.slice(0, 10))
-      if (!bucket) continue
-      bucket.due += visit.amount_due
-      bucket.collected += visit.amount_collected ?? 0
-    }
-    return buckets.map(({ day, due, collected }) => ({ day, due, collected }))
-    // Deliberately reads `allVisits`, not the date-filtered `visits`: this chart
-    // is always the trailing 14 days regardless of the period selector above it.
-  }, [allVisits])
-
-  const byMethod = useMemo(() => {
-    const counts = Object.fromEntries(
-      PAYMENT_METHODS.map(m => [m, { count: 0, amount: 0 }])
-    ) as Record<PaymentMethod, { count: number; amount: number }>
-    for (const visit of visits) {
-      if (!visit.payment_method) continue
-      // Guarded, not indexed directly: the database is shared with mobile, which
-      // can ship a payment method before web widens PaymentMethod — exactly how
-      // 'delivery_receipt' arrived on 2026-08-01. Indexing a Record keyed off
-      // our union then crashed the whole dashboard on one unknown string, the
-      // same failure an `executive` role once caused on the Users page. An
-      // unrecognised method is now simply left out of this breakdown until
-      // someone adds it, which is a gap rather than an outage.
-      const bucket = counts[visit.payment_method]
-      if (!bucket) continue
-      bucket.count += 1
-      bucket.amount += visit.amount_collected ?? 0
-    }
-    return counts
-  }, [visits])
-
-  const collectorPerformance = useMemo(() => {
-    const byCollector = new Map<
-      string,
-      { id: string; name: string; avatarUrl: string | null; stores: number; collected: number; rescheduled: number }
-    >()
-    for (const visit of visits) {
-      if (!visit.collector_id) continue
-      const row = byCollector.get(visit.collector_id) ?? {
-        id: visit.collector_id,
-        name: visit.collector?.full_name ?? 'Unknown',
-        avatarUrl: visit.collector?.avatar_url ?? null,
-        stores: 0,
-        collected: 0,
-        rescheduled: 0,
-      }
-      row.stores += 1
-      row.collected += visit.amount_collected ?? 0
-      if (visit.status === 'rescheduled') row.rescheduled += 1
-      byCollector.set(visit.collector_id, row)
-    }
-    return [...byCollector.values()].sort((a, b) => b.collected - a.collected)
-  }, [visits])
-
+  // Still paginated in the browser: one row per collector, bounded by headcount
+  // rather than by the visits table.
   const perfPage = usePagination(collectorPerformance, 8, dateFilter.key)
-
-  const recentVisits = useMemo(
-    () =>
-      [...visits]
-        .filter(v => v.visited_at)
-        .sort((a, b) => new Date(b.visited_at!).getTime() - new Date(a.visited_at!).getTime())
-        .slice(0, 5),
-    [visits]
-  )
 
   const collectionRate =
     stats.totalDue > 0 ? Math.round((stats.totalCollected / stats.totalDue) * 100) : 0
@@ -284,7 +182,12 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
               <div className="pt-3 border-t border-border space-y-2">
                 <p className="text-xs font-medium text-foreground">Store Status</p>
                 {(['collected', 'partial', 'rescheduled', 'pending'] as const).map(status => {
-                  const count = visits.filter(v => v.status === status).length
+                  const count = {
+                    collected: stats.collectedCount,
+                    partial: stats.partialCount,
+                    rescheduled: stats.rescheduledCount,
+                    pending: stats.pendingCount,
+                  }[status]
                   return (
                     <div key={status} className="flex items-center justify-between">
                       <Badge variant="tone" className={TONE_CLASS[VISIT_STATUS_TONE[status]]}>
@@ -405,10 +308,10 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">
-                        {visit.client?.company_name}
+                        {visit.clientName}
                       </p>
                       <p className="text-xs text-muted-foreground truncate">
-                        {visit.collector?.full_name ?? 'Unworked'}
+                        {visit.collectorName ?? 'Unworked'}
                       </p>
                     </div>
                     <div className="text-right shrink-0">
@@ -416,9 +319,9 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
                         {VISIT_STATUS_LABEL[visit.status]}
                       </Badge>
                       <p className="text-xs text-muted-foreground mt-1 tabular-nums">
-                        {visit.amount_collected != null
-                          ? peso(visit.amount_collected)
-                          : format(new Date(visit.visited_at!), 'MMM d')}
+                        {visit.amountCollected != null
+                          ? peso(visit.amountCollected)
+                          : format(new Date(visit.visitedAt!), 'MMM d')}
                       </p>
                     </div>
                   </div>
@@ -447,11 +350,8 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
             <CardContent className="p-0">
               <div className="divide-y divide-border">
                 {/* Variance first — a shortfall is the row an admin must not miss. */}
-                {[...remittances]
-                  .sort((a, b) => Math.abs(remittanceVariance(b)) - Math.abs(remittanceVariance(a)))
-                  .slice(0, 5)
-                  .map(remittance => {
-                    const delta = remittanceVariance(remittance)
+                {topRemittances.map(remittance => {
+                    const delta = remittance.variance
                     return (
                       <div key={remittance.id} className="flex items-center gap-4 px-6 py-3 hover:bg-muted/30 transition-colors">
                         <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
@@ -459,10 +359,10 @@ export function CollectionDashboard({ headerAction }: CollectionDashboardProps) 
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-foreground truncate">
-                            {remittance.collector?.full_name ?? 'Unknown'}
+                            {remittance.collectorName ?? 'Unknown'}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {peso(remittance.amount_remitted)} · {remittance.visit_ids.length} stores
+                            {peso(remittance.amountRemitted)} · {remittance.storeCount} stores
                           </p>
                         </div>
                         <div className="text-right shrink-0">
