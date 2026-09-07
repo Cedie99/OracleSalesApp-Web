@@ -8,6 +8,9 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useCutoffAttributions, useCutoffPeriods, useQuotaSettings } from '@/lib/hooks/use-cutoff'
 import { useTeams } from '@/lib/hooks/use-teams'
+import { useClients } from '@/lib/hooks/use-clients'
+import { useMeetings } from '@/lib/hooks/use-meetings'
+import { useTagAlongs } from '@/lib/hooks/use-tag-alongs'
 import {
   ATTRIBUTION_LABEL,
   ATTRIBUTION_ORDER,
@@ -32,7 +35,7 @@ import {
   workingDaysInMonth,
 } from '@/lib/cutoff'
 import { downloadSheet } from '@/components/reports/report-grid'
-import type { Client, Meeting, MeetingCutoffAttribution, Profile, TagAlongRequest } from '@/types'
+import type { MeetingCutoffAttribution, Profile } from '@/types'
 import {
   Gauge,
   FileSpreadsheet,
@@ -110,23 +113,30 @@ const BUCKET_HINT: Record<string, string> = {
 }
 
 interface CutoffQuotaReportProps {
-  clients: Client[]
   agents: Profile[]
-  /** Only for dating the ledger's rows — see `meetingDates`. */
-  meetings: Meeting[]
-  /**
-   * meeting_id -> its tag-along requests, for the attendees the LEDGER DOES NOT
-   * HOLD — see `periodRowsWithAttendees`.
-   */
-  tagAlongsByMeeting: Map<string, TagAlongRequest[]>
 }
 
-export function CutoffQuotaReport({
-  clients,
-  agents,
-  meetings,
-  tagAlongsByMeeting,
-}: CutoffQuotaReportProps) {
+/**
+ * ⚠️ This panel still reads whole tables, and that is not yet fixed.
+ *
+ * It used to take `clients`, `meetings` and the tag-along ledger as props from
+ * SalesReports, which meant the three report CARDS above could not render until
+ * all three had downloaded — even though the cards are aggregates that never
+ * needed a single row. Those reads moved in here, so the cards now render from
+ * `get_sales_report_counts()` immediately and this panel loads underneath with
+ * its own spinner.
+ *
+ * That is a decoupling, not a fix: the cost is the same, it is just no longer
+ * on the critical path of a different question. Making it bounded means porting
+ * the quota accounting — the ledger, working days, holidays, credit spread,
+ * disqualification — into SQL, which is the most business-critical computation
+ * in the app and deserves its own migration and its own verification pass
+ * rather than riding along with a paging change.
+ */
+export function CutoffQuotaReport({ agents }: CutoffQuotaReportProps) {
+  const { clients } = useClients()
+  const { meetings } = useMeetings()
+  const { byMeeting: tagAlongsByMeeting } = useTagAlongs()
   const { periods, loading: periodsLoading } = useCutoffPeriods()
   const { attributions, unattributedMeetingCount, loading: ledgerLoading } = useCutoffAttributions()
   const { teamName } = useTeams()

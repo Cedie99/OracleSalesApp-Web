@@ -2,11 +2,14 @@
 
 import { useMemo, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { useMeetings, meetingDurationMinutes, meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
-import { useClients } from '@/lib/hooks/use-clients'
-import { useClockRecords } from '@/lib/hooks/use-clock-records'
+import { meetingDurationMinutes, meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
-import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
+import { tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
+import {
+  useSalesReportCounts,
+  REPORT_AGENT_ROLES,
+} from '@/lib/hooks/use-report-counts'
+import { fetchSalesReportRows } from '@/lib/reports/sales-rows'
 import { MANAGER_GATE_LABEL, companionParticipants, managerGate } from '@/lib/tag-along'
 import { useTeams } from '@/lib/hooks/use-teams'
 import { teamsWithManagers } from '@/lib/teams'
@@ -27,26 +30,26 @@ export function SalesReports() {
   const [agentFilter, setAgentFilter] = useState<string>('all')
   const [teamFilter, setTeamFilter] = useState<string>('all')
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
-  const { inRange } = dateFilter
 
-  const { meetings, loading: meetingsLoading, error: meetingsError } = useMeetings()
-  const { clients, loading: clientsLoading, error: clientsError } = useClients()
-  const { records: clockRecords, error: clockError } = useClockRecords()
-  const {
-    byMeeting: tagAlongsByMeetingId,
-    byClient: tagAlongsByClientId,
-    byInvitee: tagAlongsByInviteeId,
-  } = useTagAlongs()
+  // The cards are aggregates, so Postgres computes them (migration 136). The
+  // EXPORTS are not — a spreadsheet is every row by definition — so their rows
+  // are fetched when the button is pressed rather than on mount. Opening this
+  // page used to download meetings, clients, clock records and the whole
+  // tag-along ledger whether or not anyone pressed Download.
+  const reportFilters = useMemo(
+    () => ({ agentId: agentFilter, teamId: teamFilter, range: dateFilter.range }),
+    [agentFilter, teamFilter, dateFilter.range],
+  )
+
+  const { counts, loading, error: loadError } = useSalesReportCounts(reportFilters)
+
   const { profiles, byRole } = useProfiles()
   const { teams } = useTeams()
 
   // Memoised because these arrays reach Combobox.Root as `items` via
   // ReportFilters. Rebuilt inline they would carry a new identity on every
   // render and make the picker re-derive its whole collection each time.
-  const agents = useMemo(
-    () => byRole(['sales_specialist', 'sales_manager', 'rsr']),
-    [byRole]
-  )
+  const agents = useMemo(() => byRole([...REPORT_AGENT_ROLES]), [byRole])
   const agentOptions = useMemo(
     () => agents.map(a => ({ id: a.id, name: a.full_name, teamId: a.team_id })),
     [agents]
@@ -54,122 +57,6 @@ export function SalesReports() {
   const teamOptions = useMemo(
     () => teamsWithManagers(teams.map(t => ({ id: t.id, name: t.name })), profiles),
     [teams, profiles]
-  )
-
-  const loading = meetingsLoading || clientsLoading
-  const loadError = meetingsError || clientsError || clockError
-
-  /**
-   * Which agents the team filter admits. Resolved from `profiles` rather than
-   * from each row's embedded agent, because clock records carry no join and a
-   * client's agent may be absent — one membership set keeps the three reports
-   * agreeing on what "Sales Team 1" means.
-   */
-  const teamAgentIds = useMemo(() => {
-    if (teamFilter === 'all') return null
-    return new Set(agents.filter(a => a.team_id === teamFilter).map(a => a.id))
-  }, [agents, teamFilter])
-
-  const inTeam = (agentId: string | null | undefined) =>
-    teamAgentIds == null || (agentId != null && teamAgentIds.has(agentId))
-
-  /**
-   * The meetings and accounts the filtered agent reached by tagging along.
-   *
-   * A manager's tag-alongs are part of their own coverage, not a separate
-   * category — joining an agent's visit is how a manager works an account.
-   * Filtering these reports by ownership alone understated every manager's
-   * fortnight, and disagreed with the Meetings page about the same person.
-   *
-   * Declined and cancelled are left out: nobody attended those.
-   */
-  const taggedAlong = useMemo(() => {
-    const empty = { meetingIds: null as Set<string> | null, clientIds: null as Set<string> | null }
-    if (agentFilter === 'all') return empty
-    const requests = (tagAlongsByInviteeId.get(agentFilter) ?? []).filter(
-      r => r.status === 'accepted' || r.status === 'pending'
-    )
-    return {
-      meetingIds: new Set(requests.map(r => r.related_meeting_id).filter(Boolean) as string[]),
-      clientIds: new Set(requests.map(r => r.related_client_id).filter(Boolean) as string[]),
-    }
-  }, [tagAlongsByInviteeId, agentFilter])
-
-  const filteredMeetings = useMemo(
-    () =>
-      meetings
-        .filter(m => agentFilter === 'all' || m.agent_id === agentFilter || taggedAlong.meetingIds?.has(m.id))
-        // A tagged-along meeting belongs to the agent who logged it, so the team
-        // test stays on `agent_id` — the row is still that team's work.
-        .filter(m => inTeam(m.agent_id) || taggedAlong.meetingIds?.has(m.id))
-        .filter(m => inRange(m.meeting_date)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [meetings, agentFilter, teamAgentIds, inRange, taggedAlong]
-  )
-  const filteredClients = useMemo(
-    () =>
-      clients
-        .filter(c => agentFilter === 'all' || c.assigned_agent_id === agentFilter || taggedAlong.clientIds?.has(c.id))
-        .filter(c => inTeam(c.assigned_agent_id) || taggedAlong.clientIds?.has(c.id))
-        .filter(c => inRange(c.created_at)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [clients, agentFilter, teamAgentIds, inRange, taggedAlong]
-  )
-  const filteredClock = useMemo(
-    () =>
-      clockRecords
-        .filter(r => agentFilter === 'all' || r.agent_id === agentFilter)
-        .filter(r => inTeam(r.agent_id))
-        .filter(r => inRange(r.timestamp)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [clockRecords, agentFilter, teamAgentIds, inRange]
-  )
-
-  /**
-   * One row per person who was at a meeting — the Meetings Report's unit.
-   *
-   * A meeting used to be one row, which made a manager's tag-along invisible in
-   * the file and left the card reporting 555 where the quota panel reported 565
-   * for the same cutoff. Those are not a discrepancy — the panel counts CREDITS
-   * and a manager who tagged along earns one of their own (076) — but a reader
-   * had no way to see that, and a manager could not find their own work in the
-   * export at all.
-   *
-   * Which companions become a row is migration 076's rule, copied exactly —
-   * `invitee_kind = 'manager'`, `status = 'accepted'`, and never the meeting's
-   * own agent. Anything looser and this card would stop agreeing with the quota
-   * panel again, which is the whole point of counting attendances here.
-   *
-   * So three kinds of companion are deliberately NOT rows: a teammate who came
-   * along (no manager quota exists for them to earn), a manager whose request
-   * is still pending (076 waits for the answer before crediting anyone), and a
-   * declined or cancelled request (nobody attended). The pending case is the
-   * one to watch — those visits appear as agent-only here until the manager
-   * confirms, and the `Manager Confirmation` column is what flags them.
-   */
-  const meetingParticipants = useMemo(
-    () =>
-      filteredMeetings.flatMap(m => {
-        const owner = {
-          meeting: m,
-          participant: m.agent?.full_name ?? '',
-          participation: 'Agent' as const,
-        }
-        const companions = tagAlongsFor(tagAlongsByMeetingId, m.id)
-          .filter(
-            r =>
-              r.invitee_kind === 'manager' &&
-              r.status === 'accepted' &&
-              r.invitee_id !== m.agent_id
-          )
-          .map(r => ({
-            meeting: m,
-            participant: r.invitee_name ?? 'Unknown',
-            participation: 'Tagged along' as const,
-          }))
-        return [owner, ...companions]
-      }),
-    [filteredMeetings, tagAlongsByMeetingId]
   )
 
   const reports: ReportDefinition[] = [
@@ -183,7 +70,7 @@ export function SalesReports() {
       // because two people worked it, which is the same reading the quota
       // ledger takes (076) and the reason a manager's monthly target is
       // reachable at all.
-      count: meetingParticipants.length,
+      count: counts.meetings.count,
       countLabel: 'meeting records',
       // All four outcomes, so the tiles account for the count above them. Three
       // of them did not: 'no_decision' was absent, and its meetings simply went
@@ -191,24 +78,13 @@ export function SalesReports() {
       // data. Counted over RECORDS for the same reason the count is: tiles that
       // sum to something other than the number above them is the original bug.
       stats: [
-        {
-          label: 'Successful',
-          value: meetingParticipants.filter(p => p.meeting.outcome === 'successful').length,
-        },
-        {
-          label: 'Follow-up',
-          value: meetingParticipants.filter(p => p.meeting.outcome === 'follow_up').length,
-        },
-        {
-          label: 'No Decision',
-          value: meetingParticipants.filter(p => p.meeting.outcome === 'no_decision').length,
-        },
-        {
-          label: 'Lost',
-          value: meetingParticipants.filter(p => p.meeting.outcome === 'lost_opportunity').length,
-        },
+        { label: 'Successful', value: counts.meetings.successful },
+        { label: 'Follow-up',  value: counts.meetings.followUp },
+        { label: 'No Decision', value: counts.meetings.noDecision },
+        { label: 'Lost',       value: counts.meetings.lost },
       ],
-      onDownload: () =>
+      onDownload: async () => {
+        const { meetingParticipants, tagAlongsByMeetingId } = await fetchSalesReportRows(reportFilters)
         downloadSheet(
           meetingParticipants.map(({ meeting: m, participant, participation }) => {
             // Real duration from mobile's start/end capture pair. Blank rather
@@ -256,27 +132,26 @@ export function SalesReports() {
           }),
           'Meetings',
           'meetings-report'
-        ),
+        )
+      },
     },
     {
       title: 'Clients Report',
       description: 'Full client list with type, channel, agent assignment, tag-alongs, and status',
       icon: Users,
-      count: filteredClients.length,
+      count: counts.clients.count,
       countLabel: 'clients',
       stats: [
-        { label: 'Active', value: filteredClients.filter(c => c.status === 'active').length },
-        { label: 'Lost', value: filteredClients.filter(c => c.status === 'lost').length },
+        { label: 'Active', value: counts.clients.active },
+        { label: 'Lost', value: counts.clients.lost },
         // The prospect family, in-progress included — same reading as the Clients
         // page filter. The export's per-row Customer Type column stays precise.
-        {
-          label: 'Prospects',
-          value: filteredClients.filter(c => c.customer_type === 'prospect' || c.customer_type === 'in_progress').length,
-        },
+        { label: 'Prospects', value: counts.clients.prospects },
       ],
-      onDownload: () =>
+      onDownload: async () => {
+        const { clients: rows, tagAlongsByClientId } = await fetchSalesReportRows(reportFilters)
         downloadSheet(
-          filteredClients.map(c => ({
+          rows.map(c => ({
             'Company Name': c.company_name,
             'Contact Person': c.contact_person,
             'Position': c.contact_position ?? '',
@@ -297,22 +172,24 @@ export function SalesReports() {
           })),
           'Clients',
           'clients-report'
-        ),
+        )
+      },
     },
     {
       title: 'Clock Records Report',
       description: 'All clock in/out events with GPS coordinates and timestamps',
       icon: Clock,
-      count: filteredClock.length,
+      count: counts.clock.count,
       countLabel: 'records',
       stats: [
-        { label: 'Office', value: filteredClock.filter(r => r.type === 'office').length },
-        { label: 'Event', value: filteredClock.filter(r => r.type === 'event').length },
-        { label: 'Clock In', value: filteredClock.filter(r => r.action === 'in').length },
+        { label: 'Office', value: counts.clock.office },
+        { label: 'Event', value: counts.clock.event },
+        { label: 'Clock In', value: counts.clock.clockIn },
       ],
-      onDownload: () =>
+      onDownload: async () => {
+        const { clock } = await fetchSalesReportRows(reportFilters)
         downloadSheet(
-          filteredClock.map(r => ({
+          clock.map(r => ({
             'Agent': r.agent?.full_name ?? '',
             'Type': r.type === 'office' ? 'Office' : 'Event',
             'Action': r.action === 'in' ? 'Clock In' : 'Clock Out',
@@ -323,7 +200,8 @@ export function SalesReports() {
           })),
           'Clock Records',
           'clock-report'
-        ),
+        )
+      },
     },
   ]
 
@@ -362,12 +240,7 @@ export function SalesReports() {
           question from the three exports above — those are "what happened",
           this is "what counted" — and it is scoped by cutoff period rather than
           by the toolbar's agent and date filters, which do not apply to it. */}
-      <CutoffQuotaReport
-        clients={clients}
-        agents={agents}
-        meetings={meetings}
-        tagAlongsByMeeting={tagAlongsByMeetingId}
-      />
+      <CutoffQuotaReport agents={agents} />
 
       <p className="text-xs text-muted-foreground text-center">
         Reports are exported as .xlsx files and include all data across every team.
