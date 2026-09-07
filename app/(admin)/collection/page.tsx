@@ -16,7 +16,7 @@ import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
 import { useStoreCredit } from '@/lib/hooks/use-store-credit'
-import { useClients } from '@/lib/hooks/use-clients'
+import { useListableClients } from '@/lib/hooks/use-listable-clients'
 import { listableCustomers } from '@/lib/client-info'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -100,10 +100,12 @@ export default function CollectionPage() {
   const {
     remittances: allRemittances, error: remittancesError, setStatus: setRemittanceStatus,
   } = useRemittances()
-  const { clients } = useClients()
+  // Narrowed: only the customers a picker may offer, and only the columns the
+  // picker, the dialogs and the publish-time snapshot read. The rows on this
+  // board carry their own client join, so this was never what rendered it.
+  const { clients } = useListableClients()
   // The store-credit ledger (migration 115): the history behind each store's
   // running balance, and the write path the balances tool uses to set/charge/adjust it.
-  const { entriesByClient: creditEntries, adjustBalance } = useStoreCredit()
   /**
    * Who the Add-store picker may offer. Prospects and in-progress clients have
    * never placed an order, so there is nothing to collect from them; lost and
@@ -124,6 +126,13 @@ export default function CollectionPage() {
   const [selectedVisit, setSelectedVisit] = useState<CollectionVisit | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [balancesOpen, setBalancesOpen] = useState(false)
+
+  // The ledger behind each store's running balance is read only by the balances
+  // tool, so it loads when that dialog is opened rather than on every visit to
+  // the board. `adjustBalance` is a write and works either way.
+  const { entriesByClient: creditEntries, adjustBalance } = useStoreCredit({
+    enabled: balancesOpen,
+  })
   const [addDefaults, setAddDefaults] = useState<{ scheduledFor?: string } | undefined>(undefined)
   // Bumped on every opening so the dialog remounts with fresh fields — see the
   // note on AddStoreDialog about why this isn't an effect.
