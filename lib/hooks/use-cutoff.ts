@@ -195,10 +195,19 @@ interface UseCutoffAttributionsResult {
  * and the Maps lens needs to switch periods without a refetch. If the meetings
  * table grows past a few thousand this should take a period_id argument.
  */
-export function useCutoffAttributions(): UseCutoffAttributionsResult {
+/**
+ * `enabled: false` skips the fetch entirely and leaves the ledger empty.
+ *
+ * The Maps page's Needs Attention lens is the caller that needs this: it reads
+ * the whole ledger, and loading it on every visit to the page was most of what
+ * made Maps slow to open. Defaults to true, so existing callers are unchanged.
+ */
+export function useCutoffAttributions(
+  { enabled = true }: { enabled?: boolean } = {},
+): UseCutoffAttributionsResult {
   const [attributions, setAttributions] = useState<MeetingCutoffAttribution[]>([])
   const [unattributedMeetingCount, setUnattributedMeetingCount] = useState(0)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
@@ -235,9 +244,10 @@ export function useCutoffAttributions(): UseCutoffAttributionsResult {
   }, [load])
 
   useEffect(() => {
+    if (!enabled) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
-  }, [load])
+  }, [load, enabled])
 
   // Meetings is watched alongside the ledger because the count this hook
   // reports is `meetings - ledger`: a meeting logged but not yet attributed
@@ -245,6 +255,7 @@ export function useCutoffAttributions(): UseCutoffAttributionsResult {
   useAutoRefresh(load, {
     watch: [{ table: 'meeting_cutoff_attributions', column: 'attributed_at' }, { table: 'meetings' }],
     intervalMs: SLOW_INTERVAL_MS,
+    enabled,
   })
 
   return { attributions, unattributedMeetingCount, loading, error, refresh }

@@ -193,9 +193,19 @@ interface UsePurchaseOrdersResult {
 }
 
 /** Every listed stop, newest delivery day first, with client and driver joined. */
-export function usePurchaseOrders(): UsePurchaseOrdersResult {
+/**
+ * `enabled: false` skips the fetch entirely and leaves the result empty.
+ *
+ * For a surface that can reach this module's data but is not currently showing
+ * it — the Maps page fetches both operational lenses so flipping between them
+ * is instant, but an admin scoped to Sales can see neither and should pay for
+ * neither. Defaults to true, so existing callers are unchanged.
+ */
+export function usePurchaseOrders(
+  { enabled = true }: { enabled?: boolean } = {},
+): UsePurchaseOrdersResult {
   const [orders, setOrders] = useState<PurchaseOrder[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
@@ -266,9 +276,10 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
   }, [load])
 
   useEffect(() => {
+    if (!enabled) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
-  }, [load])
+  }, [load, enabled])
 
   // The delivery twin of the collection board — same reasoning, same cadence.
   // COD payments are watched beside the orders for the same reason payments are
@@ -276,6 +287,7 @@ export function usePurchaseOrders(): UsePurchaseOrdersResult {
   useAutoRefresh(load, {
     watch: [{ table: 'purchase_orders' }, { table: 'cod_payments' }],
     intervalMs: LIVE_INTERVAL_MS,
+    enabled,
   })
 
   const createOrder = useCallback(

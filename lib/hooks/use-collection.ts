@@ -256,9 +256,19 @@ interface UseCollectionVisitsResult {
  * (`buildDays`), the maps page slices by date range, and the dashboard
  * aggregates — all three want the same unfiltered set.
  */
-export function useCollectionVisits(): UseCollectionVisitsResult {
+/**
+ * `enabled: false` skips the fetch entirely and leaves the result empty.
+ *
+ * For a surface that can reach this module's data but is not currently showing
+ * it — the Maps page fetches both operational lenses so flipping between them
+ * is instant, but an admin scoped to Sales can see neither and should pay for
+ * neither. Defaults to true, so existing callers are unchanged.
+ */
+export function useCollectionVisits(
+  { enabled = true }: { enabled?: boolean } = {},
+): UseCollectionVisitsResult {
   const [visits, setVisits] = useState<CollectionVisit[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState('')
 
   // State is only touched after the await — see the note in use-clients.ts.
@@ -331,10 +341,11 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   }, [load])
 
   useEffect(() => {
+    if (!enabled) return
     // See the note in use-clients.ts.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
-  }, [load])
+  }, [load, enabled])
 
   // The board an admin leaves open while the day is being worked, so it takes
   // the fast cadence. Payments are watched alongside the visits because a
@@ -344,6 +355,7 @@ export function useCollectionVisits(): UseCollectionVisitsResult {
   useAutoRefresh(load, {
     watch: [{ table: 'collection_visits' }, { table: 'collection_payments' }],
     intervalMs: LIVE_INTERVAL_MS,
+    enabled,
   })
 
   /** Returns an error message, or null on success. */

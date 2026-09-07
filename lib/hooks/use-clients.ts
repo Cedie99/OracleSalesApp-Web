@@ -75,9 +75,18 @@ interface UseClientsResult {
 }
 
 /** Every client, newest first, with the assigned agent's profile joined in. */
-export function useClients(): UseClientsResult {
+/**
+ * `enabled: false` skips the fetch entirely and leaves the result empty.
+ *
+ * For a surface that only needs this data behind a tab or a click: the Maps
+ * page's Needs Attention lens reads clients, meetings and the attribution
+ * ledger, and loading all three on every visit to the page was most of what
+ * made Maps slow to open. Defaults to true, so every existing caller is
+ * unchanged.
+ */
+export function useClients({ enabled = true }: { enabled?: boolean } = {}): UseClientsResult {
   const [clients, setClients] = useState<Client[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState('')
 
   // Every setState happens after the await. Touching state synchronously here
@@ -114,17 +123,18 @@ export function useClients(): UseClientsResult {
   }, [load])
 
   useEffect(() => {
+    if (!enabled) return
     // load() only setStates after its await, but the rule can't see through the
     // useCallback to prove that. Same suppression as app/(admin)/users/page.tsx.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
-  }, [load])
+  }, [load, enabled])
 
   // Mobile writes this table all day — new prospects, phase-B detail fills,
   // lifecycle promotions. The probe is what keeps that affordable: the full
   // query above joins profiles and walks every page, so it only re-runs when
   // the clients table has genuinely moved.
-  useAutoRefresh(load, { watch: [{ table: 'clients' }] })
+  useAutoRefresh(load, { watch: [{ table: 'clients' }], enabled })
 
   return { clients, loading, error, refresh, setClients }
 }
