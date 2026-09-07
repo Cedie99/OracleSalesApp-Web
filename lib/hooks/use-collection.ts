@@ -41,7 +41,7 @@ const PROFILE_JOIN = `id, user_id, full_name, email, role, team_id, is_active, a
 // whole Collection page down with a "column does not exist" banner. Add it back
 // as the first step after 061 merges; `normalizeVisit` already defaults it to
 // null so nothing else has to change on the day.
-const VISIT_COLUMNS = `
+export const VISIT_COLUMNS = `
   id, client_id, client_name, area, status, scheduled_for, listed_by, listed_at, amount_due,
   claimed_by, claimed_at, claimed_by_name,
   collector_id, amount_collected, payment_method, payment_photo_url,
@@ -65,7 +65,7 @@ const VISIT_COLUMNS = `
 // the same group for the same reason: 114 ships in this repo and CI applies it
 // on merge, but the Vercel build and the migration push race, so for a few
 // minutes the new code can be live against the old schema.
-const ADDITIONAL_COLUMNS = `
+export const ADDITIONAL_COLUMNS = `
   is_additional, additional_received_at, additional_seen_at,
   client_lat, client_lng
 `
@@ -142,7 +142,7 @@ async function loadPayments(
   return byVisit
 }
 
-const REMITTANCE_COLUMNS = `
+export const REMITTANCE_COLUMNS = `
   id, collector_id, destination, amount_remitted, amount_collected, status,
   receiver_name, signed_proof_url, receiver_signature_url, visit_ids,
   submitted_at, created_at,

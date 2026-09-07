@@ -75,3 +75,88 @@ export function useSalesReportCounts(filters: SalesReportCountFilters) {
 
   return { counts: data, loading, error, refresh, reload }
 }
+
+
+// ---------------------------------------------------------------------------
+// Collection / Delivery
+// ---------------------------------------------------------------------------
+
+export interface OpsReportCountFilters {
+  /** 'all', or a collector / driver profile id. */
+  personId: string
+  range: { start: Date; end: Date } | null
+}
+
+interface CountBlock { count: number; reconciled: number; variance: number; remitted: number }
+
+export interface CollectionReportCounts {
+  visits: { count: number; collected: number; rescheduled: number; totalCollected: number }
+  remittances: CountBlock
+}
+
+export interface DeliveryReportCounts {
+  orders: { count: number; delivered: number; failed: number; codCollected: number }
+  remittances: CountBlock
+}
+
+const EMPTY_REMITTANCES: CountBlock = { count: 0, reconciled: 0, variance: 0, remitted: 0 }
+
+export const EMPTY_COLLECTION_REPORT_COUNTS: CollectionReportCounts = {
+  visits: { count: 0, collected: 0, rescheduled: 0, totalCollected: 0 },
+  remittances: EMPTY_REMITTANCES,
+}
+
+export const EMPTY_DELIVERY_REPORT_COUNTS: DeliveryReportCounts = {
+  orders: { count: 0, delivered: 0, failed: 0, codCollected: 0 },
+  remittances: EMPTY_REMITTANCES,
+}
+
+function opsArgs(filters: OpsReportCountFilters, idKey: 'p_collector_id' | 'p_driver_id') {
+  return {
+    [idKey]: filters.personId === 'all' ? null : filters.personId,
+    p_from: filters.range?.start.toISOString() ?? null,
+    p_to: filters.range?.end.toISOString() ?? null,
+  }
+}
+
+export function useCollectionReportCounts(filters: OpsReportCountFilters) {
+  const args = opsArgs(filters, 'p_collector_id')
+  const { data, loading, error, reload, refresh } = useCachedResource<CollectionReportCounts>(
+    `collection-report-counts:${JSON.stringify(args)}`,
+    async () => {
+      const { data: result, error: rpcError } = await createClient()
+        .rpc('get_collection_report_counts', args)
+      if (rpcError) throw new Error(rpcError.message)
+      return (result ?? EMPTY_COLLECTION_REPORT_COUNTS) as CollectionReportCounts
+    },
+    EMPTY_COLLECTION_REPORT_COUNTS,
+  )
+
+  useAutoRefresh(reload, {
+    watch: [{ table: 'collection_visits' }, { table: 'remittances' }],
+    intervalMs: SLOW_INTERVAL_MS,
+  })
+
+  return { counts: data, loading, error, refresh, reload }
+}
+
+export function useDeliveryReportCounts(filters: OpsReportCountFilters) {
+  const args = opsArgs(filters, 'p_driver_id')
+  const { data, loading, error, reload, refresh } = useCachedResource<DeliveryReportCounts>(
+    `delivery-report-counts:${JSON.stringify(args)}`,
+    async () => {
+      const { data: result, error: rpcError } = await createClient()
+        .rpc('get_delivery_report_counts', args)
+      if (rpcError) throw new Error(rpcError.message)
+      return (result ?? EMPTY_DELIVERY_REPORT_COUNTS) as DeliveryReportCounts
+    },
+    EMPTY_DELIVERY_REPORT_COUNTS,
+  )
+
+  useAutoRefresh(reload, {
+    watch: [{ table: 'purchase_orders' }, { table: 'cod_remittances' }],
+    intervalMs: SLOW_INTERVAL_MS,
+  })
+
+  return { counts: data, loading, error, refresh, reload }
+}

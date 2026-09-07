@@ -3,7 +3,8 @@
 import { useMemo, useState } from 'react'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { ReportFilters, ReportGrid, downloadSheet, type ReportDefinition } from '@/components/reports/report-grid'
-import { usePurchaseOrders, useCodRemittances } from '@/lib/hooks/use-delivery'
+import { useDeliveryReportCounts } from '@/lib/hooks/use-report-counts'
+import { fetchDeliveryReportRows } from '@/lib/reports/ops-rows'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { codVariance, dwellMinutes, hasMissingProof } from '@/lib/delivery'
 import { peso } from '@/lib/money'
@@ -27,45 +28,32 @@ import { format } from 'date-fns'
 export function DeliveryReports() {
   const [driverFilter, setDriverFilter] = useState<string>('all')
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
-  const { inRange } = dateFilter
 
-  const { orders: allOrders } = usePurchaseOrders()
-  const { codRemittances } = useCodRemittances()
   const { byRole } = useProfiles()
-
   const drivers = useMemo(() => byRole(['delivery']), [byRole])
 
-  const orders = useMemo(
-    () =>
-      allOrders
-        .filter(po => driverFilter === 'all' || po.driver_id === driverFilter)
-        .filter(po => inRange(po.scheduled_for)),
-    [allOrders, driverFilter, inRange]
+  // Cards are aggregates (migration 140); the exports fetch their rows on the
+  // click — see lib/reports/ops-rows.ts.
+  const reportFilters = useMemo(
+    () => ({ personId: driverFilter, range: dateFilter.range }),
+    [driverFilter, dateFilter.range],
   )
-
-  const remittances = useMemo(
-    () =>
-      codRemittances
-        .filter(r => driverFilter === 'all' || r.driver_id === driverFilter)
-        .filter(r => inRange(r.submitted_at)),
-    [codRemittances, driverFilter, inRange]
-  )
-
-  const codCollected = orders.reduce((sum, po) => sum + (po.cod_amount ?? 0), 0)
+  const { counts } = useDeliveryReportCounts(reportFilters)
 
   const reports: ReportDefinition[] = [
     {
       title: 'Trip Report',
       description: 'Every stop with driver, plate, sequence, times, dwell, GPS, and proof flags',
       icon: Package,
-      count: orders.length,
+      count: counts.orders.count,
       countLabel: 'stops',
       stats: [
-        { label: 'Delivered', value: orders.filter(po => po.status === 'delivered').length },
-        { label: 'Failed', value: orders.filter(po => po.status === 'failed').length },
-        { label: 'COD', value: peso(codCollected) },
+        { label: 'Delivered', value: counts.orders.delivered },
+        { label: 'Failed', value: counts.orders.failed },
+        { label: 'COD', value: peso(counts.orders.codCollected) },
       ],
-      onDownload: () =>
+      onDownload: async () => {
+        const { orders } = await fetchDeliveryReportRows(reportFilters)
         downloadSheet(
           orders.map(po => ({
             'Delivery Day': format(new Date(po.scheduled_for), 'MMM d, yyyy'),
@@ -94,23 +82,22 @@ export function DeliveryReports() {
           })),
           'Trip Report',
           'delivery-trip-report'
-        ),
+        )
+      },
     },
     {
       title: 'COD Remittances Report',
       description: 'COD handed over at the office, with variance against what was collected',
       icon: CircleDollarSign,
-      count: remittances.length,
+      count: counts.remittances.count,
       countLabel: 'remittances',
       stats: [
-        { label: 'Reconciled', value: remittances.filter(r => r.status === 'reconciled').length },
-        { label: 'Variance', value: remittances.filter(r => r.status === 'variance').length },
-        {
-          label: 'Remitted',
-          value: peso(remittances.reduce((sum, r) => sum + r.amount_remitted, 0)),
-        },
+        { label: 'Reconciled', value: counts.remittances.reconciled },
+        { label: 'Variance', value: counts.remittances.variance },
+        { label: 'Remitted', value: peso(counts.remittances.remitted) },
       ],
-      onDownload: () =>
+      onDownload: async () => {
+        const { remittances } = await fetchDeliveryReportRows(reportFilters)
         downloadSheet(
           remittances.map(r => ({
             'Submitted': format(new Date(r.submitted_at), 'MMM d, yyyy h:mm a'),
@@ -127,7 +114,8 @@ export function DeliveryReports() {
           })),
           'COD Remittances',
           'cod-remittances-report'
-        ),
+        )
+      },
     },
   ]
 
