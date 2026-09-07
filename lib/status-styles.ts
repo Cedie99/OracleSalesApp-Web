@@ -438,8 +438,9 @@ export const VALUE_LABEL: Record<string, string> = {
  * Client-edit-request field names as a reviewer reads them.
  *
  * Lives here rather than in the approvals page because the conflict
- * explanation in lib/hooks/use-edit-requests.ts names a field too, and a hook
- * importing from a route file to get a label would be backwards.
+ * explanation in lib/approvals/decisions.ts names a field too, and because
+ * get_approval_feed() (137) is handed this map so its search can match a
+ * field's HUMAN label — a route file is the wrong home for either.
  */
 export const FIELD_LABEL: Record<string, string> = {
   sales_channel: 'Sales Channel',
