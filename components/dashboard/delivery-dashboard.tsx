@@ -15,9 +15,9 @@ import {
 import {
   Package, Truck, PackageX, CircleDollarSign, AlertTriangle, CameraOff, BarChart3, Timer,
 } from 'lucide-react'
-import { format, subDays, startOfDay } from 'date-fns'
-import { usePurchaseOrders, useCodRemittances } from '@/lib/hooks/use-delivery'
-import { codVariance, dwellMinutes, hasMissingProof, isHeldCod, TRIP_CAP } from '@/lib/delivery'
+import { format } from 'date-fns'
+import { useDeliveryDashboard } from '@/lib/hooks/use-ops-dashboards'
+import { TRIP_CAP } from '@/lib/delivery'
 import { peso, pesoDelta } from '@/lib/money'
 import {
   DELIVERY_STATUS_LABEL, DELIVERY_STATUS_TONE,
@@ -46,129 +46,28 @@ interface DeliveryDashboardProps {
  */
 export function DeliveryDashboard({ headerAction }: DeliveryDashboardProps) {
   const dateFilter = useDateRangeFilter({ defaultPreset: '30d' })
-  const { inRange } = dateFilter
 
-  const { orders: allOrders } = usePurchaseOrders()
-  const { codRemittances } = useCodRemittances()
+  // Every figure on this board is a COUNT, a SUM or a GROUP BY, so Postgres
+  // computes them. This component used to derive all of it from every purchase
+  // order and every COD remittance in the database. See migration 135 — the
+  // proof rule (three cases, per status) is encoded there against poProofs().
+  const { data: dashboard } = useDeliveryDashboard({ range: dateFilter.range })
+  const { stats, variance, byArea, driverPerformance, topRemittances, recentStops } = dashboard
 
-  const orders = useMemo(
-    () => allOrders.filter(po => inRange(po.scheduled_for)),
-    [allOrders, inRange]
+  // The day label is formatted here rather than in SQL, so every date on the
+  // page goes through date-fns exactly once.
+  const dailyTrend = useMemo(
+    () => dashboard.dailyTrend.map(({ day, delivered, failed }) => ({
+      day: format(new Date(`${day}T00:00:00`), 'MMM d'),
+      delivered,
+      failed,
+    })),
+    [dashboard.dailyTrend],
   )
 
-  const stats = useMemo(() => {
-    const delivered = orders.filter(po => po.status === 'delivered')
-    const failed = orders.filter(po => po.status === 'failed')
-    const pending = orders.filter(po => po.status === 'pending')
-
-    const dwells = orders.map(dwellMinutes).filter((d): d is number => d != null)
-    const avgDwell =
-      dwells.length > 0 ? Math.round(dwells.reduce((a, b) => a + b, 0) / dwells.length) : null
-
-    return {
-      listed: orders.length,
-      deliveredCount: delivered.length,
-      failedCount: failed.length,
-      pendingCount: pending.length,
-      codDue: orders.reduce((sum, po) => sum + (po.cod_due ?? 0), 0),
-      codCollected: orders.reduce((sum, po) => sum + (po.cod_amount ?? 0), 0),
-      // COD taken at a stop but not yet handed over — the driver is carrying it.
-      codHeld: orders.filter(isHeldCod).reduce((sum, po) => sum + (po.cod_amount ?? 0), 0),
-      missingProof: orders.filter(hasMissingProof).length,
-      avgDwell,
-    }
-  }, [orders])
-
-  const variance = useMemo(
-    () => codRemittances.reduce((sum, r) => sum + codVariance(r), 0),
-    [codRemittances]
-  )
-
-  const dailyTrend = useMemo(() => {
-    const days = Array.from({ length: 14 }, (_, i) => startOfDay(subDays(new Date(), 13 - i)))
-    const buckets = days.map(d => ({
-      key: format(d, 'yyyy-MM-dd'),
-      day: format(d, 'MMM d'),
-      delivered: 0,
-      failed: 0,
-    }))
-    const byKey = new Map(buckets.map(b => [b.key, b]))
-    for (const po of allOrders) {
-      const bucket = byKey.get(po.scheduled_for.slice(0, 10))
-      if (!bucket) continue
-      if (po.status === 'delivered') bucket.delivered += 1
-      if (po.status === 'failed') bucket.failed += 1
-    }
-    return buckets.map(({ day, delivered, failed }) => ({ day, delivered, failed }))
-    // Deliberately reads `allOrders`, not the date-filtered `orders`: this chart
-    // is always the trailing 14 days regardless of the period selector above it.
-  }, [allOrders])
-
-  // Areas are how the paper trip ticket groups a run, so they are the natural
-  // second axis here — the office plans by area, not by customer.
-  const byArea = useMemo(() => {
-    const areas = new Map<string, { area: string; stops: number; failed: number }>()
-    for (const po of orders) {
-      const row = areas.get(po.area) ?? { area: po.area, stops: 0, failed: 0 }
-      row.stops += 1
-      if (po.status === 'failed') row.failed += 1
-      areas.set(po.area, row)
-    }
-    return [...areas.values()].sort((a, b) => b.stops - a.stops)
-  }, [orders])
-
-  const driverPerformance = useMemo(() => {
-    const byDriver = new Map<
-      string,
-      {
-        id: string; name: string; avatarUrl: string | null; plates: string[]
-        stops: number; delivered: number; failed: number; cod: number; dwells: number[]
-      }
-    >()
-    for (const po of orders) {
-      if (!po.driver_id) continue
-      const row = byDriver.get(po.driver_id) ?? {
-        id: po.driver_id,
-        name: po.driver?.full_name ?? 'Unknown',
-        avatarUrl: po.driver?.avatar_url ?? null,
-        plates: [],
-        stops: 0,
-        delivered: 0,
-        failed: 0,
-        cod: 0,
-        dwells: [],
-      }
-      row.stops += 1
-      if (po.status === 'delivered') row.delivered += 1
-      if (po.status === 'failed') row.failed += 1
-      row.cod += po.cod_amount ?? 0
-      if (po.truck_plate && !row.plates.includes(po.truck_plate)) row.plates.push(po.truck_plate)
-      const dwell = dwellMinutes(po)
-      if (dwell != null) row.dwells.push(dwell)
-      byDriver.set(po.driver_id, row)
-    }
-    return [...byDriver.values()]
-      .map(row => ({
-        ...row,
-        avgDwell:
-          row.dwells.length > 0
-            ? Math.round(row.dwells.reduce((a, b) => a + b, 0) / row.dwells.length)
-            : null,
-        rate: row.stops > 0 ? Math.round((row.delivered / row.stops) * 100) : 0,
-      }))
-      .sort((a, b) => b.stops - a.stops)
-  }, [orders])
-
+  // Still paginated in the browser: one row per driver, bounded by headcount
+  // rather than by the purchase-orders table.
   const perfPage = usePagination(driverPerformance, 8, dateFilter.key)
-
-  const recentStops = useMemo(
-    () =>
-      [...orders]
-        .filter(po => po.time_out)
-        .sort((a, b) => new Date(b.time_out!).getTime() - new Date(a.time_out!).getTime())
-        .slice(0, 5),
-    [orders]
-  )
 
   const successRate =
     stats.deliveredCount + stats.failedCount > 0
@@ -284,7 +183,12 @@ export function DeliveryDashboard({ headerAction }: DeliveryDashboardProps) {
               <div className="pt-3 border-t border-border space-y-2">
                 <p className="text-xs font-medium text-foreground">Stop Status</p>
                 {(['delivered', 'partial', 'failed', 'pending'] as const).map(status => {
-                  const count = orders.filter(po => po.status === status).length
+                  const count = {
+                    delivered: stats.deliveredCount,
+                    partial: stats.partialCount,
+                    failed: stats.failedCount,
+                    pending: stats.pendingCount,
+                  }[status]
                   return (
                     <div key={status} className="flex items-center justify-between">
                       <Badge variant="tone" className={TONE_CLASS[DELIVERY_STATUS_TONE[status]]}>
@@ -414,10 +318,10 @@ export function DeliveryDashboard({ headerAction }: DeliveryDashboardProps) {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">
-                        {po.client?.company_name}
+                        {po.clientName}
                       </p>
                       <p className="text-xs text-muted-foreground truncate">
-                        {[po.driver?.full_name, po.area].filter(Boolean).join(' · ')}
+                        {[po.driverName, po.area].filter(Boolean).join(' · ')}
                       </p>
                     </div>
                     <div className="text-right shrink-0">
@@ -425,7 +329,7 @@ export function DeliveryDashboard({ headerAction }: DeliveryDashboardProps) {
                         {DELIVERY_STATUS_LABEL[po.status]}
                       </Badge>
                       <p className="text-xs text-muted-foreground mt-1">
-                        {format(new Date(po.time_out!), 'MMM d · HH:mm')}
+                        {format(new Date(po.timeOut!), 'MMM d · HH:mm')}
                       </p>
                     </div>
                   </div>
@@ -453,11 +357,8 @@ export function DeliveryDashboard({ headerAction }: DeliveryDashboardProps) {
             </CardHeader>
             <CardContent className="p-0">
               <div className="divide-y divide-border">
-                {[...codRemittances]
-                  .sort((a, b) => Math.abs(codVariance(b)) - Math.abs(codVariance(a)))
-                  .slice(0, 5)
-                  .map(remittance => {
-                    const delta = codVariance(remittance)
+                {topRemittances.map(remittance => {
+                    const delta = remittance.variance
                     return (
                       <div key={remittance.id} className="flex items-center gap-4 px-6 py-3 hover:bg-muted/30 transition-colors">
                         <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
@@ -465,10 +366,10 @@ export function DeliveryDashboard({ headerAction }: DeliveryDashboardProps) {
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-foreground truncate">
-                            {remittance.driver?.full_name ?? 'Unknown'}
+                            {remittance.driverName ?? 'Unknown'}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {peso(remittance.amount_remitted)} · {remittance.po_ids.length} stops
+                            {peso(remittance.amountRemitted)} · {remittance.stopCount} stops
                           </p>
                         </div>
                         <div className="text-right shrink-0">
@@ -482,7 +383,7 @@ export function DeliveryDashboard({ headerAction }: DeliveryDashboardProps) {
                       </div>
                     )
                   })}
-                {codRemittances.length === 0 && (
+                {topRemittances.length === 0 && (
                   <div className="text-center py-10 text-muted-foreground text-sm">
                     No COD handed over yet
                   </div>

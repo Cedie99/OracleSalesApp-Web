@@ -44,7 +44,11 @@ type ProofKey = (typeof VISIT_PROOFS)[number]['key']
  * `showReceiptPhoto` (app/(collection)/visit.tsx, 2026-08-01): Counter takes no
  * receipt slot, and a delivery-receipt payment IS the receipt already.
  */
-const METHODS_WITH_RECEIPT_PHOTO: PaymentMethod[] = ['cash', 'check', 'gcash']
+// Exported because the Collection dashboard's aggregates compute the same
+// proof rule in SQL (get_collection_dashboard, migration 135) and are handed
+// this exact list as a parameter rather than hardcoding a second copy — so
+// this stays the one definition and the two cannot drift.
+export const METHODS_WITH_RECEIPT_PHOTO: PaymentMethod[] = ['cash', 'check', 'gcash']
 
 /**
  * Whether the phone would have refused "✓ Collected" without this capture.
