@@ -29,7 +29,7 @@ const CLIENT_JOIN = `
 
 const PROFILE_JOIN = `id, user_id, full_name, email, role, team_id, is_active, avatar_url, created_at`
 
-const PO_COLUMNS = `
+export const PO_COLUMNS = `
   id, po_number, client_id, client_name, area, status, scheduled_for, listed_by, listed_at,
   cod, cod_due, claimed_by, claimed_at, claimed_by_name,
   driver_id, truck_plate, sequence_no, receiver_name,
@@ -46,14 +46,14 @@ const PO_COLUMNS = `
 // in this repo and CI applies it on merge, but the Vercel build and the
 // migration push race. Without the fallback that window is a dead page, because
 // PostgREST rejects the ENTIRE select on one unknown column.
-const COORDINATE_COLUMNS = `client_lat, client_lng`
+export const COORDINATE_COLUMNS = `client_lat, client_lng`
 
 /** True when a select failed only because 114's columns aren't there yet. */
 function isMissingCoordinateColumn(error: { message?: string } | null): boolean {
   return !!error?.message && /client_lat|client_lng/.test(error.message)
 }
 
-const COD_REMITTANCE_COLUMNS = `
+export const COD_REMITTANCE_COLUMNS = `
   id, driver_id, amount_remitted, amount_collected, status, receiver_name,
   receiver_signature_url, po_ids, submitted_at, created_at,
   driver:profiles!driver_id ( ${PROFILE_JOIN} )

@@ -3,7 +3,8 @@
 import { useMemo, useState } from 'react'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { ReportFilters, ReportGrid, downloadSheet, type ReportDefinition } from '@/components/reports/report-grid'
-import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
+import { useCollectionReportCounts } from '@/lib/hooks/use-report-counts'
+import { fetchCollectionReportRows } from '@/lib/reports/ops-rows'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { hasMissingProof, remittanceVariance } from '@/lib/collection'
 import { peso } from '@/lib/money'
@@ -28,45 +29,33 @@ import { format } from 'date-fns'
 export function CollectionReports() {
   const [collectorFilter, setCollectorFilter] = useState<string>('all')
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
-  const { inRange } = dateFilter
 
-  const { visits: allVisits } = useCollectionVisits()
-  const { remittances: allRemittances } = useRemittances()
   const { byRole } = useProfiles()
-
   const collectors = useMemo(() => byRole(['collector']), [byRole])
 
-  const visits = useMemo(
-    () =>
-      allVisits
-        .filter(v => collectorFilter === 'all' || v.collector_id === collectorFilter)
-        .filter(v => inRange(v.scheduled_for)),
-    [allVisits, collectorFilter, inRange]
+  // The cards are aggregates, so Postgres computes them (migration 140). The
+  // EXPORTS are every row by definition, so their rows are fetched when the
+  // button is pressed rather than on mount — see lib/reports/ops-rows.ts.
+  const reportFilters = useMemo(
+    () => ({ personId: collectorFilter, range: dateFilter.range }),
+    [collectorFilter, dateFilter.range],
   )
-
-  const remittances = useMemo(
-    () =>
-      allRemittances
-        .filter(r => collectorFilter === 'all' || r.collector_id === collectorFilter)
-        .filter(r => inRange(r.submitted_at)),
-    [allRemittances, collectorFilter, inRange]
-  )
-
-  const totalCollected = visits.reduce((sum, v) => sum + (v.amount_collected ?? 0), 0)
+  const { counts } = useCollectionReportCounts(reportFilters)
 
   const reports: ReportDefinition[] = [
     {
       title: 'Collection Report',
       description: 'Every listed store with amount due, collected, method, GPS, and proof flags',
       icon: Store,
-      count: visits.length,
+      count: counts.visits.count,
       countLabel: 'stores',
       stats: [
-        { label: 'Collected', value: visits.filter(v => v.status === 'collected').length },
-        { label: 'Rescheduled', value: visits.filter(v => v.status === 'rescheduled').length },
-        { label: 'Total', value: peso(totalCollected) },
+        { label: 'Collected', value: counts.visits.collected },
+        { label: 'Rescheduled', value: counts.visits.rescheduled },
+        { label: 'Total', value: peso(counts.visits.totalCollected) },
       ],
-      onDownload: () =>
+      onDownload: async () => {
+        const { visits } = await fetchCollectionReportRows(reportFilters)
         downloadSheet(
           visits.map(v => ({
             'Collection Day': format(new Date(v.scheduled_for), 'MMM d, yyyy'),
@@ -93,23 +82,22 @@ export function CollectionReports() {
           })),
           'Collection',
           'collection-report'
-        ),
+        )
+      },
     },
     {
       title: 'Remittances Report',
       description: 'Money handed over, where it went, and any variance against what was collected',
       icon: Wallet,
-      count: remittances.length,
+      count: counts.remittances.count,
       countLabel: 'remittances',
       stats: [
-        { label: 'Reconciled', value: remittances.filter(r => r.status === 'reconciled').length },
-        { label: 'Variance', value: remittances.filter(r => r.status === 'variance').length },
-        {
-          label: 'Remitted',
-          value: peso(remittances.reduce((sum, r) => sum + r.amount_remitted, 0)),
-        },
+        { label: 'Reconciled', value: counts.remittances.reconciled },
+        { label: 'Variance', value: counts.remittances.variance },
+        { label: 'Remitted', value: peso(counts.remittances.remitted) },
       ],
-      onDownload: () =>
+      onDownload: async () => {
+        const { remittances } = await fetchCollectionReportRows(reportFilters)
         downloadSheet(
           remittances.map(r => ({
             'Submitted': format(new Date(r.submitted_at), 'MMM d, yyyy h:mm a'),
@@ -126,7 +114,8 @@ export function CollectionReports() {
           })),
           'Remittances',
           'remittances-report'
-        ),
+        )
+      },
     },
   ]
 
