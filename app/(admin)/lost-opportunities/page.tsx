@@ -9,12 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Pagination } from '@/components/ui/pagination'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
-import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { ClientDetailDialog } from '@/components/clients/client-detail-dialog'
-import { useClients } from '@/lib/hooks/use-clients'
+import { useLostOpportunities, LOST_PAGE_SIZE } from '@/lib/hooks/use-lost-opportunities'
 import { REASSIGN_COOLDOWN_LABEL } from '@/lib/lost-opportunity'
-import { useMeetings } from '@/lib/hooks/use-meetings'
 import { AlertTriangle, Building2, User, Calendar, Clock, Unlock, Search, Loader2 } from 'lucide-react'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 
@@ -23,32 +21,39 @@ export default function LostOpportunitiesPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
 
-  const { clients, loading, error } = useClients()
-  const { meetings } = useMeetings()
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+  const [page, setPage] = useState(1)
 
-  const lostClients = clients.filter(c => c.status === 'lost')
-  const selectedClient = lostClients.find(c => c.id === selectedClientId) ?? null
-
-  const filtered = lostClients.filter(c => {
-    const isReassignable = c.reassignable_at ? isPast(new Date(c.reassignable_at)) : false
-    const matchSearch = c.company_name.toLowerCase().includes(search.toLowerCase()) ||
-      c.contact_person.toLowerCase().includes(search.toLowerCase()) ||
-      (c.agent?.full_name ?? '').toLowerCase().includes(search.toLowerCase())
-    const matchStatus = statusFilter === 'all' ||
-      (statusFilter === 'ready' && isReassignable) ||
-      (statusFilter === 'locked' && !isReassignable)
-    const matchDate = c.lost_at ? dateFilter.inRange(c.lost_at) : dateFilter.range === null
-    return matchSearch && matchStatus && matchDate
-  })
-
-  const { pageItems, page, pageCount, from, to, total, setPage } = usePagination(
-    filtered, 9, `${search}|${statusFilter}|${dateFilter.key}`,
+  // Filtered and paged by Postgres (migration 139). This page used to download
+  // every client and every meeting in the company to render nine cards.
+  const { feed, loading, error } = useLostOpportunities(
+    { search, status: statusFilter, range: dateFilter.range },
+    page,
   )
+
+  const pageItems = feed.rows
+  const total = feed.total
+  const pageCount = Math.max(1, Math.ceil(total / LOST_PAGE_SIZE))
+  const from = total === 0 ? 0 : (page - 1) * LOST_PAGE_SIZE + 1
+  const to = Math.min(page * LOST_PAGE_SIZE, total)
+
+  // Only the current page's clients are in memory, which is all this needs: the
+  // detail dialog is opened by clicking a card on that page.
+  const selectedClient = pageItems.find(r => r.client.id === selectedClientId)?.client ?? null
+
+  // Narrowing from page 4 snaps back to page 1 rather than showing an empty
+  // grid. During render, so the reset lands in the same commit as the filter —
+  // the rule usePagination followed when this paging was client-side.
+  const filterKey = `${search}|${statusFilter}|${dateFilter.key}`
+  const [prevFilterKey, setPrevFilterKey] = useState(filterKey)
+  if (prevFilterKey !== filterKey) {
+    setPrevFilterKey(filterKey)
+    setPage(1)
+  }
 
   return (
     <div className="flex flex-col flex-1">
-      <Header title="Lost Opportunities" subtitle={`${filtered.length} of ${lostClients.length} clients removed from agents`} />
+      <Header title="Lost Opportunities" subtitle={`${total} of ${feed.lostTotal} clients removed from agents`} />
 
       <div className="flex-1 p-6 space-y-4">
         {/* Info banner */}
@@ -87,8 +92,7 @@ export default function LostOpportunitiesPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {pageItems.map(client => {
-            const lostMeeting = meetings.find(m => m.client_id === client.id && m.outcome === 'lost_opportunity')
+          {pageItems.map(({ client, lostMeetingRemarks }) => {
             /*
              * Why we lost them, from whichever path did the losing.
              *
@@ -104,7 +108,7 @@ export default function LostOpportunitiesPage() {
              * describes the CURRENT cycle, while the meeting lookup is
              * unordered and could match one from a previous one.
              */
-            const lostReason = client.inactive_reason?.trim() || lostMeeting?.remarks
+            const lostReason = client.inactive_reason?.trim() || lostMeetingRemarks
             const isReassignable = client.reassignable_at ? isPast(new Date(client.reassignable_at)) : false
 
             return (
@@ -202,11 +206,11 @@ export default function LostOpportunitiesPage() {
           </Alert>
         )}
 
-        {!loading && !error && filtered.length === 0 && (
+        {!loading && !error && total === 0 && (
           <div className="text-center py-16 text-muted-foreground">
             <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-40" />
             <p className="text-sm">
-              {lostClients.length === 0
+              {feed.lostTotal === 0
                 ? 'No lost opportunities — no client is currently marked lost'
                 : 'No lost opportunities match these filters'}
             </p>
