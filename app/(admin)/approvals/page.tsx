@@ -9,9 +9,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Pagination } from '@/components/ui/pagination'
-import { usePagination } from '@/lib/hooks/use-pagination'
-import { useEditRequests } from '@/lib/hooks/use-edit-requests'
-import { usePoConfirmations } from '@/lib/hooks/use-po-confirmations'
+import {
+  useApprovalFeed,
+  APPROVALS_PAGE_SIZE,
+  type PendingEditEntry,
+} from '@/lib/hooks/use-approval-feed'
+import {
+  reviewEditRequest,
+  reviewEditRequests,
+  decidePoConfirmation,
+  editTargetOf,
+} from '@/lib/approvals/decisions'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { PersonSelect } from '@/components/ui/person-select'
@@ -67,28 +75,23 @@ export default function ApprovalsPage() {
   // No useCurrentProfile() here: decide_client_edit_request() stamps
   // reviewed_by from current_profile_id() server-side, so the reviewer's
   // identity is never the client's to assert.
-  const { requests, loading, error, review, reviewMany } = useEditRequests()
-  const { requests: poRequests, loading: poLoading, error: poError, decide } = usePoConfirmations()
-  // Only for the requester picker's team headings, never for the queue itself.
-  const { teams } = useTeams()
-  const { profiles } = useProfiles()
-
   // Sibling of the cards, never nested in a dialog — see PhotoLightbox's note.
   const [lightbox, setLightbox] = useState<LightboxPhoto | null>(null)
 
   const [search, setSearch] = useState('')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
   // By person, through PersonSelect — the same control Clock Records, Maps,
-  // Dashboard and Reports use for "filter by person". A plain <Select> of
-  // names is what that component exists to replace (its own header calls out
-  // "scrolling a forty-name dropdown to find a name you already knew"), and
-  // grouping by team comes free. Filtering by ROLE was the wrong axis: only
-  // agents file these, so every option but one would return nothing.
+  // Dashboard and Reports use for "filter by person". Filtering by ROLE was the
+  // wrong axis: only agents file these, so every option but one would return
+  // nothing.
   const [agentFilter, setAgentFilter] = useState('all')
   // 'all' by default: an approval queue is a backlog, and defaulting to a
   // window would hide the oldest items — exactly the ones most in need of a
-  // decision. Same default the Meetings and Clock Records pages use.
+  // decision.
   const dateFilter = useDateRangeFilter({ defaultPreset: 'all' })
+
+  const [pendingPageNo, setPendingPageNo] = useState(1)
+  const [resolvedPageNo, setResolvedPageNo] = useState(1)
 
   /**
    * Bulk-approve selection — CLIENT EDITS ONLY, and one agent at a time.
@@ -113,123 +116,62 @@ export default function ApprovalsPage() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
 
-  /**
-   * One queue, two record types.
-   *
-   * A client-edit request (prospect -> existing, contact details) and a PO
-   * confirmation (the last gate on in_progress -> new) are the same thing from
-   * an admin's chair: an agent is waiting on a decision. Both are normally a
-   * manager's call in the mobile app, and on both the admin is the fallback
-   * when the manager cannot act — so they belong in the same Pending list
-   * rather than a separate read-only shelf.
-   *
-   * They stay distinguishable by `kind` because the decision goes through a
-   * different RPC for each, and because a PO shows a photo reference rather
-   * than a field diff.
-   */
-  /**
-   * Filters run over BOTH record types before either list is built, so a
-   * search term means the same thing whichever kind it matches. Everything is
-   * client-side because both hooks already hold the full set — the same
-   * convention as Meetings and Clients.
-   */
-  const term = search.trim().toLowerCase()
-  const matchesEdit = (r: ClientEditRequest) =>
-    (kindFilter === 'all' || kindFilter === 'edit') &&
-    (agentFilter === 'all' || r.requested_by === agentFilter) &&
-    dateFilter.inRange(r.created_at) &&
-    (!term ||
-      r.client?.company_name?.toLowerCase().includes(term) ||
-      r.requester?.full_name?.toLowerCase().includes(term) ||
-      // The field being changed is the thing an admin scans for on these.
-      Object.keys(r.changes).some(f => (FIELD_LABEL[f] ?? f).toLowerCase().includes(term)))
+  const { feed, loading, error, reload } = useApprovalFeed(
+    { search, kind: kindFilter, agentId: agentFilter, range: dateFilter.range },
+    pendingPageNo,
+    resolvedPageNo,
+  )
 
-  const matchesPo = (r: PoConfirmationRequest) =>
-    (kindFilter === 'all' || kindFilter === 'po') &&
-    (agentFilter === 'all' || r.requester_id === agentFilter) &&
-    dateFilter.inRange(r.created_at) &&
-    (!term ||
-      r.company_name?.toLowerCase().includes(term) ||
-      r.requester_name?.toLowerCase().includes(term))
+  const pending = feed.pending.rows
+  const resolved = feed.resolved.rows
+  const pendingTotal = feed.pending.total
+  const resolvedTotal = feed.resolved.total
 
-  const pending = [
-    ...requests
-      .filter(r => r.status === 'pending' && matchesEdit(r))
-      .map(r => ({ kind: 'edit' as const, key: `edit-${r.id}`, created_at: r.created_at, edit: r })),
-    ...poRequests
-      .filter(r => r.status === 'pending' && matchesPo(r))
-      .map(r => ({ kind: 'po' as const, key: `po-${r.id}`, created_at: r.created_at, po: r })),
-  ].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-
+  // Only for the requester picker's team headings, never for the queue itself.
+  const { teams } = useTeams()
+  const { profiles } = useProfiles()
   const teamOptions = useMemo(() => teamsWithManagers(teams, profiles), [teams, profiles])
 
-  // Built from the requests rather than from every profile: this page can only
-  // filter to someone who has actually filed one, and offering the rest would
-  // be offering guaranteed-empty results. Same reasoning as Clock Records.
-  const agentOptions = useMemo(() => {
-    const byId = new Map<string, { id: string; name: string; teamId: string | null }>()
-    for (const r of requests) {
-      if (r.requester) {
-        byId.set(r.requested_by, {
-          id: r.requested_by,
-          name: r.requester.full_name,
-          teamId: r.requester.team_id,
-        })
-      }
-    }
-    for (const r of poRequests) {
-      if (r.requester_name) {
-        byId.set(r.requester_id, {
-          id: r.requester_id,
-          name: r.requester_name,
-          teamId: r.requester_team_id ?? null,
-        })
-      }
-    }
-    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
-  }, [requests, poRequests])
+  // Built from people who have actually filed something rather than from every
+  // profile: this page can only filter to someone with a request, and offering
+  // the rest would be offering guaranteed-empty results. Deliberately not
+  // narrowed by the current filters — the picker must still list the person you
+  // are about to filter to.
+  const agentOptions = feed.requesters
 
-  // Only decides how the empty state reads — "nothing pending" and "nothing
-  // matches" look identical but mean opposite things. Each control clears
-  // itself, so there is no page-level reset (matching Meetings and Clock
-  // Records, which have none either).
   const filtersActive =
-    !!term || kindFilter !== 'all' || agentFilter !== 'all' || dateFilter.isActive
+    !!search.trim() || kindFilter !== 'all' || agentFilter !== 'all' || dateFilter.isActive
 
-  /**
-   * Decided items, newest first — the same merge as `pending`.
-   *
-   * Worth having both kinds here rather than only edit requests: an approved PO
-   * would otherwise disappear off this page entirely the moment it was decided,
-   * and the row's `decided_by` is the only record of who did it that survives
-   * across platforms. `admin_audit_logs` covers the web side, but a manager
-   * approving on mobile never lands there — lib/audit/actions.ts drops anything
-   * without web access, by design.
-   */
-  const resolved = [
-    ...requests
-      .filter(r => r.status !== 'pending' && matchesEdit(r))
-      .map(r => ({
-        kind: 'edit' as const,
-        key: `edit-${r.id}`,
-        at: r.reviewed_at ?? r.created_at,
-        edit: r,
-      })),
-    ...poRequests
-      .filter(r => r.status !== 'pending' && matchesPo(r))
-      .map(r => ({
-        kind: 'po' as const,
-        key: `po-${r.id}`,
-        at: r.decided_at ?? r.created_at,
-        po: r,
-      })),
-  ].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+  // Server-side paging: the totals are the counts behind the windows, not the
+  // lengths of them.
+  const pendingPage = {
+    page: pendingPageNo,
+    pageCount: Math.max(1, Math.ceil(pendingTotal / APPROVALS_PAGE_SIZE)),
+    from: pendingTotal === 0 ? 0 : (pendingPageNo - 1) * APPROVALS_PAGE_SIZE + 1,
+    to: Math.min(pendingPageNo * APPROVALS_PAGE_SIZE, pendingTotal),
+    total: pendingTotal,
+    setPage: setPendingPageNo,
+  }
+  const resolvedPage = {
+    page: resolvedPageNo,
+    pageCount: Math.max(1, Math.ceil(resolvedTotal / APPROVALS_PAGE_SIZE)),
+    from: resolvedTotal === 0 ? 0 : (resolvedPageNo - 1) * APPROVALS_PAGE_SIZE + 1,
+    to: Math.min(resolvedPageNo * APPROVALS_PAGE_SIZE, resolvedTotal),
+    total: resolvedTotal,
+    setPage: setResolvedPageNo,
+  }
 
-  // The reset key carries the filter signature, so narrowing the results from
-  // page 4 snaps back to page 1 instead of showing an empty grid.
-  const filterKey = `${term}|${kindFilter}|${agentFilter}|${dateFilter.key}`
-  const pendingPage = usePagination(pending, 9, `pending|${filterKey}`)
-  const resolvedPage = usePagination(resolved, 9, `resolved|${filterKey}`)
+  // Narrowing the results from page 4 snaps both tabs back to page 1 instead of
+  // showing an empty grid. Done during render, so the reset lands in the same
+  // commit as the new filter — the rule usePagination followed when this paging
+  // was client-side. Seeded with the current key so mounting is not a change.
+  const filterKey = `${search.trim()}|${kindFilter}|${agentFilter}|${dateFilter.key}`
+  const [prevFilterKey, setPrevFilterKey] = useState(filterKey)
+  if (prevFilterKey !== filterKey) {
+    setPrevFilterKey(filterKey)
+    setPendingPageNo(1)
+    setResolvedPageNo(1)
+  }
 
   /**
    * The selection, resolved against what is actually on screen.
@@ -241,11 +183,11 @@ export default function ApprovalsPage() {
    * chance of the two disagreeing. Ticks are remembered if the filter is
    * widened again.
    *
-   * Deliberately the WHOLE filtered set, not `pendingPage.pageItems`: "select
+   * Deliberately the WHOLE filtered set, not `pending`: "select
    * all 12 from this agent" must mean all twelve, including the three on page
    * two. Pagination is a viewport here, not a scope.
    */
-  const pendingEdits = pending.flatMap(item => (item.kind === 'edit' ? [item.edit] : []))
+  const pendingEdits: PendingEditEntry[] = feed.pendingEditIndex
   const visibleIds = new Set(pendingEdits.map(r => r.id))
   const selectedIds = [...selected].filter(id => visibleIds.has(id))
   const selectedSet = new Set(selectedIds)
@@ -254,12 +196,12 @@ export default function ApprovalsPage() {
   // card rather than tracked separately, so it cannot drift from `selected`.
   // Null means nothing is ticked and every pending edit is up for grabs.
   const selectionAgentId = selectedIds.length
-    ? pendingEdits.find(r => r.id === selectedIds[0])?.requested_by ?? null
+    ? pendingEdits.find(r => r.id === selectedIds[0])?.requestedBy ?? null
     : null
   const selectionAgentName =
-    pendingEdits.find(r => r.requested_by === selectionAgentId)?.requester?.full_name ?? 'this agent'
+    pendingEdits.find(r => r.requestedBy === selectionAgentId)?.requesterName ?? 'this agent'
   const agentPendingEdits = selectionAgentId
-    ? pendingEdits.filter(r => r.requested_by === selectionAgentId)
+    ? pendingEdits.filter(r => r.requestedBy === selectionAgentId)
     : []
   // Someone else has pending work in view, so the dimming needs explaining.
   const othersPending = pendingEdits.length > agentPendingEdits.length
@@ -290,8 +232,12 @@ export default function ApprovalsPage() {
     const agentName = selectionAgentName
 
     setBulkBusy(true)
-    const { approved, failures } = await reviewMany(ids)
+    const targets = ids
+      .map(id => pendingEdits.find(r => r.id === id))
+      .filter((r): r is PendingEditEntry => !!r)
+    const { approved, failures } = await reviewEditRequests(targets)
     setBulkBusy(false)
+    await reload()
     setSelected(new Set(failures.map(f => f.id)))
 
     // Distinct reasons rather than one line per request: the failures are
@@ -313,8 +259,9 @@ export default function ApprovalsPage() {
     }
   }
 
-  async function handleReview(id: string, action: 'approved' | 'rejected') {
-    const reviewError = await review(id, action)
+  async function handleReview(request: ClientEditRequest, action: 'approved' | 'rejected') {
+    const reviewError = await reviewEditRequest(editTargetOf(request), action)
+    await reload()
     if (reviewError) {
       toast.error(`Couldn't ${action === 'approved' ? 'approve' : 'reject'}: ${reviewError}`)
       return
@@ -322,8 +269,9 @@ export default function ApprovalsPage() {
     toast.success(`Request ${action === 'approved' ? 'approved' : 'rejected'} successfully`)
   }
 
-  async function handlePoDecision(id: string, action: 'approved' | 'rejected') {
-    const decideError = await decide(id, action)
+  async function handlePoDecision(request: PoConfirmationRequest, action: 'approved' | 'rejected') {
+    const decideError = await decidePoConfirmation(request, action)
+    await reload()
     if (decideError) {
       toast.error(`Couldn't ${action === 'approved' ? 'approve' : 'reject'}: ${decideError}`)
       return
@@ -497,7 +445,7 @@ export default function ApprovalsPage() {
               <div className="flex gap-2">
                 <Button
                   size="sm"
-                  onClick={() => handlePoDecision(po.id, 'approved')}
+                  onClick={() => handlePoDecision(po, 'approved')}
                   className="flex-1 h-8 bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 text-xs"
                   variant="outline"
                 >
@@ -505,7 +453,7 @@ export default function ApprovalsPage() {
                 </Button>
                 <Button
                   size="sm"
-                  onClick={() => handlePoDecision(po.id, 'rejected')}
+                  onClick={() => handlePoDecision(po, 'rejected')}
                   className="flex-1 h-8 bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/30 text-xs"
                   variant="outline"
                 >
@@ -554,10 +502,7 @@ export default function ApprovalsPage() {
      * Scoped to pending-vs-pending: a decided PO has already had its effect,
      * and 129's trigger has already superseded this request if it was going to.
      */
-    const competingPo =
-      req.status === 'pending' &&
-      req.changes.customer_type?.new === 'existing' &&
-      poRequests.some(p => p.client_id === req.client_id && p.status === 'pending')
+    const competingPo = req.competing_po === true
 
     return (
       <Card
@@ -653,7 +598,7 @@ export default function ApprovalsPage() {
                 <Button
                   size="sm"
                   disabled={locked || bulkBusy}
-                  onClick={() => handleReview(req.id, 'approved')}
+                  onClick={() => handleReview(req, 'approved')}
                   className="flex-1 h-8 bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 text-xs"
                   variant="outline"
                 >
@@ -662,7 +607,7 @@ export default function ApprovalsPage() {
                 <Button
                   size="sm"
                   disabled={locked || bulkBusy}
-                  onClick={() => handleReview(req.id, 'rejected')}
+                  onClick={() => handleReview(req, 'rejected')}
                   className="flex-1 h-8 bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/30 text-xs"
                   variant="outline"
                 >
@@ -706,10 +651,10 @@ export default function ApprovalsPage() {
       />
 
       <div className="flex-1 p-6">
-        {(error || poError) && (
+        {(error || error) && (
           <Alert variant="destructive" className="mb-4">
             <AlertDescription className="text-xs">
-              Couldn&apos;t load approval requests: {error || poError}
+              Couldn&apos;t load approval requests: {error || error}
             </AlertDescription>
           </Alert>
         )}
@@ -756,7 +701,7 @@ export default function ApprovalsPage() {
           </TabsList>
 
           <TabsContent value="pending">
-            {loading || poLoading ? (
+            {loading || loading ? (
               <div className="text-center py-16 text-muted-foreground">
                 <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
                 <p className="text-sm">Loading approval requests…</p>
@@ -815,10 +760,10 @@ export default function ApprovalsPage() {
                   </div>
                 )}
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {pendingPage.pageItems.map(item =>
+                  {pending.map(item =>
                     item.kind === 'po'
-                      ? <PoCard key={item.key} po={item.po} />
-                      : <RequestCard key={item.key} req={item.edit} selectable />
+                      ? <PoCard key={item.key} po={item.item} />
+                      : <RequestCard key={item.key} req={item.item} selectable />
                   )}
                 </div>
                 <Pagination
@@ -831,7 +776,7 @@ export default function ApprovalsPage() {
           </TabsContent>
 
           <TabsContent value="resolved">
-            {loading || poLoading ? (
+            {loading || loading ? (
               <div className="text-center py-16 text-muted-foreground">
                 <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-60" />
                 <p className="text-sm">Loading approval requests…</p>
@@ -846,10 +791,10 @@ export default function ApprovalsPage() {
             ) : (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {resolvedPage.pageItems.map(item =>
+                  {resolved.map(item =>
                     item.kind === 'po'
-                      ? <PoCard key={item.key} po={item.po} />
-                      : <RequestCard key={item.key} req={item.edit} />
+                      ? <PoCard key={item.key} po={item.item} />
+                      : <RequestCard key={item.key} req={item.item} />
                   )}
                 </div>
                 <Pagination
