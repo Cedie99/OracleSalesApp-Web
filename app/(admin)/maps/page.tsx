@@ -82,11 +82,21 @@ function MapsPageContent() {
     setModule(m)
   }
 
-  // Both lenses' data is fetched regardless of which is on screen. They are two
-  // small queries and an admin flips between them constantly; refetching on
-  // every switch would make the map blank for a beat each time.
-  const { visits: collectionVisits } = useCollectionVisits()
-  const { orders: purchaseOrders } = usePurchaseOrders()
+  // Both operational lenses' data is fetched regardless of which is on SCREEN,
+  // and that stays deliberate: an admin flips between them constantly, and
+  // refetching on every switch would blank the map for a beat each time.
+  //
+  // What is gated is REACHABILITY. An admin scoped to Sales can see neither
+  // lens, and was still paying for both on every visit to this page — two whole
+  // tables for a map they cannot open. Keyed on `modules` rather than on
+  // `effectiveModule` so the instant flip survives for anyone who actually has
+  // both.
+  const { visits: collectionVisits } = useCollectionVisits({
+    enabled: modules.includes('collection'),
+  })
+  const { orders: purchaseOrders } = usePurchaseOrders({
+    enabled: modules.includes('delivery'),
+  })
 
   // One filter instance for both operational lenses. Defaults to a single day
   // because that is the unit a trip exists in — a run belongs to its day.
