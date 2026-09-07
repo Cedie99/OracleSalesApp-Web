@@ -216,7 +216,6 @@ export default function LostOpportunitiesPage() {
 
       <ClientDetailDialog
         client={selectedClient}
-        meetings={meetings}
         onOpenChange={open => { if (!open) setSelectedClientId(null) }}
       />
     </div>

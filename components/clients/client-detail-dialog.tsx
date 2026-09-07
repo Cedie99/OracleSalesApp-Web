@@ -8,7 +8,7 @@ import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CircularProgress } from '@/components/ui/circular-progress'
 import { getQualifiedAgendaMilestones } from '@/lib/client-progress'
-import { meetingGpsDriftMeters, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
+import { useMeetings, meetingGpsDriftMeters, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
 import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
 import { CompanionLine, ManagerGateIcon } from '@/components/tag-along-indicator'
 import { formatDistanceMeters, formatDurationMinutes } from '@/lib/utils'
@@ -269,12 +269,6 @@ function MeetingDetailDialog({ meeting, companions, onOpenChange }: { meeting: M
 
 interface ClientDetailDialogProps {
   client: Client | null
-  /**
-   * All meetings, unfiltered — the dialog narrows to this client itself. Passed
-   * in rather than fetched here so the parent owns one query and the dialog
-   * stays usable from both the Supabase-backed and mock-backed pages.
-   */
-  meetings: Meeting[]
   onOpenChange: (open: boolean) => void
   canEdit?: boolean
   onEdit?: (client: Client) => void
@@ -283,7 +277,18 @@ interface ClientDetailDialogProps {
 const MEETING_HISTORY_LIMIT = 3
 const PHOTO_LIMIT = 3
 
-export function ClientDetailDialog({ client, meetings, onOpenChange, canEdit = false, onEdit }: ClientDetailDialogProps) {
+export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEdit }: ClientDetailDialogProps) {
+  /**
+   * This client's meetings, fetched here rather than handed down.
+   *
+   * The Clients page used to pass its whole `meetings` array in and this
+   * narrowed to one client — which meant the page had to hold every meeting in
+   * the company just so a dialog could show three of them. `useMeetings` has
+   * always taken a clientId (it even scopes its own change-stamp probe by it),
+   * so asking for exactly this client's meetings is both cheaper and the query
+   * the dialog actually wanted.
+   */
+  const { meetings } = useMeetings(client?.id)
   const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string; date: string; by: string } | null>(null)
   const [showAllMeetings, setShowAllMeetings] = useState(false)
   const [showAllPhotos, setShowAllPhotos] = useState(false)

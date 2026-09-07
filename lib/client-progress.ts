@@ -9,7 +9,11 @@ import type { Meeting } from '@/types'
 // client's recorded meetings drives mobile's My Clients "Qualified agenda
 // progress" meter and "{completed}/6 agenda milestones" copy. Ported here so
 // web shows the same number mobile does for the same client.
-const QUALIFIED_AGENDA_MILESTONES = [
+// Exported because the server-side ring computes the same coverage in SQL
+// (get_clients_page, migration 131) and is handed this exact list as a
+// parameter rather than hardcoding its own copy — so this stays the one
+// definition and the two can never drift.
+export const QUALIFIED_AGENDA_MILESTONES = [
   'New business opportunity',
   'Product / company presentation',
   'Price negotiation / quotation',
