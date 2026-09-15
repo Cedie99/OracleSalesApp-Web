@@ -16,6 +16,7 @@ import { useMeetings, meetingDurationMinutes, meetingGpsDriftMeters } from '@/li
 import { useSalesMapVisited } from '@/lib/hooks/use-sales-map'
 import { useTeams } from '@/lib/hooks/use-teams'
 import { useProfiles } from '@/lib/hooks/use-profiles'
+import { REPORT_AGENT_ROLES } from '@/lib/hooks/use-report-counts'
 import { teamsWithManagers } from '@/lib/teams'
 import {
   getMapStatus,
@@ -630,7 +631,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
   const { teams } = useTeams()
   // Only to name each team's manager in the agent picker — the pins themselves
   // come from clients, which already carry their agent.
-  const { profiles } = useProfiles()
+  const { profiles, byRole } = useProfiles()
   // Cutoff boundaries and the visit cap are admin-configured, never hardcoded
   // (team decision, 2026-08-02). `period` is null when no cutoff has been set,
   // and that must disable the lens rather than fall back to a guessed
@@ -795,40 +796,33 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     return map
   }, [meetings])
 
-  // Agent options cascade from the team filter: pick a team and the list narrows
-  // to that team's agents. A team has no "unassigned" bucket (those clients have
-  // no agent and therefore no team).
-  const agentOptions = useMemo(() => {
-    const byId = new Map<string, { id: string; name: string; teamId: string | null }>()
-    let hasUnassigned = false
-    clients.forEach(c => {
-      if (teamFilter !== 'all' && c.agent?.team_id !== teamFilter) return
-      if (c.agent) byId.set(c.agent.id, { id: c.agent.id, name: c.agent.full_name, teamId: c.agent.team_id ?? null })
-      else hasUnassigned = true
-    })
-    return {
-      hasUnassigned,
-      agents: Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name)),
-    }
-  }, [clients, teamFilter])
+  // Agent options come from the profiles table like Reports' — the picker
+  // must not depend on whether the Attention lens has its client roster loaded.
+  const agents = useMemo(() => byRole([...REPORT_AGENT_ROLES]), [byRole])
+  const agentOptions = useMemo(
+    () => agents.map(a => ({ id: a.id, name: a.full_name, teamId: a.team_id })),
+    [agents]
+  )
 
-  // Its own memo so the picker's `items` identity survives renders that only
-  // moved the map — a fresh array each time makes the combobox re-derive its
-  // whole collection.
+  // "Unassigned" is a first-class filter value both lenses honour. Always
+  // present so the picker offers it on the default Visited lens too — its
+  // presence can't wait on the Attention roster, which wouldn't be loaded. A
+  // team filter hides it, because an unassigned client has no team to match.
   const agentExtras = useMemo(
-    () => (agentOptions.hasUnassigned ? [{ value: 'unassigned', label: 'Unassigned' }] : []),
-    [agentOptions.hasUnassigned]
+    () => (teamFilter === 'all' ? [{ value: 'unassigned', label: 'Unassigned' }] : []),
+    [teamFilter]
   )
 
   // Same reason as agentExtras: this reaches the combobox as part of `items`.
   const teamOptions = useMemo(() => teamsWithManagers(teams, profiles), [teams, profiles])
 
   // The single agent the list is scoped to, if any — shown once as a header
-  // instead of repeated on every row below (see the per-row agent block).
+  // instead of repeated on every row below (see the per-row agent block). Found
+  // from the profiles list, not from clients, for the same reason as the options.
   const selectedAgent = useMemo(() => {
     if (agentFilter === 'all' || agentFilter === 'unassigned') return null
-    return clients.find(c => c.agent?.id === agentFilter)?.agent ?? null
-  }, [clients, agentFilter])
+    return agents.find(a => a.id === agentFilter) ?? null
+  }, [agents, agentFilter])
 
   const coord = useMemo(() => parseLatLng(search), [search])
 
@@ -1404,7 +1398,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
             setTeamFilter(t)
             // Drop an agent selection that isn't in the newly chosen team.
             if (t !== 'all' && agentFilter !== 'all' && agentFilter !== 'unassigned') {
-              const stillValid = clients.some(c => c.agent?.id === agentFilter && c.agent?.team_id === t)
+              const stillValid = agents.some(a => a.id === agentFilter && a.team_id === t)
               if (!stillValid) setAgentFilter('all')
             }
           }}
@@ -1421,13 +1415,14 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
         </Select>
 
         <PersonSelect
-          options={agentOptions.agents}
+          options={agentOptions}
           value={agentFilter}
           onChange={setAgentFilter}
           allLabel="All agents"
-          // The list is already narrowed by the team filter beside it, so team
-          // headings only earn their space while that filter is off.
-          teams={teamFilter === 'all' ? teamOptions : undefined}
+          // Same arrangement as Reports' filter: the team control narrows the
+          // picker's list via teamValue, and the picker groups by team headings.
+          teams={teamOptions}
+          teamValue={teamFilter}
           extras={agentExtras}
           aria-label="Agent"
           // Wider than the plain selects beside it: this one shows the chosen
