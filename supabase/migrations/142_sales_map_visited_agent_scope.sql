@@ -1,22 +1,31 @@
 -- ============================================================================
--- 142 - The Sales map's Visited lens: an agent-scoped query stays on visited
+-- 142 — Split the Sales map's agent scope: filter is strict, deep link is roster
 --
--- WHAT THIS CHANGES: migration 138 omitted the "must have a visit in range"
--- rule when an agent was selected. An agent-scoped query returned the agent's
--- WHOLE ROSTER — every client they own, including ones never visited at all,
--- listed and unplotted so the map could draw nothing for them. That served the
--- "View on map" deep link as "show me everywhere this person works", but the
--- same path is what the toolbar's agent filter rides on, and a filter is
--- supposed to narrow.
+-- WHY: `get_sales_map_visited` (138) treats ANY agent scope as "show the whole
+-- roster" — every client the agent owns, visited in range or not. That was the
+-- right rule for the Clients page's "View on map" deep link, whose promise is
+-- "show me every account this person works on". But the page's own agent
+-- FILTER rides the same code path, and there the roster rule is wrong: picking
+-- one name in the toolbar should narrow the Visited lens the same way the other
+-- filters do — clients that had no meeting in the window are not rows. A filter
+-- and a deep link are different promises, and the component knows which one is
+-- active (the deep link's agent stands in untouched until the admin moves the
+-- picker), so the RPC takes a flag instead of assuming.
 --
--- From here the rule is unconditional: a row is a client with at least one
--- meeting inside the active window, whether or not an agent is selected. The
--- tag-along scope survives — a client the scoped agent joined a visit on is
--- still theirs, and still only when a visit actually happened in range.
+-- The default keeps 138's behavior for callers that don't pass the flag.
 --
--- SAFETY: recreate of 138's function, same signature and grants, so every
--- existing caller is unchanged.
+-- SCOPE: the Visited lens only, matching 138. The attention loop is client-side
+-- and reveals its rows from the client roster directly, where the roster IS the
+-- correct scope — an account with no visit yet can still carry a lifecycle flag.
+--
+-- SECURITY: SECURITY DEFINER, grants naming BOTH anon paths per migration 132.
 -- ============================================================================
+
+-- 138's function had one fewer parameter; a changed argument list creates a NEW
+-- overload rather than replacing it, so the stale 8-arg copy has to go first or
+-- it would linger next to the 9-arg one as a second, unreachable policy.
+drop function if exists public.get_sales_map_visited(
+  text, text, uuid, uuid, boolean, text, timestamptz, timestamptz);
 
 create or replace function public.get_sales_map_visited(
   p_search    text        default null,
@@ -29,7 +38,10 @@ create or replace function public.get_sales_map_visited(
   -- 'all' | 'f2f' | 'online'
   p_type      text        default 'all',
   p_from      timestamptz default null,
-  p_to        timestamptz default null
+  p_to        timestamptz default null,
+  -- true = agent scope means the WHOLE ROSTER (the deep link); false = strict,
+  -- same as every other filter (the toolbar's agent picker).
+  p_agent_whole_roster boolean default true
 )
 returns jsonb
 language sql
@@ -112,10 +124,11 @@ rows_out as (
     (select ir.id from in_range ir
       where ir.client_id = f.id and ir.plot_rn = 1 and ir.plottable) as plot_meeting_id
   from filtered f
-  -- A row is a client with a visit in range — unconditional since 142. An
-  -- agent scope narrows which clients can be visited, it does not let a client
-  -- with no visit appear.
-  where exists (select 1 from in_range ir where ir.client_id = f.id)
+  -- Default true (the deep link): an agent's every client is a row, visited or
+  -- not — see the header. Strict (the toolbar filter): a client with no visit
+  -- in range is not a row, same as the unscoped lens.
+  where (p_agent_id is not null and p_agent_whole_roster)
+     or exists (select 1 from in_range ir where ir.client_id = f.id)
 )
 select coalesce((
   select jsonb_agg(jsonb_build_object(
@@ -152,7 +165,9 @@ select coalesce((
       select jsonb_agg(app_private.meeting_row(ir.id)
                        order by ir.meeting_date desc, ir.id desc)
       from in_range ir where ir.client_id = r.id), '[]'::jsonb))
-    -- Visited-most-recently first.
+    -- Visited-most-recently first. A client with no visit at all (only
+    -- possible when whole-roster) has nothing to rank by time, so those sink
+    -- to the bottom, alphabetically.
     order by r.last_visit desc nulls last, r.company_name)
   from rows_out r
   join public.clients c on c.id = r.id
@@ -160,6 +175,6 @@ select coalesce((
 $$;
 
 revoke all on function public.get_sales_map_visited(
-  text, text, uuid, uuid, boolean, text, timestamptz, timestamptz) from public, anon;
+  text, text, uuid, uuid, boolean, text, timestamptz, timestamptz, boolean) from public, anon;
 grant execute on function public.get_sales_map_visited(
-  text, text, uuid, uuid, boolean, text, timestamptz, timestamptz) to authenticated;
+  text, text, uuid, uuid, boolean, text, timestamptz, timestamptz, boolean) to authenticated;

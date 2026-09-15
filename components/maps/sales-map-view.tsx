@@ -569,6 +569,12 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     setTouchedAgent(true)
     setPickedAgent(id)
   }
+  // The deep link's promise is "everything this agent has", so while its agent
+  // stands in untouched the Visited lens returns the whole roster (restful even
+  // for accounts with no meeting in the window). The moment the admin moves the
+  // picker, the same value becomes a strict filter: visited-only, like the rest
+  // of the toolbar. Migration 142 keys the RPC on this distinction.
+  const agentWholeRoster = !touchedAgent && initialAgentId != null
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   // A deep-linked agent means "show everything this agent has", not "show
   // today" — the default single-day window would otherwise land on an
@@ -868,6 +874,7 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     status: statusFilter,
     teamId: teamFilter,
     agentId: agentFilter,
+    agentWholeRoster,
     type: typeFilter,
     range,
   })
@@ -903,11 +910,12 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     }[] = []
     const attentionRows: AttentionRow[] = []
 
-    // The scoped agent's own roster, plus the accounts they tagged along on
-    // (the Clients page's "View on map" deep link and the toolbar share this
-    // path). The VISITED lens is server-side now (migration 142): a row there
-    // is a client with a visit in range, whole-roster-or-not. This attention
-    // branch only decides which of those account for the Needs Attention list.
+    // Scoped to one agent (the Clients page's "View on map" deep link) means
+    // the whole roster, not just the ones with a meeting in range — a client
+    // with no visit yet is still one of theirs, just unlocated. Left off the
+    // unscoped list on purpose (see the block comment above `SalesMapView`):
+    // that would resurrect the old "Not visited" lens, which dumped nearly
+    // every client in the database with nothing actionable in it.
     const isAgentScoped = agentFilter !== 'all' && agentFilter !== 'unassigned'
 
     /**
