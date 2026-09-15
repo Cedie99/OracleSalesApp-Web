@@ -903,12 +903,11 @@ export function SalesMapView({ headerAction, initialAgentId }: SalesMapViewProps
     }[] = []
     const attentionRows: AttentionRow[] = []
 
-    // Scoped to one agent (the Clients page's "View on map" deep link) means
-    // the whole roster, not just the ones with a meeting in range — a client
-    // with no visit yet is still one of theirs, just unlocated. Left off the
-    // unscoped list on purpose (see the block comment above `SalesMapView`):
-    // that would resurrect the old "Not visited" lens, which dumped nearly
-    // every client in the database with nothing actionable in it.
+    // The scoped agent's own roster, plus the accounts they tagged along on
+    // (the Clients page's "View on map" deep link and the toolbar share this
+    // path). The VISITED lens is server-side now (migration 142): a row there
+    // is a client with a visit in range, whole-roster-or-not. This attention
+    // branch only decides which of those account for the Needs Attention list.
     const isAgentScoped = agentFilter !== 'all' && agentFilter !== 'unassigned'
 
     /**
