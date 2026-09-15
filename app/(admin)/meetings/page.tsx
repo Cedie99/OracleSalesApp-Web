@@ -95,6 +95,7 @@ function MeetingsPageContent() {
   const [outcomeFilter, setOutcomeFilter] = useState<string>('all')
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [picked, setPicked] = useState<MeetingRow | null>(null)
+  const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string } | null>(null)
   const [sort, setSort] = useState<SortState>({ key: 'date', dir: 'desc' })
   const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
   /**
@@ -706,7 +707,7 @@ function MeetingsPageContent() {
       {/* Meeting Detail Dialog */}
       {/* Closing clears BOTH sources — the deep link is a default, and a default
           the admin has dismissed must stay dismissed. */}
-      <Dialog open={!!selected} onOpenChange={() => { setPicked(null); setDismissedLink(true) }}>
+      <Dialog open={!!selected} onOpenChange={() => { setPicked(null); setDismissedLink(true); setLightboxPhoto(null) }}>
         <DialogContent className="bg-card border-border sm:max-w-3xl max-h-[92vh] flex flex-col gap-0 p-0 overflow-hidden" showCloseButton={false}>
           {selected && (() => {
             const hasStart = selected.gps_lat != null && selected.gps_lng != null
@@ -787,6 +788,23 @@ function MeetingsPageContent() {
               </div>
 
               <div className="space-y-4">
+                {selected.photo_url && (
+                  <div className="flex items-start gap-2 text-xs">
+                    <Camera className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-muted-foreground mb-1.5">Visit Photo</p>
+                      <button
+                        type="button"
+                        onClick={() => setLightboxPhoto({ url: selected.photo_url! })}
+                        className="w-32 h-32 rounded-md overflow-hidden border border-border group cursor-pointer"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={selected.photo_url} alt="Visit photo" className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex items-start gap-2 text-xs">
                   <ListChecks className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
                   <div className="min-w-0">
@@ -888,6 +906,18 @@ function MeetingsPageContent() {
             </>
             )
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Photo Lightbox */}
+      <Dialog open={!!lightboxPhoto} onOpenChange={open => { if (!open) setLightboxPhoto(null) }}>
+        <DialogContent className="sm:max-w-2xl p-0 overflow-hidden">
+          {lightboxPhoto && (
+            <>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={lightboxPhoto.url} alt="Visit photo" className="w-full max-h-[75vh] object-contain bg-black" />
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </div>
