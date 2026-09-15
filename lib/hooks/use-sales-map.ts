@@ -39,6 +39,12 @@ export interface SalesMapFilters {
   teamId: string
   /** 'all' | 'unassigned' | agent id */
   agentId: string
+  /**
+   * Agent scope as "show the whole roster, visited or not" (the Clients page's
+   * deep link) versus as a strict filter (the toolbar's agent picker). Only
+   * meaningful when agentId is a real person; see migration 142.
+   */
+  agentWholeRoster: boolean
   /** 'all' | 'f2f' | 'online' */
   type: string
   range: { start: Date; end: Date } | null
@@ -57,6 +63,7 @@ export function useSalesMapVisited(filters: SalesMapFilters) {
     p_type: filters.type,
     p_from: filters.range?.start.toISOString() ?? null,
     p_to: filters.range?.end.toISOString() ?? null,
+    p_agent_whole_roster: filters.agentWholeRoster,
   }
 
   const key = `sales-map-visited:${JSON.stringify(args)}`
