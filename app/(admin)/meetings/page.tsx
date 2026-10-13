@@ -16,7 +16,9 @@ import { Pagination } from '@/components/ui/pagination'
 import { DateRangeFilter } from '@/components/ui/date-range-filter'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
-import { meetingGpsDriftMeters, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
+import { meetingGpsDriftMeters, meetingDurationMinutes, meetingPhotos } from '@/lib/hooks/use-meetings'
+import { MeetingPhotoGrid } from '@/components/meeting-photos'
+import { PhotoLightbox, type LightboxPhoto } from '@/components/photo-lightbox'
 import {
   useMeetingsOverview,
   useMeetingsPage,
@@ -95,7 +97,7 @@ function MeetingsPageContent() {
   const [outcomeFilter, setOutcomeFilter] = useState<string>('all')
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [picked, setPicked] = useState<MeetingRow | null>(null)
-  const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string } | null>(null)
+  const [lightboxPhoto, setLightboxPhoto] = useState<LightboxPhoto | null>(null)
   const [sort, setSort] = useState<SortState>({ key: 'date', dir: 'desc' })
   const [expandedManagerKey, setExpandedManagerKey] = useState<string | null>(null)
   /**
@@ -663,7 +665,13 @@ function MeetingsPageContent() {
                                   <title>Start GPS only — no closing fix</title>
                                 </MapPin>
                               ))}
-                            {m.photo_url && <Camera className="w-3.5 h-3.5 text-primary" />}
+                            {/* Any photo at all — the new-prospect selfie or the
+                                existing-client Start/End pair. */}
+                            {meetingPhotos(m).length > 0 && (
+                              <Camera className="w-3.5 h-3.5 text-primary" aria-label="Photo taken">
+                                <title>Photo taken</title>
+                              </Camera>
+                            )}
                             {/* General "someone tagged along" flag — any live
                                 companion, teammate or manager. Distinct from
                                 ManagerGateIcon below it, which only ever fires
@@ -722,6 +730,16 @@ function MeetingsPageContent() {
             const stageMoved = nowType && selected.client_status_at_meeting !== nowType
             const companions = selected.companions
             const gate = managerGate(companions)
+            // Names which photos are on file, the same way the GPS chip names
+            // which fixes are — one half of the Start/End pair alone is either
+            // a pre-2026-10-12 meeting (End only) or an upload still in flight.
+            const photoKinds = meetingPhotos(selected).map(p => p.kind)
+            const photoChip = photoKinds.includes('start') && photoKinds.includes('end')
+              ? 'Start & end photos'
+              : photoKinds.includes('start') ? 'Start photo only'
+              : photoKinds.includes('end') ? 'End photo only'
+              : photoKinds.length > 0 ? 'Photo taken'
+              : null
             return (
             <>
             <DialogHeader className="shrink-0 border-b border-border px-5 py-3 flex-row items-center justify-between space-y-0">
@@ -788,22 +806,7 @@ function MeetingsPageContent() {
               </div>
 
               <div className="space-y-4">
-                {selected.photo_url && (
-                  <div className="flex items-start gap-2 text-xs">
-                    <Camera className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                    <div className="min-w-0">
-                      <p className="text-muted-foreground mb-1.5">Visit Photo</p>
-                      <button
-                        type="button"
-                        onClick={() => setLightboxPhoto({ url: selected.photo_url! })}
-                        className="w-32 h-32 rounded-md overflow-hidden border border-border group cursor-pointer"
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={selected.photo_url} alt="Visit photo" className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <MeetingPhotoGrid meeting={selected} by={submittedBy} onOpen={setLightboxPhoto} />
 
                 <div className="flex items-start gap-2 text-xs">
                   <ListChecks className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
@@ -892,9 +895,9 @@ function MeetingsPageContent() {
                     {selected.end_gps_lat != null ? 'Start & end GPS' : 'Start GPS only'}
                   </div>
                 )}
-                {selected.photo_url && (
+                {photoChip && (
                   <div className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground bg-muted/40 rounded-full px-3 py-1.5">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" /> Photo taken
+                    <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" /> {photoChip}
                   </div>
                 )}
               </div>
@@ -909,17 +912,8 @@ function MeetingsPageContent() {
         </DialogContent>
       </Dialog>
 
-      {/* Photo Lightbox */}
-      <Dialog open={!!lightboxPhoto} onOpenChange={open => { if (!open) setLightboxPhoto(null) }}>
-        <DialogContent className="sm:max-w-2xl p-0 overflow-hidden">
-          {lightboxPhoto && (
-            <>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={lightboxPhoto.url} alt="Visit photo" className="w-full max-h-[75vh] object-contain bg-black" />
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+      {/* Photo Lightbox — a sibling of the detail dialog, see PhotoLightbox. */}
+      <PhotoLightbox photo={lightboxPhoto} onOpenChange={open => { if (!open) setLightboxPhoto(null) }} />
     </div>
   )
 }

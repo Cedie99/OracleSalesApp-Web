@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { meetingDurationMinutes, meetingGpsDriftMeters } from '@/lib/hooks/use-meetings'
+import { meetingDurationMinutes, meetingGpsDriftMeters, meetingPhotos } from '@/lib/hooks/use-meetings'
 import { useProfiles } from '@/lib/hooks/use-profiles'
 import { tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
 import {
@@ -127,7 +127,9 @@ export function SalesReports() {
               // is blank when no manager was invited, which is not the same
               // fact as an approval that is missing.
               'Manager Confirmation': gate === 'none' ? '' : MANAGER_GATE_LABEL[gate],
-              'Photo': m.photo_url ? 'Yes' : 'No',
+              // Which photos, not just whether: an existing-client visit has a
+              // Start/End pair, and one half alone is worth seeing in the sheet.
+              'Photo': meetingPhotos(m).map(p => p.label).join(', ') || 'No',
             }
           }),
           'Meetings',

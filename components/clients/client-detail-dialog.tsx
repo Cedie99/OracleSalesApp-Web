@@ -8,7 +8,9 @@ import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CircularProgress } from '@/components/ui/circular-progress'
 import { getQualifiedAgendaMilestones } from '@/lib/client-progress'
-import { useMeetings, meetingGpsDriftMeters, meetingDurationMinutes } from '@/lib/hooks/use-meetings'
+import { useMeetings, meetingGpsDriftMeters, meetingDurationMinutes, meetingPhotos, type MeetingPhoto } from '@/lib/hooks/use-meetings'
+import { MeetingPhotoGrid } from '@/components/meeting-photos'
+import { PhotoLightbox, captionFor, type LightboxPhoto } from '@/components/photo-lightbox'
 import { useTagAlongs, tagAlongsFor } from '@/lib/hooks/use-tag-alongs'
 import { CompanionLine, ManagerGateIcon } from '@/components/tag-along-indicator'
 import { formatDistanceMeters, formatDurationMinutes } from '@/lib/utils'
@@ -142,8 +144,49 @@ function DetailLine({ icon: Icon, label, value }: { icon: React.ComponentType<{ 
   )
 }
 
+/** One photo off one meeting — the Visit Photos grid shows each Start/End shot as its own tile. */
+interface ClientVisitPhoto {
+  meeting: Meeting
+  photo: MeetingPhoto
+}
+
+/** Every photo across these meetings, newest meeting first, and within a meeting in the order taken. */
+function clientVisitPhotos(meetings: Meeting[]): ClientVisitPhoto[] {
+  return meetings.flatMap(meeting => meetingPhotos(meeting).map(photo => ({ meeting, photo })))
+}
+
+function lightboxFor({ meeting, photo }: ClientVisitPhoto): LightboxPhoto {
+  const by = meeting.recorder?.full_name ?? meeting.agent?.full_name ?? 'Unknown'
+  return {
+    url: photo.url,
+    label: photo.kind === 'visit' ? 'Visit photo' : `${photo.label} photo`,
+    caption: captionFor(by, photo.capturedAt ?? meeting.meeting_date),
+  }
+}
+
+/** A square Visit Photos tile, dated, and tagged Start/End when it is one half of an existing-client pair. */
+function VisitPhotoTile({ item, onOpen }: { item: ClientVisitPhoto; onOpen: (photo: LightboxPhoto) => void }) {
+  const { meeting, photo } = item
+  const dateLabel = format(new Date(meeting.meeting_date), 'MMM d, yyyy')
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(lightboxFor(item))}
+      className="relative aspect-square rounded-md overflow-hidden border border-border group cursor-pointer"
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={photo.url} alt={`${photo.label} photo, visit on ${dateLabel}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
+      <span className="absolute bottom-1 left-1 text-[9px] bg-black/60 text-white rounded px-1 py-0.5">
+        {format(new Date(meeting.meeting_date), 'MMM d')}
+        {photo.kind !== 'visit' && ` · ${photo.label}`}
+      </span>
+    </button>
+  )
+}
+
 /** The map-and-details popup opened by clicking a Meeting History row. */
-function MeetingDetailDialog({ meeting, companions, onOpenChange }: { meeting: Meeting | null; companions: TagAlongRequest[]; onOpenChange: (open: boolean) => void }) {
+function MeetingDetailDialog({ meeting, companions, onOpenChange, onOpenPhoto }: { meeting: Meeting | null; companions: TagAlongRequest[]; onOpenChange: (open: boolean) => void; onOpenPhoto: (photo: LightboxPhoto) => void }) {
   const hasStart = meeting?.gps_lat != null && meeting?.gps_lng != null
   const hasEnd = meeting?.end_gps_lat != null && meeting?.end_gps_lng != null
   const start = meeting && hasStart ? { lat: meeting.gps_lat as number, lng: meeting.gps_lng as number, label: 'Start' } : null
@@ -223,6 +266,8 @@ function MeetingDetailDialog({ meeting, companions, onOpenChange }: { meeting: M
               </div>
 
               <div className="px-5 pb-5 space-y-3">
+                <MeetingPhotoGrid meeting={meeting} by={submittedBy} onOpen={onOpenPhoto} />
+
                 <div className="flex items-start gap-2 text-xs">
                   <ListChecks className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
                   <div className="min-w-0">
@@ -289,7 +334,7 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
    * the dialog actually wanted.
    */
   const { meetings } = useMeetings(client?.id)
-  const [lightboxPhoto, setLightboxPhoto] = useState<{ url: string; date: string; by: string } | null>(null)
+  const [lightboxPhoto, setLightboxPhoto] = useState<LightboxPhoto | null>(null)
   const [showAllMeetings, setShowAllMeetings] = useState(false)
   const [showAllPhotos, setShowAllPhotos] = useState(false)
   const [outcomeFilter, setOutcomeFilter] = useState<MeetingOutcome | 'all'>('all')
@@ -314,7 +359,7 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
             const clientMeetings = meetings
               .filter(m => m.client_id === client.id)
               .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
-            const meetingPhotos = clientMeetings.filter(m => m.photo_url)
+            const visitPhotos = clientVisitPhotos(clientMeetings)
             const progress = getQualifiedAgendaMilestones(client.id, meetings).percent
 
             return (
@@ -441,7 +486,7 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
                             <Camera className="w-3.5 h-3.5 text-muted-foreground" />
                             Visit Photos
                           </p>
-                          {meetingPhotos.length > PHOTO_LIMIT && (
+                          {visitPhotos.length > PHOTO_LIMIT && (
                             <button
                               type="button"
                               onClick={() => setShowAllPhotos(true)}
@@ -451,28 +496,12 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
                             </button>
                           )}
                         </div>
-                        {meetingPhotos.length > 0 ? (
+                        {visitPhotos.length > 0 ? (
                           <div className="grid grid-cols-3 gap-2">
-                            {meetingPhotos.slice(0, PHOTO_LIMIT).map(m => {
-                              const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
-                              const dateLabel = format(new Date(m.meeting_date), 'MMM d, yyyy')
-                              return (
-                                <button
-                                  key={m.id}
-                                  type="button"
-                                  onClick={() => setLightboxPhoto({ url: m.photo_url!, date: dateLabel, by: submittedBy })}
-                                  className="relative aspect-square rounded-md overflow-hidden border border-border group cursor-pointer"
-                                >
-                                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                                  <img src={m.photo_url!} alt={`Visit on ${dateLabel}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
-                                  <span className="absolute bottom-1 left-1 text-[9px] bg-black/60 text-white rounded px-1 py-0.5">
-                                    {format(new Date(m.meeting_date), 'MMM d')}
-                                  </span>
-                                </button>
-                              )
-                            })}
-                            {Array.from({ length: Math.max(0, PHOTO_LIMIT - meetingPhotos.length) }).map((_, i) => (
+                            {visitPhotos.slice(0, PHOTO_LIMIT).map(item => (
+                              <VisitPhotoTile key={`${item.meeting.id}-${item.photo.kind}`} item={item} onOpen={setLightboxPhoto} />
+                            ))}
+                            {Array.from({ length: Math.max(0, PHOTO_LIMIT - visitPhotos.length) }).map((_, i) => (
                               <div key={`photo-placeholder-${i}`} className="aspect-square rounded-md border border-border" />
                             ))}
                           </div>
@@ -598,32 +627,18 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
             {client && <p className="text-xs text-muted-foreground">{client.company_name}</p>}
           </DialogHeader>
           {client && (() => {
-            const allPhotos = meetings
-              .filter(m => m.client_id === client.id && m.photo_url)
-              .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())
+            const allPhotos = clientVisitPhotos(
+              meetings
+                .filter(m => m.client_id === client.id)
+                .sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime()),
+            )
 
             return (
               <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
                 <div className="grid grid-cols-3 gap-2">
-                  {allPhotos.map(m => {
-                    const submittedBy = m.recorder?.full_name ?? m.agent?.full_name ?? 'Unknown'
-                    const dateLabel = format(new Date(m.meeting_date), 'MMM d, yyyy')
-                    return (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => setLightboxPhoto({ url: m.photo_url!, date: dateLabel, by: submittedBy })}
-                        className="relative aspect-square rounded-md overflow-hidden border border-border group cursor-pointer"
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={m.photo_url!} alt={`Visit on ${dateLabel}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
-                        <span className="absolute bottom-1 left-1 text-[9px] bg-black/60 text-white rounded px-1 py-0.5">
-                          {format(new Date(m.meeting_date), 'MMM d')}
-                        </span>
-                      </button>
-                    )
-                  })}
+                  {allPhotos.map(item => (
+                    <VisitPhotoTile key={`${item.meeting.id}-${item.photo.kind}`} item={item} onOpen={setLightboxPhoto} />
+                  ))}
                 </div>
               </div>
             )
@@ -631,26 +646,16 @@ export function ClientDetailDialog({ client, onOpenChange, canEdit = false, onEd
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!lightboxPhoto} onOpenChange={open => { if (!open) setLightboxPhoto(null) }}>
-        <DialogContent className="sm:max-w-2xl p-0 overflow-hidden">
-          {lightboxPhoto && (
-            <>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={lightboxPhoto.url} alt="Visit photo" className="w-full max-h-[75vh] object-contain bg-black" />
-              <div className="flex items-center justify-between text-xs text-muted-foreground p-3">
-                <span>Submitted by {lightboxPhoto.by}</span>
-                <span>{lightboxPhoto.date}</span>
-              </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
-
       <MeetingDetailDialog
         meeting={selectedMeeting}
         companions={selectedMeeting ? tagAlongsFor(tagAlongsByMeetingId, selectedMeeting.id) : []}
         onOpenChange={open => { if (!open) setSelectedMeeting(null) }}
+        onOpenPhoto={setLightboxPhoto}
       />
+
+      {/* Rendered after the meeting popup so it stacks above it when opened
+          from there — a sibling, never nested; see PhotoLightbox. */}
+      <PhotoLightbox photo={lightboxPhoto} onOpenChange={open => { if (!open) setLightboxPhoto(null) }} />
     </>
   )
 }
