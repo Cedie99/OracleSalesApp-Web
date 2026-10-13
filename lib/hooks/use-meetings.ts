@@ -82,6 +82,43 @@ export function meetingGpsDriftMeters(meeting: Meeting): number | null {
   return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)))
 }
 
+export interface MeetingPhoto {
+  kind: 'visit' | 'start' | 'end'
+  label: string
+  url: string
+  /** When the shutter was pressed. Null for the visit selfie, which carries no capture time of its own. */
+  capturedAt: string | null
+}
+
+/**
+ * Every photo a meeting carries, in the order they were taken.
+ *
+ * Mobile has two recording flows with different evidence:
+ *  - The full form (new prospects) takes one selfie → `photo_url`.
+ *  - The existing-client fast path takes a Start photo and an End photo →
+ *    `start_photo_url` / `end_photo_url`. The Start photo only exists from
+ *    mobile's 2026-10-12 release (it reversed the 2026-07-16 location-only
+ *    Start), so older fast-path meetings have an End photo alone.
+ *
+ * Only http(s) URLs are returned. Mobile inserts the row before its queued
+ * upload patches the public URL in, so a column can briefly be null, and
+ * anything that isn't a URL is a device-local path the web can't load.
+ */
+export function meetingPhotos(meeting: Meeting): MeetingPhoto[] {
+  const photos: MeetingPhoto[] = []
+  const isUrl = (url: string | null | undefined): url is string => !!url && /^https?:\/\//.test(url)
+  if (isUrl(meeting.photo_url)) {
+    photos.push({ kind: 'visit', label: 'Visit', url: meeting.photo_url, capturedAt: null })
+  }
+  if (isUrl(meeting.start_photo_url)) {
+    photos.push({ kind: 'start', label: 'Start', url: meeting.start_photo_url, capturedAt: meeting.start_captured_at ?? null })
+  }
+  if (isUrl(meeting.end_photo_url)) {
+    photos.push({ kind: 'end', label: 'End', url: meeting.end_photo_url, capturedAt: meeting.end_captured_at ?? null })
+  }
+  return photos
+}
+
 interface UseMeetingsResult {
   meetings: Meeting[]
   loading: boolean
