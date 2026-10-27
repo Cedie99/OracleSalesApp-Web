@@ -23,6 +23,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AddStoreDialog, type AddStoreDraft } from '@/components/collection/add-store-dialog'
 import { StoreBalancesDialog } from '@/components/collection/store-balances-dialog'
 import { AdditionalBadge } from '@/components/collection/additional-badge'
+import { DesignatedMethodBadge } from '@/components/collection/designated-method-badge'
 import { listAdditionalStore } from './actions'
 import { toast } from 'sonner'
 import { ListBoard } from '@/components/collection/list-board'
@@ -95,7 +96,7 @@ export default function CollectionPage() {
 
   const {
     visits, loading: visitsLoading, error: visitsError, createVisit, removeVisit, cancelClaim,
-    refresh: refreshVisits,
+    setDesignatedMethod, refresh: refreshVisits,
   } = useCollectionVisits()
   const {
     remittances: allRemittances, error: remittancesError, setStatus: setRemittanceStatus,
@@ -123,7 +124,17 @@ export default function CollectionPage() {
   const [search, setSearch] = useState('')
   const [collectorFilter, setCollectorFilter] = useState<string>('all')
   const [methodFilter, setMethodFilter] = useState<string>('all')
-  const [selectedVisit, setSelectedVisit] = useState<CollectionVisit | null>(null)
+  // Held by id and resolved against the live list, so an edit made from the
+  // detail dialog (the Counter designation) shows there as soon as it reloads.
+  const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null)
+  const selectedVisit = useMemo(
+    () => visits.find(v => v.id === selectedVisitId) ?? null,
+    [visits, selectedVisitId]
+  )
+  const setSelectedVisit = useCallback(
+    (visit: CollectionVisit | null) => setSelectedVisitId(visit?.id ?? null),
+    []
+  )
   const [addOpen, setAddOpen] = useState(false)
   const [balancesOpen, setBalancesOpen] = useState(false)
 
@@ -425,6 +436,7 @@ export default function CollectionPage() {
             scheduledFor: draft.scheduledFor,
             amountDue: draft.amountDue,
             listedBy: profile?.id ?? null,
+            designatedPaymentMethod: draft.designatedPaymentMethod,
           })
           if (result.error) {
             await refreshVisits()
@@ -447,6 +459,7 @@ export default function CollectionPage() {
             scheduledFor: draft.scheduledFor,
             amountDue: draft.amountDue,
             listedBy: profile?.id ?? null,
+            designatedPaymentMethod: draft.designatedPaymentMethod,
           })
           if (message) {
             const wrapped = stoppedAt(message)
@@ -752,6 +765,7 @@ export default function CollectionPage() {
                                 {v.client?.company_name}
                               </p>
                               <AdditionalBadge visit={v} showAck={false} />
+                              <DesignatedMethodBadge visit={v} />
                             </div>
                             <p className="text-xs text-muted-foreground truncate max-w-[180px]">
                               {v.client?.office_address}
@@ -997,6 +1011,7 @@ export default function CollectionPage() {
       <VisitDetailDialog
         visit={selectedVisit}
         onOpenChange={open => !open && setSelectedVisit(null)}
+        onSetDesignatedMethod={setDesignatedMethod}
         listedByName={listedByName}
       />
 

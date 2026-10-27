@@ -7,9 +7,9 @@ import { fetchAllPages } from '@/lib/supabase/paginate'
 import { recordAuditLog } from '@/lib/audit/actions'
 import { singleChange } from '@/lib/audit/entries'
 import { peso } from '@/lib/money'
-import { REMITTANCE_STATUS_LABEL } from '@/lib/status-styles'
+import { REMITTANCE_STATUS_LABEL, paymentMethodLabel } from '@/lib/status-styles'
 import type {
-  Client, CollectionPayment, CollectionVisit, Profile, Remittance, RemittanceStatus,
+  Client, CollectionPayment, CollectionVisit, PaymentMethod, Profile, Remittance, RemittanceStatus,
 } from '@/types'
 
 /**
@@ -65,15 +65,18 @@ export const VISIT_COLUMNS = `
 // the same group for the same reason: 114 ships in this repo and CI applies it
 // on merge, but the Vercel build and the migration push race, so for a few
 // minutes the new code can be live against the old schema.
+//
+// `designated_payment_method` (migration 143 — the admin's "pays at Counter")
+// joins for the same reason.
 export const ADDITIONAL_COLUMNS = `
   is_additional, additional_received_at, additional_seen_at,
-  client_lat, client_lng
+  client_lat, client_lng, designated_payment_method
 `
 
-/** True when a select failed only because 068's/114's columns aren't there yet. */
+/** True when a select failed only because 068's/114's/143's columns aren't there yet. */
 function isMissingAdditionalColumn(error: { message?: string } | null): boolean {
   return !!error?.message
-    && /is_additional|additional_received_at|additional_seen_at|client_lat|client_lng/.test(error.message)
+    && /is_additional|additional_received_at|additional_seen_at|client_lat|client_lng|designated_payment_method/.test(error.message)
 }
 
 // The installments behind a partial store (migration 070). Fetched in one pass
@@ -198,6 +201,8 @@ function normalizeVisit(
     is_additional: (row.is_additional as boolean | undefined) ?? false,
     additional_received_at: (row.additional_received_at as string | null) ?? null,
     additional_seen_at: (row.additional_seen_at as string | null) ?? null,
+    // Absent under the pre-143 fallback select — null reads as "collector's choice".
+    designated_payment_method: (row.designated_payment_method as PaymentMethod | null) ?? null,
     amount_due: num(row.amount_due) ?? 0,
     amount_collected: num(row.amount_collected),
     gps_lat: num(row.gps_lat),
@@ -236,6 +241,11 @@ export interface NewCollectionVisit {
   amountDue: number
   /** The admin publishing the list. */
   listedBy: string | null
+  /**
+   * The only method the collector may record this store with (migration 143),
+   * or null to leave it to them. Currently only 'counter'.
+   */
+  designatedPaymentMethod: PaymentMethod | null
 }
 
 interface UseCollectionVisitsResult {
@@ -246,6 +256,7 @@ interface UseCollectionVisitsResult {
   createVisit: (draft: NewCollectionVisit) => Promise<string | null>
   removeVisit: (id: string) => Promise<string | null>
   cancelClaim: (id: string) => Promise<string | null>
+  setDesignatedMethod: (id: string, method: PaymentMethod | null) => Promise<string | null>
 }
 
 /**
@@ -374,6 +385,11 @@ export function useCollectionVisits(
         scheduled_for: new Date(`${draft.scheduledFor}T12:00:00`).toISOString(),
         listed_by: draft.listedBy,
         amount_due: draft.amountDue,
+        // Only sent when set, so a plain listing still inserts cleanly against
+        // a database that hasn't run 143 yet.
+        ...(draft.designatedPaymentMethod
+          ? { designated_payment_method: draft.designatedPaymentMethod }
+          : {}),
         // Everything the collector fills in stays null: the store belongs to
         // nobody until someone actually works it.
       })
@@ -392,6 +408,12 @@ export function useCollectionVisits(
           { field: 'scheduled_for', label: 'Scheduled for', from: null, to: draft.scheduledFor },
           { field: 'amount_due', label: 'Amount due', from: null, to: peso(draft.amountDue) },
           { field: 'area', label: 'Area', from: null, to: draft.area },
+          ...(draft.designatedPaymentMethod
+            ? [{
+                field: 'designated_payment_method', label: 'Payment method (set by office)',
+                from: null, to: paymentMethodLabel(draft.designatedPaymentMethod),
+              }]
+            : []),
         ],
       })
 
@@ -481,7 +503,48 @@ export function useCollectionVisits(
     [load, visits]
   )
 
-  return { visits, loading, error, refresh, createVisit, removeVisit, cancelClaim }
+  /**
+   * Set or clear the admin's designated payment method on a listing (migration
+   * 143). Meant for a store nobody has worked yet — the database refuses a
+   * designation that contradicts a method already recorded on the row.
+   */
+  const setDesignatedMethod = useCallback(
+    async (id: string, method: PaymentMethod | null): Promise<string | null> => {
+      const supabase = createClient()
+      const target = visits.find(v => v.id === id)
+
+      const { error: updateError } = await supabase
+        .from('collection_visits')
+        .update({ designated_payment_method: method })
+        .eq('id', id)
+
+      if (updateError) return updateError.message
+
+      const before = target?.designated_payment_method ?? null
+      void recordAuditLog({
+        action: 'collection_visit.payment_method_designated',
+        entityTable: 'collection_visits',
+        entityId: id,
+        entityLabel: target?.client_name ?? null,
+        summary: method
+          ? `Set ${target?.client_name ?? 'a store'} to pay by ${paymentMethodLabel(method)}`
+          : `Cleared the set payment method on ${target?.client_name ?? 'a store'}`,
+        changes: singleChange(
+          'designated_payment_method', 'Payment method (set by office)',
+          before ? paymentMethodLabel(before) : null,
+          method ? paymentMethodLabel(method) : null,
+        ),
+      })
+
+      await load()
+      return null
+    },
+    [load, visits]
+  )
+
+  return {
+    visits, loading, error, refresh, createVisit, removeVisit, cancelClaim, setDesignatedMethod,
+  }
 }
 
 interface UseRemittancesResult {

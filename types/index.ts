@@ -199,6 +199,14 @@ export interface CollectionVisit {
    * withheld from the collector — see the module note above.
    */
   amount_due: number
+  /**
+   * Admin-set before collection (migration 143): the only method this listing
+   * may be recorded with — currently only 'counter', for a store the office
+   * knows pays over the counter. Mobile pre-selects and locks the picker to it,
+   * and the database rejects any other method. Null = the collector chooses.
+   * Per listing, not per client: it is ticked again each time the store is listed.
+   */
+  designated_payment_method: PaymentMethod | null
 
   // --- Captured by the collector on the phone -------------------------------
 

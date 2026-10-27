@@ -14,9 +14,9 @@ import {
   PAYMENT_METHOD_TONE, TONE_CLASS, TONE_TEXT, paymentMethodLabel,
   VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
-import type { CollectionVisit } from '@/types'
+import type { CollectionVisit, PaymentMethod } from '@/types'
 import { StoreLocationPanel } from '@/components/maps/store-location-panel'
-import { AlertTriangle, Banknote, Camera, Clock, MapPin, UserCog, Wallet, Zap } from 'lucide-react'
+import { AlertTriangle, Banknote, Camera, Clock, Lock, MapPin, UserCog, Wallet, Zap } from 'lucide-react'
 import { format } from 'date-fns'
 
 interface VisitDetailDialogProps {
@@ -24,13 +24,20 @@ interface VisitDetailDialogProps {
   onOpenChange: (open: boolean) => void
   /** Name of the admin who put the store on the list, resolved by the caller. */
   listedByName: string | null
+  /**
+   * Sets or clears the office's payment-method lock (migration 143). Returns an
+   * error message, or null. Only offered while nobody has recorded a method.
+   */
+  onSetDesignatedMethod: (id: string, method: PaymentMethod | null) => Promise<string | null>
 }
 
 /**
  * One store, from the moment it was listed through to what the collector who
  * picked it up brought back — including whether both required captures arrived.
  */
-export function VisitDetailDialog({ visit, onOpenChange, listedByName }: VisitDetailDialogProps) {
+export function VisitDetailDialog({
+  visit, onOpenChange, listedByName, onSetDesignatedMethod,
+}: VisitDetailDialogProps) {
   const [photo, setPhoto] = useState<LightboxPhoto | null>(null)
 
   return (
@@ -41,7 +48,12 @@ export function VisitDetailDialog({ visit, onOpenChange, listedByName }: VisitDe
             growing off the top and bottom of the screen. */}
         <DialogContent className="sm:max-w-2xl max-h-[88vh] grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
           {visit && (
-            <VisitDetail visit={visit} listedByName={listedByName} onOpenPhoto={setPhoto} />
+            <VisitDetail
+              visit={visit}
+              listedByName={listedByName}
+              onOpenPhoto={setPhoto}
+              onSetDesignatedMethod={onSetDesignatedMethod}
+            />
           )}
         </DialogContent>
       </Dialog>
@@ -53,11 +65,12 @@ export function VisitDetailDialog({ visit, onOpenChange, listedByName }: VisitDe
 }
 
 function VisitDetail({
-  visit, listedByName, onOpenPhoto,
+  visit, listedByName, onOpenPhoto, onSetDesignatedMethod,
 }: {
   visit: CollectionVisit
   listedByName: string | null
   onOpenPhoto: (photo: LightboxPhoto) => void
+  onSetDesignatedMethod: VisitDetailDialogProps['onSetDesignatedMethod']
 }) {
   const proofs = visitProofs(visit)
   const ack = additionalAckState(visit)
@@ -177,6 +190,7 @@ function VisitDetail({
                 <span className="text-muted-foreground">Amount due</span>
                 <span className="tabular-nums font-medium">{peso(visit.amount_due)}</span>
               </div>
+              <DesignatedMethodRow visit={visit} onSet={onSetDesignatedMethod} />
             </div>
 
             {/* Brought back by whichever collector picked it up */}
@@ -342,6 +356,67 @@ function VisitDetail({
           </div>
         </div>
       </div>
+    </>
+  )
+}
+
+/**
+ * The office's payment-method lock on this listing (migration 143). Read-only
+ * once anyone has recorded a method, since the lock is an instruction for a
+ * visit that has not happened yet. Until then the admin can switch it on or off
+ * here, for a store listed without it (or with it by mistake).
+ */
+function DesignatedMethodRow({
+  visit, onSet,
+}: {
+  visit: CollectionVisit
+  onSet: VisitDetailDialogProps['onSetDesignatedMethod']
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const designated = visit.designated_payment_method
+  const editable = visit.payment_method === null
+  const isCounter = designated === 'counter'
+
+  async function toggle() {
+    setBusy(true)
+    setError('')
+    const message = await onSet(visit.id, isCounter ? null : 'counter')
+    setBusy(false)
+    if (message) setError(message)
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-muted-foreground">Payment method</span>
+        {editable ? (
+          <button
+            type="button"
+            onClick={toggle}
+            disabled={busy}
+            aria-pressed={isCounter}
+            className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+              isCounter
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-input text-muted-foreground hover:bg-accent hover:text-foreground'
+            }`}
+          >
+            {isCounter && <Lock className="h-3 w-3" />}
+            {isCounter ? 'Counter only' : 'Set to Counter'}
+          </button>
+        ) : (
+          <span className="font-medium">
+            {designated ? `${paymentMethodLabel(designated)} only` : 'Collector’s choice'}
+          </span>
+        )}
+      </div>
+      {editable && isCounter && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          Set by the office. The collector&apos;s app will only let them record this store as Counter.
+        </p>
+      )}
+      {error && <p className="text-[11px] text-destructive">{error}</p>}
     </>
   )
 }
