@@ -11,7 +11,7 @@ import { CLIENT_SEARCH_LIMIT, clientWhere, recentClientIds, searchClients } from
 import { peso } from '@/lib/money'
 import type { Client, CollectionVisit, PaymentMethod } from '@/types'
 import { format } from 'date-fns'
-import { Check, Search, X } from 'lucide-react'
+import { Check, Lock, Search, X } from 'lucide-react'
 
 export interface AddStoreDraft {
   clientId: string
@@ -195,6 +195,7 @@ export function AddStoreDialog({
   }
 
   const total = picked.reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
+  const counterCount = picked.filter(p => p.counter).length
 
   async function handleAdd() {
     if (picked.length === 0) return setError('Tick at least one store to list.')
@@ -392,7 +393,14 @@ export function AddStoreDialog({
             {/* --- Right: what has been picked, and what each one owes --- */}
             <div className="flex min-h-0 flex-col gap-1.5">
               <div className="flex items-baseline justify-between gap-2">
-                <Label>Picked ({picked.length})</Label>
+                <Label>
+                  Picked ({picked.length})
+                  {counterCount > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                      <Lock className="h-2.5 w-2.5" /> {counterCount} at counter
+                    </span>
+                  )}
+                </Label>
                 <div className="flex items-baseline gap-3">
                   {total > 0 && (
                     <span className="text-[11px] text-muted-foreground tabular-nums">
@@ -418,8 +426,8 @@ export function AddStoreDialog({
                 {picked.length === 0 ? (
                   <p className="px-3 py-3 text-xs leading-relaxed text-muted-foreground">
                     Nothing picked yet. Tick stores on the left — each one&apos;s amount due is
-                    set from its balance. Press <span className="font-medium">Counter</span> on a
-                    store that pays over the counter, and the collector can only record it that way.
+                    set from its balance. Tick <span className="font-medium">Pays at counter</span> under
+                    any store that settles over the counter, and the collector can only record it that way.
                   </p>
                 ) : (
                   <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain p-1">
@@ -427,46 +435,64 @@ export function AddStoreDialog({
                       const client = clientsById.get(p.clientId)
                       const due = Number(p.amount)
                       return (
-                        <div key={p.clientId} className="flex items-center gap-2 px-1">
-                          <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                            {client?.company_name ?? 'Unknown store'}
-                          </span>
-                          {/* Locked to the store's balance — the admin sets the
-                              amount due once in Store credit balances, and every
-                              day's list draws from it. A store with none set can't
-                              be listed until it is (handleAdd blocks it). */}
-                          {/* The office's "this store pays at the counter".
-                              Per store, so it sits on the store's row; the
-                              collector's app then offers Counter only. */}
+                        // A Counter store is tinted as a whole, so a long batch
+                        // can be scanned for which stores are locked without
+                        // reading every row's option line.
+                        <div
+                          key={p.clientId}
+                          className={`rounded-lg border px-2 py-1.5 transition-colors ${
+                            p.counter ? 'border-primary/40 bg-primary/5' : 'border-transparent hover:bg-muted/40'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                              {client?.company_name ?? 'Unknown store'}
+                            </span>
+                            {/* Locked to the store's balance — the admin sets the
+                                amount due once in Store credit balances, and every
+                                day's list draws from it. A store with none set can't
+                                be listed until it is (handleAdd blocks it). */}
+                            <span className="shrink-0 text-right text-sm tabular-nums">
+                              {due > 0 ? (
+                                <span className="text-foreground">{peso(due)}</span>
+                              ) : (
+                                <span className="text-[11px] text-destructive">No due set</span>
+                              )}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggle(p.clientId)}
+                              aria-label={`Remove ${client?.company_name ?? 'this store'}`}
+                              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          {/* The office's "this store pays at the counter". Per
+                              store, so it sits on the store's own row, and it
+                              says what it does to the collector's app rather
+                              than leaving a bare word to guess at. */}
                           <button
                             type="button"
+                            role="checkbox"
+                            aria-checked={p.counter}
                             onClick={() => toggleCounter(p.clientId)}
-                            aria-pressed={p.counter}
-                            title={p.counter
-                              ? 'Collector is locked to Counter — click to let them choose'
-                              : 'Mark as paying over the counter'}
-                            className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-                              p.counter
-                                ? 'border-primary bg-primary text-primary-foreground'
-                                : 'border-input text-muted-foreground hover:bg-accent hover:text-foreground'
-                            }`}
+                            className="mt-1 flex w-full items-center gap-2 rounded-md text-left text-[11px]"
                           >
-                            Counter
-                          </button>
-                          <span className="w-28 shrink-0 text-right text-sm tabular-nums">
-                            {due > 0 ? (
-                              <span className="text-foreground">{peso(due)}</span>
-                            ) : (
-                              <span className="text-[11px] text-destructive">No due set</span>
-                            )}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => toggle(p.clientId)}
-                            aria-label={`Remove ${client?.company_name ?? 'this store'}`}
-                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                          >
-                            <X className="h-3.5 w-3.5" />
+                            <span
+                              className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                                p.counter ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-background'
+                              }`}
+                            >
+                              {p.counter && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+                            </span>
+                            <span className={`flex items-center gap-1 font-medium ${p.counter ? 'text-foreground' : 'text-muted-foreground'}`}>
+                              {p.counter && <Lock className="h-3 w-3" />}
+                              Pays at counter
+                            </span>
+                            <span className="truncate text-muted-foreground/80">
+                              {p.counter ? '· collector can only record Counter' : '· collector picks the method'}
+                            </span>
                           </button>
                         </div>
                       )

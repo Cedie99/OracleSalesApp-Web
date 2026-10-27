@@ -16,7 +16,7 @@ import {
 } from '@/lib/status-styles'
 import type { CollectionVisit, PaymentMethod } from '@/types'
 import { StoreLocationPanel } from '@/components/maps/store-location-panel'
-import { AlertTriangle, Banknote, Camera, Clock, Lock, MapPin, UserCog, Wallet, Zap } from 'lucide-react'
+import { AlertTriangle, Banknote, Camera, Check, Clock, Lock, MapPin, UserCog, Wallet, Zap } from 'lucide-react'
 import { format } from 'date-fns'
 
 interface VisitDetailDialogProps {
@@ -391,19 +391,27 @@ function DesignatedMethodRow({
       <div className="flex items-center justify-between gap-2">
         <span className="text-muted-foreground">Payment method</span>
         {editable ? (
+          // Same tick-box treatment as the Add Store dialog, so the control
+          // reads the same wherever the admin meets it.
           <button
             type="button"
+            role="checkbox"
+            aria-checked={isCounter}
             onClick={toggle}
             disabled={busy}
-            aria-pressed={isCounter}
-            className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium transition-colors disabled:opacity-50 ${
-              isCounter
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-input text-muted-foreground hover:bg-accent hover:text-foreground'
-            }`}
+            className="inline-flex items-center gap-1.5 rounded-md text-[11px] disabled:opacity-50"
           >
-            {isCounter && <Lock className="h-3 w-3" />}
-            {isCounter ? 'Counter only' : 'Set to Counter'}
+            <span
+              className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                isCounter ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-background'
+              }`}
+            >
+              {isCounter && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+            </span>
+            <span className={`flex items-center gap-1 font-medium ${isCounter ? 'text-foreground' : 'text-muted-foreground'}`}>
+              {isCounter && <Lock className="h-3 w-3" />}
+              Pays at counter
+            </span>
           </button>
         ) : (
           <span className="font-medium">
