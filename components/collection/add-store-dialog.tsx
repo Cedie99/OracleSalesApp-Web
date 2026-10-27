@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dialog'
 import { CLIENT_SEARCH_LIMIT, clientWhere, recentClientIds, searchClients } from '@/lib/client-search'
 import { peso } from '@/lib/money'
-import type { Client, CollectionVisit } from '@/types'
+import type { Client, CollectionVisit, PaymentMethod } from '@/types'
 import { format } from 'date-fns'
 import { Check, Search, X } from 'lucide-react'
 
@@ -26,6 +26,12 @@ export interface AddStoreDraft {
    * the client-side insert.
    */
   isAdditional: boolean
+  /**
+   * The office already knows this store pays over the counter (migration 143):
+   * the collector's app locks the method to Counter. Per store, unlike the two
+   * fields above — it describes the customer, not the publish.
+   */
+  designatedPaymentMethod: PaymentMethod | null
 }
 
 interface AddStoreDialogProps {
@@ -52,6 +58,8 @@ interface PickedStore {
   clientId: string
   /** Digits as typed. Kept a string so the field can legitimately be empty. */
   amount: string
+  /** Ticked "Counter" — the collector will be locked to that method. */
+  counter: boolean
 }
 
 /**
@@ -162,7 +170,13 @@ export function AddStoreDialog({
     setPicked(current =>
       current.some(p => p.clientId === clientId)
         ? current.filter(p => p.clientId !== clientId)
-        : [...current, { clientId, amount: openingAmount(clientsById.get(clientId)) }]
+        : [...current, { clientId, amount: openingAmount(clientsById.get(clientId)), counter: false }]
+    )
+  }
+
+  function toggleCounter(clientId: string) {
+    setPicked(current =>
+      current.map(p => (p.clientId === clientId ? { ...p, counter: !p.counter } : p))
     )
   }
 
@@ -210,6 +224,7 @@ export function AddStoreDialog({
       }
       drafts.push({
         clientId: p.clientId, scheduledFor, amountDue: Math.round(amount), isAdditional,
+        designatedPaymentMethod: p.counter ? 'counter' : null,
       })
     }
 
@@ -403,7 +418,8 @@ export function AddStoreDialog({
                 {picked.length === 0 ? (
                   <p className="px-3 py-3 text-xs leading-relaxed text-muted-foreground">
                     Nothing picked yet. Tick stores on the left — each one&apos;s amount due is
-                    set from its balance.
+                    set from its balance. Press <span className="font-medium">Counter</span> on a
+                    store that pays over the counter, and the collector can only record it that way.
                   </p>
                 ) : (
                   <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain p-1">
@@ -419,7 +435,25 @@ export function AddStoreDialog({
                               amount due once in Store credit balances, and every
                               day's list draws from it. A store with none set can't
                               be listed until it is (handleAdd blocks it). */}
-                          <span className="w-32 shrink-0 text-right text-sm tabular-nums">
+                          {/* The office's "this store pays at the counter".
+                              Per store, so it sits on the store's row; the
+                              collector's app then offers Counter only. */}
+                          <button
+                            type="button"
+                            onClick={() => toggleCounter(p.clientId)}
+                            aria-pressed={p.counter}
+                            title={p.counter
+                              ? 'Collector is locked to Counter — click to let them choose'
+                              : 'Mark as paying over the counter'}
+                            className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                              p.counter
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-input text-muted-foreground hover:bg-accent hover:text-foreground'
+                            }`}
+                          >
+                            Counter
+                          </button>
+                          <span className="w-28 shrink-0 text-right text-sm tabular-nums">
                             {due > 0 ? (
                               <span className="text-foreground">{peso(due)}</span>
                             ) : (

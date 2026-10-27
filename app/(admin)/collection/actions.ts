@@ -7,7 +7,8 @@ import { sendSmsBatch, toE164, smsConfigured, type SmsRequest } from '@/lib/coll
 import { recordAuditLog } from '@/lib/audit/actions'
 import { peso } from '@/lib/money'
 import { format } from 'date-fns'
-import type { AdminScope, UserRole } from '@/types'
+import { paymentMethodLabel } from '@/lib/status-styles'
+import type { AdminScope, PaymentMethod, UserRole } from '@/types'
 
 /**
  * The write path for an "additional" collection store — the half of the
@@ -38,6 +39,8 @@ export interface ListAdditionalStoreInput {
   amountDue: number
   /** The admin publishing the store. */
   listedBy: string | null
+  /** The office's "pays at Counter" lock (migration 143), or null. */
+  designatedPaymentMethod: PaymentMethod | null
 }
 
 export interface ListAdditionalStoreResult {
@@ -85,6 +88,8 @@ interface AdditionalStoreDetails {
   province: string | null
   /** `yyyy-MM-dd` collection day. */
   scheduledFor: string
+  /** The office's payment-method lock, so the collector knows before arriving. */
+  designatedPaymentMethod: PaymentMethod | null
 }
 
 /**
@@ -119,6 +124,9 @@ function additionalSmsBody(d: AdditionalStoreDetails): string {
   if (location) lines.push(`Location: ${location}`)
 
   lines.push(`Collect on: ${format(new Date(`${d.scheduledFor}T12:00:00`), 'EEE, dd MMM yyyy')}`)
+  if (d.designatedPaymentMethod) {
+    lines.push(`Payment: ${paymentMethodLabel(d.designatedPaymentMethod)} only (set by office)`)
+  }
   lines.push('Open the app to take this store off the list.')
 
   return lines.join('\n')
@@ -148,6 +156,10 @@ export async function listAdditionalStore(
       listed_by: input.listedBy,
       amount_due: input.amountDue,
       is_additional: true,
+      // Only sent when set — see the twin note in createVisit.
+      ...(input.designatedPaymentMethod
+        ? { designated_payment_method: input.designatedPaymentMethod }
+        : {}),
     })
     .select('id')
     .single()
@@ -197,6 +209,7 @@ export async function listAdditionalStore(
     city: (client?.city as string | null) ?? input.area,
     province: (client?.province as string | null) ?? null,
     scheduledFor: input.scheduledFor,
+    designatedPaymentMethod: input.designatedPaymentMethod,
   })
 
   const requests: SmsRequest[] = []
@@ -253,6 +266,12 @@ async function logAdditionalStore(
       { field: 'scheduled_for', label: 'Scheduled for', from: null, to: input.scheduledFor },
       { field: 'amount_due', label: 'Amount due', from: null, to: peso(input.amountDue) },
       { field: 'area', label: 'Area', from: null, to: input.area },
+      ...(input.designatedPaymentMethod
+        ? [{
+            field: 'designated_payment_method', label: 'Payment method (set by office)',
+            from: null, to: paymentMethodLabel(input.designatedPaymentMethod),
+          }]
+        : []),
     ],
     metadata: { sms },
   })
