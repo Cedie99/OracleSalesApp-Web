@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh, SLOW_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { useCachedResource } from '@/lib/hooks/use-cached-resource'
+import { fetchAllPages } from '@/lib/supabase/paginate'
 import type { Client } from '@/types'
 
 /**
@@ -47,15 +48,21 @@ export function useListableClients({ enabled = true }: { enabled?: boolean } = {
   const { data, loading, error, reload, refresh } = useCachedResource<Client[]>(
     'listable-clients',
     async () => {
-      const { data: rows, error: queryError } = await createClient()
-        .from('clients')
-        .select(LISTABLE_COLUMNS)
-        .eq('status', 'active')
-        .in('customer_type', ['new', 'existing'])
-        .order('company_name')
+      // Paged: PostgREST caps one response at 1,000 rows, and there are more
+      // listable customers than that — a single select silently dropped every
+      // name past the cap. `id` breaks company_name ties so pages never overlap.
+      const supabase = createClient()
+      const rows = await fetchAllPages<Record<string, unknown>>((from, to) =>
+        supabase
+          .from('clients')
+          .select(LISTABLE_COLUMNS)
+          .eq('status', 'active')
+          .in('customer_type', ['new', 'existing'])
+          .order('company_name')
+          .order('id')
+          .range(from, to))
 
-      if (queryError) throw new Error(queryError.message)
-      return (rows ?? []).map(row => ({
+      return rows.map(row => ({
         ...(row as unknown as Client),
         // PostgREST can serialise NUMERIC as a string; coerce so the Add-store
         // dialog's auto-fill does arithmetic on a number.
