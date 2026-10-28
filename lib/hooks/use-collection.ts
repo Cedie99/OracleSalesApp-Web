@@ -246,6 +246,8 @@ export interface NewCollectionVisit {
    * or null to leave it to them. Currently only 'counter'.
    */
   designatedPaymentMethod: PaymentMethod | null
+  /** `amountDue` is a typed down payment, not the store's balance. Audit label only. */
+  isDownPayment: boolean
 }
 
 interface UseCollectionVisitsResult {
@@ -403,10 +405,15 @@ export function useCollectionVisits(
         entityTable: 'collection_visits',
         entityId: inserted?.id ?? null,
         entityLabel: draft.clientName,
-        summary: `Listed ${draft.clientName} for collection on ${draft.scheduledFor}`,
+        summary:
+          `Listed ${draft.clientName} for collection on ${draft.scheduledFor}` +
+          (draft.isDownPayment ? ' (down payment)' : ''),
         changes: [
           { field: 'scheduled_for', label: 'Scheduled for', from: null, to: draft.scheduledFor },
-          { field: 'amount_due', label: 'Amount due', from: null, to: peso(draft.amountDue) },
+          {
+            field: 'amount_due', label: draft.isDownPayment ? 'Amount due (down payment)' : 'Amount due',
+            from: null, to: peso(draft.amountDue),
+          },
           { field: 'area', label: 'Area', from: null, to: draft.area },
           ...(draft.designatedPaymentMethod
             ? [{

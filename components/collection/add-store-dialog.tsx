@@ -8,10 +8,11 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import { CLIENT_SEARCH_LIMIT, clientWhere, recentClientIds, searchClients } from '@/lib/client-search'
-import { peso } from '@/lib/money'
+import { peso, toCentavo } from '@/lib/money'
+import { EMPTY_PESO, PesoInput, pesoValueAmount, type PesoValue } from '@/components/collection/peso-input'
 import type { Client, CollectionVisit, PaymentMethod } from '@/types'
 import { format } from 'date-fns'
-import { Check, Lock, Search, X } from 'lucide-react'
+import { Check, HandCoins, Lock, Search, X } from 'lucide-react'
 
 export interface AddStoreDraft {
   clientId: string
@@ -32,6 +33,13 @@ export interface AddStoreDraft {
    * fields above — it describes the customer, not the publish.
    */
   designatedPaymentMethod: PaymentMethod | null
+  /**
+   * The admin doesn't know this store's balance, so `amountDue` is a down
+   * payment they typed rather than the store's credit balance. Per store, like
+   * the Counter lock. Not stored on the visit (there is no column for it) — it
+   * only labels the audit entry, so the history says where the figure came from.
+   */
+  isDownPayment: boolean
 }
 
 interface AddStoreDialogProps {
@@ -53,26 +61,30 @@ function today(): string {
   return format(new Date(), 'yyyy-MM-dd')
 }
 
-/** One store the admin has ticked, with the amount they are still typing. */
+/** One store the admin has ticked, and how its amount due is decided. */
 interface PickedStore {
   clientId: string
-  /** Digits as typed. Kept a string so the field can legitimately be empty. */
-  amount: string
   /** Ticked "Counter" — the collector will be locked to that method. */
   counter: boolean
+  /**
+   * Ticked "Down payment" — the admin doesn't know what this store owes, so
+   * instead of its balance they type the amount to collect, centavos and all.
+   */
+  downPayment: boolean
+  /** The typed down payment. Ignored unless `downPayment` is ticked. */
+  downPaymentAmount: PesoValue
 }
 
 /**
- * What to pre-fill the amount field with when a store is ticked: its current
- * running credit balance (migration 117), in whole pesos. This is the auto-fill
- * that replaces re-typing what a store owes every collection day — the admin now
- * confirms or tweaks a figure rather than remembering it. A store with nothing on
- * file (balance 0, or read before 115) starts blank so it reads as "type this in"
- * rather than a listable ₱0.
+ * What a picked store will be listed for. Normally its running credit balance
+ * (migration 117) — the auto-fill that replaces re-typing what a store owes every
+ * collection day. A down payment replaces that with the admin's typed figure,
+ * for the stores whose balance the office doesn't have on file. NaN or ≤ 0 means
+ * there is nothing listable yet.
  */
-function openingAmount(client: Client | undefined): string {
-  const balance = Math.round(client?.credit_balance ?? 0)
-  return balance > 0 ? String(balance) : ''
+function pickedAmount(p: PickedStore, client: Client | undefined): number {
+  if (p.downPayment) return pesoValueAmount(p.downPaymentAmount)
+  return toCentavo(client?.credit_balance ?? 0)
 }
 
 /** How many recently-listed stores are worth pinning above the search results. */
@@ -107,7 +119,8 @@ const RECENT_LIMIT = 8
  * greyed.
  *
  * The amount due is the store's running balance (117), locked here rather than
- * retyped, and — per the 2026-07-25 anchoring-bias decision — it never travels to
+ * retyped — unless the admin ticks "Down payment" for a store whose balance the
+ * office doesn't know, and types the amount to collect instead. Either way it — per the 2026-07-25 anchoring-bias decision — it never travels to
  * the collector's Collect Payment screen; it stays office-side as the figure the
  * collected amount is later reconciled against.
  *
@@ -170,14 +183,13 @@ export function AddStoreDialog({
     setPicked(current =>
       current.some(p => p.clientId === clientId)
         ? current.filter(p => p.clientId !== clientId)
-        : [...current, { clientId, amount: openingAmount(clientsById.get(clientId)), counter: false }]
+        : [...current, { clientId, counter: false, downPayment: false, downPaymentAmount: EMPTY_PESO }]
     )
   }
 
-  function toggleCounter(clientId: string) {
-    setPicked(current =>
-      current.map(p => (p.clientId === clientId ? { ...p, counter: !p.counter } : p))
-    )
+  function update(clientId: string, patch: Partial<PickedStore>) {
+    setError('')
+    setPicked(current => current.map(p => (p.clientId === clientId ? { ...p, ...patch } : p)))
   }
 
   function removeAll() {
@@ -194,8 +206,9 @@ export function AddStoreDialog({
     setQuery('')
   }
 
-  const total = picked.reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
+  const total = picked.reduce((sum, p) => sum + (pickedAmount(p, clientsById.get(p.clientId)) || 0), 0)
   const counterCount = picked.filter(p => p.counter).length
+  const downPaymentCount = picked.filter(p => p.downPayment).length
 
   async function handleAdd() {
     if (picked.length === 0) return setError('Tick at least one store to list.')
@@ -216,16 +229,19 @@ export function AddStoreDialog({
       if (takenClientIds.has(p.clientId)) {
         return setError(`${name} is already on the list for this day — untick it.`)
       }
-      const amount = Number(p.amount)
+      const amount = pickedAmount(p, client)
       if (!Number.isFinite(amount) || amount <= 0) {
+        if (p.downPayment) return setError(`Type the down payment to collect from ${name}.`)
         // The amount is locked to the store's balance, so a non-positive one
-        // means no due has been set — point the admin at where to set it rather
-        // than at a field that no longer accepts typing.
-        return setError(`${name} has no amount due set — set its balance in Store credit balances first, then list it.`)
+        // means no due has been set — point the admin at the two ways out.
+        return setError(
+          `${name} has no amount due set — set its balance in Store credit balances, or tick Down payment and type the amount.`
+        )
       }
       drafts.push({
-        clientId: p.clientId, scheduledFor, amountDue: Math.round(amount), isAdditional,
+        clientId: p.clientId, scheduledFor, amountDue: amount, isAdditional,
         designatedPaymentMethod: p.counter ? 'counter' : null,
+        isDownPayment: p.downPayment,
       })
     }
 
@@ -243,7 +259,7 @@ export function AddStoreDialog({
     // an admin set, drawn down by every payment. Shown per row so the admin sees
     // what each store owes before ticking it — and it is the amount that gets
     // listed, since the field no longer lets them retype it.
-    const due = Math.round(client.credit_balance ?? 0)
+    const due = toCentavo(client.credit_balance ?? 0)
 
     return (
       <button
@@ -400,6 +416,11 @@ export function AddStoreDialog({
                       <Lock className="h-2.5 w-2.5" /> {counterCount} at counter
                     </span>
                   )}
+                  {downPaymentCount > 0 && (
+                    <span className="ml-1 inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                      <HandCoins className="h-2.5 w-2.5" /> {downPaymentCount} down payment
+                    </span>
+                  )}
                 </Label>
                 <div className="flex items-baseline gap-3">
                   {total > 0 && (
@@ -428,12 +449,14 @@ export function AddStoreDialog({
                     Nothing picked yet. Tick stores on the left — each one&apos;s amount due is
                     set from its balance. Tick <span className="font-medium">Pays at counter</span> under
                     any store that settles over the counter, and the collector can only record it that way.
+                    Don&apos;t know a store&apos;s balance? Tick <span className="font-medium">Down payment</span> and
+                    type the amount to collect.
                   </p>
                 ) : (
                   <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain p-1">
                     {picked.map(p => {
                       const client = clientsById.get(p.clientId)
-                      const due = Number(p.amount)
+                      const due = pickedAmount(p, client)
                       return (
                         // A Counter store is tinted as a whole, so a long batch
                         // can be scanned for which stores are locked without
@@ -451,9 +474,15 @@ export function AddStoreDialog({
                             {/* Locked to the store's balance — the admin sets the
                                 amount due once in Store credit balances, and every
                                 day's list draws from it. A store with none set can't
-                                be listed until it is (handleAdd blocks it). */}
+                                be listed until it is, or until it is ticked as a
+                                down payment and the figure typed in below
+                                (handleAdd blocks it). */}
                             <span className="shrink-0 text-right text-sm tabular-nums">
-                              {due > 0 ? (
+                              {p.downPayment ? (
+                                <span className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                                  {due > 0 ? `${peso(due)} down` : 'Type amount'}
+                                </span>
+                              ) : due > 0 ? (
                                 <span className="text-foreground">{peso(due)}</span>
                               ) : (
                                 <span className="text-[11px] text-destructive">No due set</span>
@@ -476,7 +505,7 @@ export function AddStoreDialog({
                             type="button"
                             role="checkbox"
                             aria-checked={p.counter}
-                            onClick={() => toggleCounter(p.clientId)}
+                            onClick={() => update(p.clientId, { counter: !p.counter })}
                             className="mt-1 flex w-full items-center gap-2 rounded-md text-left text-[11px]"
                           >
                             <span
@@ -494,6 +523,39 @@ export function AddStoreDialog({
                               {p.counter ? '· collector can only record Counter' : '· collector picks the method'}
                             </span>
                           </button>
+                          {/* For a store whose balance the office doesn't know:
+                              list it for a typed amount instead of the balance. */}
+                          <button
+                            type="button"
+                            role="checkbox"
+                            aria-checked={p.downPayment}
+                            onClick={() => update(p.clientId, { downPayment: !p.downPayment })}
+                            className="mt-1 flex w-full items-center gap-2 rounded-md text-left text-[11px]"
+                          >
+                            <span
+                              className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                                p.downPayment ? 'border-amber-600 bg-amber-600 text-white' : 'border-input bg-background'
+                              }`}
+                            >
+                              {p.downPayment && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+                            </span>
+                            <span className={`flex items-center gap-1 font-medium ${p.downPayment ? 'text-foreground' : 'text-muted-foreground'}`}>
+                              {p.downPayment && <HandCoins className="h-3 w-3" />}
+                              Down payment
+                            </span>
+                            <span className="truncate text-muted-foreground/80">
+                              {p.downPayment ? '· type the amount to collect' : '· balance unknown? set the amount'}
+                            </span>
+                          </button>
+                          {p.downPayment && (
+                            <PesoInput
+                              id={`dp-${p.clientId}`}
+                              size="sm"
+                              value={p.downPaymentAmount}
+                              onChange={v => update(p.clientId, { downPaymentAmount: v })}
+                              className="mt-1.5 pl-5"
+                            />
+                          )}
                         </div>
                       )
                     })}

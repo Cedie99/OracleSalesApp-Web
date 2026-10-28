@@ -8,7 +8,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import { CLIENT_SEARCH_LIMIT, clientWhere, searchClients } from '@/lib/client-search'
-import { peso, pesoDelta } from '@/lib/money'
+import { peso, pesoDelta, toCentavo } from '@/lib/money'
+import { EMPTY_PESO, PesoInput, pesoValueAmount, type PesoValue } from '@/components/collection/peso-input'
 import { StorePaymentCalendar } from '@/components/collection/store-payment-calendar'
 import type { CreditAdjustment } from '@/lib/hooks/use-store-credit'
 import type { Client, ClientCreditEntry } from '@/types'
@@ -80,9 +81,9 @@ export function StoreBalancesDialog({
   // Which face of the right pane: maintain the balance, or read the payment calendar.
   const [view, setView] = useState<'manage' | 'calendar'>('manage')
   const [mode, setMode] = useState<Mode>('set')
-  // Digits as typed; a string so the field can be legitimately empty. `set` and
-  // `charge` are always positive; `adjust` pairs this with the sign toggle.
-  const [amount, setAmount] = useState('')
+  // Pesos and centavos as typed. `set` and `charge` are always positive;
+  // `adjust` pairs this with the sign toggle.
+  const [amount, setAmount] = useState<PesoValue>(EMPTY_PESO)
   const [sign, setSign] = useState<1 | -1>(-1)
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
@@ -103,7 +104,7 @@ export function StoreBalancesDialog({
     setSelectedId(id)
     setView('manage')
     setMode('set')
-    setAmount('')
+    setAmount(EMPTY_PESO)
     setSign(-1)
     setNote('')
     setError('')
@@ -111,23 +112,22 @@ export function StoreBalancesDialog({
 
   /** The signed delta and entry type this form would write, or an error string. */
   function resolveDelta(): { amount: number; entryType: CreditAdjustment['entryType']; note: string } | string {
-    const magnitude = Number(amount)
+    const magnitude = pesoValueAmount(amount)
     if (!Number.isFinite(magnitude) || magnitude <= 0) {
-      return mode === 'set' ? 'Enter the new balance, in whole pesos.' : 'Enter an amount, in whole pesos.'
+      return mode === 'set' ? 'Enter the new balance.' : 'Enter an amount.'
     }
-    const whole = Math.round(magnitude)
 
     if (mode === 'charge') {
-      return { amount: whole, entryType: 'charge', note: note.trim() || 'New charge' }
+      return { amount: magnitude, entryType: 'charge', note: note.trim() || 'New charge' }
     }
     if (mode === 'adjust') {
-      const delta = whole * sign
+      const delta = magnitude * sign
       return { amount: delta, entryType: 'adjustment', note: note.trim() || 'Manual adjustment' }
     }
     // set: move the balance to an absolute target via an adjustment of the gap.
-    const delta = whole - Math.round(balance)
+    const delta = toCentavo(magnitude - balance)
     if (delta === 0) return 'That is already the balance — nothing to change.'
-    return { amount: delta, entryType: 'adjustment', note: note.trim() || `Set balance to ${peso(whole)}` }
+    return { amount: delta, entryType: 'adjustment', note: note.trim() || `Set balance to ${peso(magnitude)}` }
   }
 
   async function handleSubmit() {
@@ -148,7 +148,7 @@ export function StoreBalancesDialog({
     if (message) return setError(message)
     // Stay on the store so the admin sees the new balance and history; just clear
     // the inputs for the next movement.
-    setAmount('')
+    setAmount(EMPTY_PESO)
     setNote('')
     setError('')
   }
@@ -286,13 +286,10 @@ export function StoreBalancesDialog({
                       <Label htmlFor="balance-amount">
                         {mode === 'set' ? 'New balance' : mode === 'charge' ? 'Charge amount' : 'Amount'}
                       </Label>
-                      <Input
+                      <PesoInput
                         id="balance-amount"
-                        inputMode="numeric"
                         value={amount}
-                        onChange={e => { setAmount(e.target.value.replace(/[^\d]/g, '')); setError('') }}
-                        placeholder="0"
-                        className="tabular-nums"
+                        onChange={v => { setAmount(v); setError('') }}
                       />
                     </div>
                   </div>
