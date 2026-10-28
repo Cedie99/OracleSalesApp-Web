@@ -209,12 +209,15 @@ export default function ClientsPage() {
   }
 
   function openEdit(client: Client) {
+    // `?? ''` on every text field even though rows are normalized on load: the
+    // form calls `.trim()` on all of them, and one NULL that slips past the
+    // boundary is enough to make Save do nothing.
     setForm({
-      company_name: client.company_name,
-      contact_person: client.contact_person,
+      company_name: client.company_name ?? '',
+      contact_person: client.contact_person ?? '',
       contact_position: client.contact_position ?? '',
-      contact_number: client.contact_number,
-      office_address: client.office_address,
+      contact_number: client.contact_number ?? '',
+      office_address: client.office_address ?? '',
       city: client.city ?? '',
       customer_type: client.customer_type,
       sales_channel: client.sales_channel,
@@ -348,7 +351,24 @@ export default function ClientsPage() {
     return DECLARE_LOST_MESSAGES[result?.code ?? ''] ?? 'Could not mark this client lost.'
   }
 
-  async function handleCreate() {
+  /**
+   * Runs a save so that an unexpected throw lands in the dialog's error box
+   * instead of an unhandled rejection. Without this a crash mid-save looks
+   * exactly like a dead button: no "Saving…", no message, nothing written.
+   */
+  async function guardedSave(save: () => Promise<void>) {
+    try {
+      await save()
+    } catch (saveError) {
+      setSaving(false)
+      setFormError(saveError instanceof Error ? saveError.message : 'Could not save this client.')
+    }
+  }
+
+  const handleCreate = () => guardedSave(createClientRecord)
+  const handleEdit = () => guardedSave(saveClientEdit)
+
+  async function createClientRecord() {
     const err = validateForm()
     if (err) { setFormError(err); return }
 
@@ -407,7 +427,7 @@ export default function ClientsPage() {
     await refresh()
   }
 
-  async function handleEdit() {
+  async function saveClientEdit() {
     if (!editTarget) return
     const err = validateForm()
     if (err) { setFormError(err); return }

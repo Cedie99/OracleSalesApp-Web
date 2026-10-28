@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh } from '@/lib/hooks/use-auto-refresh'
 import { useCachedResource } from '@/lib/hooks/use-cached-resource'
 import { QUALIFIED_AGENDA_MILESTONES } from '@/lib/client-progress'
+import { normalizeClient } from '@/lib/hooks/use-clients'
 import type { Client } from '@/types'
 
 /**
@@ -174,10 +175,18 @@ export function useClientsPage(
       const { data: result, error: rpcError } = await createClient()
         .rpc('get_clients_page', args)
       if (rpcError) throw new Error(rpcError.message)
-      return (result ?? { rows: [], total: 0, stats: EMPTY_STATS }) as {
-        rows: ClientRow[]
+      const page = (result ?? { rows: [], total: 0, stats: EMPTY_STATS }) as {
+        rows: Record<string, unknown>[]
         total: number
         stats: ClientStats
+      }
+      // Through the same boundary as useClients: the RPC hands back raw rows, so
+      // a client mobile created without a phone or address arrives with NULLs
+      // that the Edit form calls `.trim()` on. Skipping this is what made Save
+      // Changes throw silently for every such client.
+      return {
+        ...page,
+        rows: page.rows.map(row => normalizeClient(row) as ClientRow),
       }
     },
     { rows: [], total: 0, stats: EMPTY_STATS },
