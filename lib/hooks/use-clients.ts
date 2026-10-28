@@ -40,7 +40,7 @@ export const CLIENT_COLUMNS = `
  * null, because for those "absent" is real information the UI must render as an
  * em-dash rather than an empty string.
  */
-function normalizeClient(row: Record<string, unknown>): Client {
+export function normalizeClient(row: Record<string, unknown>): Client {
   const agent = Array.isArray(row.agent) ? row.agent[0] : row.agent
 
   return {
