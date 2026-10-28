@@ -41,6 +41,8 @@ export interface ListAdditionalStoreInput {
   listedBy: string | null
   /** The office's "pays at Counter" lock (migration 143), or null. */
   designatedPaymentMethod: PaymentMethod | null
+  /** `amountDue` is a typed down payment, not the store's balance. Audit label only. */
+  isDownPayment: boolean
 }
 
 export interface ListAdditionalStoreResult {
@@ -261,10 +263,14 @@ async function logAdditionalStore(
     entityLabel: input.clientName,
     summary:
       `Listed ${input.clientName} as an additional collection for ${input.scheduledFor}` +
+      (input.isDownPayment ? ' (down payment)' : '') +
       (sms.configured ? ` — SMS to ${sms.sent}/${sms.recipients} collectors` : ''),
     changes: [
       { field: 'scheduled_for', label: 'Scheduled for', from: null, to: input.scheduledFor },
-      { field: 'amount_due', label: 'Amount due', from: null, to: peso(input.amountDue) },
+      {
+        field: 'amount_due', label: input.isDownPayment ? 'Amount due (down payment)' : 'Amount due',
+        from: null, to: peso(input.amountDue),
+      },
       { field: 'area', label: 'Area', from: null, to: input.area },
       ...(input.designatedPaymentMethod
         ? [{

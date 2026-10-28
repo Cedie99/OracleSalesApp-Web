@@ -437,6 +437,7 @@ export default function CollectionPage() {
             amountDue: draft.amountDue,
             listedBy: profile?.id ?? null,
             designatedPaymentMethod: draft.designatedPaymentMethod,
+            isDownPayment: draft.isDownPayment,
           })
           if (result.error) {
             await refreshVisits()
@@ -460,6 +461,7 @@ export default function CollectionPage() {
             amountDue: draft.amountDue,
             listedBy: profile?.id ?? null,
             designatedPaymentMethod: draft.designatedPaymentMethod,
+            isDownPayment: draft.isDownPayment,
           })
           if (message) {
             const wrapped = stoppedAt(message)
