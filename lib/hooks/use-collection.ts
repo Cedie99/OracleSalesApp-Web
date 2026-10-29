@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh, LIVE_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { fetchAllPages } from '@/lib/supabase/paginate'
@@ -255,7 +255,9 @@ interface UseCollectionVisitsResult {
   loading: boolean
   error: string
   refresh: () => Promise<void>
-  createVisit: (draft: NewCollectionVisit) => Promise<string | null>
+  /** Silent re-read — no spinner. For bringing the board up to date after a write. */
+  reload: () => Promise<void>
+  createVisit: (draft: NewCollectionVisit, options?: { reload?: boolean }) => Promise<string | null>
   removeVisit: (id: string) => Promise<string | null>
   cancelClaim: (id: string) => Promise<string | null>
   setDesignatedMethod: (id: string, method: PaymentMethod | null) => Promise<string | null>
@@ -283,9 +285,15 @@ export function useCollectionVisits(
   const [visits, setVisits] = useState<CollectionVisit[]>([])
   const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState('')
+  // Which load is the newest. A background refresh that started before a write
+  // can finish after the reload that write triggered, and would otherwise paint
+  // the pre-write rows back over it — a just-listed store vanishing from the
+  // board until the next tick. Only the latest load may touch state.
+  const loadSeq = useRef(0)
 
   // State is only touched after the await — see the note in use-clients.ts.
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current
     const supabase = createClient()
 
     // Both arms are paged — see the note in loadPayments. The board is ordered
@@ -338,12 +346,14 @@ export function useCollectionVisits(
       }
     }
 
+    const paymentsByVisit = queryError ? null : await loadPayments(supabase)
+    if (seq !== loadSeq.current) return
+
     if (queryError) {
       setError(queryError.message)
     } else {
       setError('')
-      const paymentsByVisit = await loadPayments(supabase)
-      setVisits(rows.map(row => normalizeVisit(row, paymentsByVisit)))
+      setVisits(rows.map(row => normalizeVisit(row, paymentsByVisit ?? undefined)))
     }
     setLoading(false)
   }, [])
@@ -371,9 +381,14 @@ export function useCollectionVisits(
     enabled,
   })
 
-  /** Returns an error message, or null on success. */
+  /**
+   * Returns an error message, or null on success.
+   *
+   * `reload: false` skips the re-read, for a caller listing a batch — every
+   * reload is the whole board plus every payment, so it reloads once at the end.
+   */
   const createVisit = useCallback(
-    async (draft: NewCollectionVisit): Promise<string | null> => {
+    async (draft: NewCollectionVisit, { reload = true }: { reload?: boolean } = {}): Promise<string | null> => {
       const supabase = createClient()
       const { data: inserted, error: insertError } = await supabase.from('collection_visits').insert({
         client_id: draft.clientId,
@@ -424,7 +439,7 @@ export function useCollectionVisits(
         ],
       })
 
-      await load()
+      if (reload) await load()
       return null
     },
     [load]
@@ -550,7 +565,8 @@ export function useCollectionVisits(
   )
 
   return {
-    visits, loading, error, refresh, createVisit, removeVisit, cancelClaim, setDesignatedMethod,
+    visits, loading, error, refresh, reload: load, createVisit, removeVisit, cancelClaim,
+    setDesignatedMethod,
   }
 }
 

@@ -15,7 +15,7 @@ import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
-import { useStoreCredit } from '@/lib/hooks/use-store-credit'
+import { useStoreCredit, type CreditAdjustment } from '@/lib/hooks/use-store-credit'
 import { useListableClients } from '@/lib/hooks/use-listable-clients'
 import { listableCustomers } from '@/lib/client-info'
 import { useProfiles } from '@/lib/hooks/use-profiles'
@@ -96,7 +96,7 @@ export default function CollectionPage() {
 
   const {
     visits, loading: visitsLoading, error: visitsError, createVisit, removeVisit, cancelClaim,
-    setDesignatedMethod, refresh: refreshVisits,
+    setDesignatedMethod, reload: reloadVisits,
   } = useCollectionVisits()
   const {
     remittances: allRemittances, error: remittancesError, setStatus: setRemittanceStatus,
@@ -104,7 +104,7 @@ export default function CollectionPage() {
   // Narrowed: only the customers a picker may offer, and only the columns the
   // picker, the dialogs and the publish-time snapshot read. The rows on this
   // board carry their own client join, so this was never what rendered it.
-  const { clients } = useListableClients()
+  const { clients, reload: reloadClients } = useListableClients()
   // The store-credit ledger (migration 115): the history behind each store's
   // running balance, and the write path the balances tool uses to set/charge/adjust it.
   /**
@@ -144,6 +144,21 @@ export default function CollectionPage() {
   const { entriesByClient: creditEntries, adjustBalance } = useStoreCredit({
     enabled: balancesOpen,
   })
+
+  /**
+   * The balances tool reads the ledger, which `adjustBalance` reloads itself —
+   * but Add store auto-fills from `clients.credit_balance` (a slow-lane cache)
+   * and the detail dialog from the board's client join. Re-read both, or a
+   * balance just set reads as "no amount due" until the page is reloaded.
+   */
+  const handleAdjust = useCallback(
+    async (input: CreditAdjustment): Promise<string | null> => {
+      const message = await adjustBalance(input)
+      if (!message) void Promise.all([reloadClients(), reloadVisits()])
+      return message
+    },
+    [adjustBalance, reloadClients, reloadVisits]
+  )
   const [addDefaults, setAddDefaults] = useState<{ scheduledFor?: string } | undefined>(undefined)
   // Bumped on every opening so the dialog remounts with fresh fields — see the
   // note on AddStoreDialog about why this isn't an effect.
@@ -426,8 +441,9 @@ export default function CollectionPage() {
       for (const { draft, client } of resolved) {
         // An "additional" store fires an SMS, so it can't go through the
         // client-side insert (the BusyBee key is server-only). It routes through
-        // a server action that lists the row AND texts every active collector;
-        // the hook doesn't see that write, so reload after it lands.
+        // a server action that lists the row AND texts every active collector.
+        // Neither path reloads per store: the board is re-read once, below,
+        // whether the batch finished or stopped part-way.
         if (draft.isAdditional) {
           const result = await listAdditionalStore({
             clientId: draft.clientId,
@@ -440,7 +456,7 @@ export default function CollectionPage() {
             isDownPayment: draft.isDownPayment,
           })
           if (result.error) {
-            await refreshVisits()
+            await reloadVisits()
             const message = stoppedAt(result.error)
             setActionError(message)
             return message
@@ -462,8 +478,9 @@ export default function CollectionPage() {
             listedBy: profile?.id ?? null,
             designatedPaymentMethod: draft.designatedPaymentMethod,
             isDownPayment: draft.isDownPayment,
-          })
+          }, { reload: false })
           if (message) {
+            await reloadVisits()
             const wrapped = stoppedAt(message)
             setActionError(wrapped)
             return wrapped
@@ -473,7 +490,7 @@ export default function CollectionPage() {
       }
 
       setActionError('')
-      if (anyAdditional) await refreshVisits()
+      await reloadVisits()
 
       const count = `${listed} store${listed === 1 ? '' : 's'}`
 
@@ -498,7 +515,7 @@ export default function CollectionPage() {
       }
       return null
     },
-    [createVisit, clients, profile?.id, refreshVisits]
+    [createVisit, clients, profile?.id, reloadVisits]
   )
 
   /** Only ever called for stores no collector has touched — see ListBoard. */
@@ -972,7 +989,7 @@ export default function CollectionPage() {
         onOpenChange={setBalancesOpen}
         clients={listableClients}
         entriesByClient={creditEntries}
-        onAdjust={adjustBalance}
+        onAdjust={handleAdjust}
         createdBy={profile?.id ?? null}
       />
 
