@@ -207,6 +207,13 @@ export interface CollectionVisit {
    * Per listing, not per client: it is ticked again each time the store is listed.
    */
   designated_payment_method: PaymentMethod | null
+  /**
+   * The collector this listing is for (migration 144) — chosen by the admin when
+   * listing, and the only collector whose app shows the store. Null = hidden from
+   * every collector; only stores listed before 144 should carry it. An
+   * instruction, not a record: who actually worked the store is `collector_id`.
+   */
+  assigned_collector_id: string | null
 
   // --- Captured by the collector on the phone -------------------------------
 

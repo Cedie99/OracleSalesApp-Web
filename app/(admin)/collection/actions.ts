@@ -19,9 +19,8 @@ import type { AdminScope, PaymentMethod, UserRole } from '@/types'
  *
  *  1. The BusyBee key is server-only (`BUSYBEE_API_KEY`). A client-side insert
  *     could set `is_additional`, but it could never send the notification.
- *  2. Resolving recipients means reading every active collector's
- *     `contact_number`, which the browser's anon session has no business doing
- *     in bulk.
+ *  2. Resolving the recipient means reading the assigned collector's
+ *     `contact_number`, which belongs server-side next to the key that uses it.
  *
  * The store itself is listed with the service-role client so the row lands with
  * `is_additional = true` regardless of how RLS evolves; the caller is checked
@@ -43,6 +42,10 @@ export interface ListAdditionalStoreInput {
   designatedPaymentMethod: PaymentMethod | null
   /** `amountDue` is a typed down payment, not the store's balance. Audit label only. */
   isDownPayment: boolean
+  /** The collector this store is listed for (migration 144) — the one who is texted. */
+  assignedCollectorId: string
+  /** Their name, for the audit entry. */
+  assignedCollectorName: string
 }
 
 export interface ListAdditionalStoreResult {
@@ -52,7 +55,7 @@ export interface ListAdditionalStoreResult {
   sms: {
     /** Whether the SMS provider is wired at all (false while BusyBee is stubbed). */
     configured: boolean
-    /** Active collectors we found a dialable number for. */
+    /** Recipients we found a dialable number for — 1 (the assignee) or 0. */
     recipients: number
     sent: number
     failed: number
@@ -95,7 +98,7 @@ interface AdditionalStoreDetails {
 }
 
 /**
- * The SMS copy for an additional store, broadcast to every active collector.
+ * The SMS copy for an additional store, sent to the collector it is assigned to.
  *
  * Two hard constraints shape it:
  *
@@ -162,6 +165,7 @@ export async function listAdditionalStore(
       ...(input.designatedPaymentMethod
         ? { designated_payment_method: input.designatedPaymentMethod }
         : {}),
+      assigned_collector_id: input.assignedCollectorId,
     })
     .select('id')
     .single()
@@ -170,11 +174,14 @@ export async function listAdditionalStore(
     return { error: insertError?.message ?? 'Could not list the store.', visitId: null, sms: empty }
   }
 
-  // Recipients: every active collector. The list is a shared pool — no store is
-  // assigned — so the urgent add is broadcast to everyone who might work it.
+  // Recipient: the assigned collector only (migration 144). Nobody else's app
+  // shows the store, so texting the rest would send them after a store they
+  // cannot see. Still filtered on role and active, so a deactivated assignee
+  // reads as "no textable number" rather than texting someone who has left.
   const { data: collectors, error: collectorsError } = await admin
     .from('profiles')
     .select('contact_number')
+    .eq('id', input.assignedCollectorId)
     .eq('role', 'collector')
     .eq('is_active', true)
 
@@ -191,8 +198,7 @@ export async function listAdditionalStore(
     }
   }
 
-  // The message is the same for every collector, so build it once. Pull the
-  // store's full detail from the client row — the input carries only name and
+  // Pull the store's full detail from the client row — the input carries only name and
   // area, and the SMS now names the contact and full location too. A failed or
   // missing lookup falls back to the input, so the text still goes out named.
   const { data: client } = await admin
@@ -264,9 +270,14 @@ async function logAdditionalStore(
     summary:
       `Listed ${input.clientName} as an additional collection for ${input.scheduledFor}` +
       (input.isDownPayment ? ' (down payment)' : '') +
-      (sms.configured ? ` — SMS to ${sms.sent}/${sms.recipients} collectors` : ''),
+      ` for ${input.assignedCollectorName}` +
+      (sms.configured ? ` — SMS ${sms.sent > 0 ? 'sent' : 'not sent'}` : ''),
     changes: [
       { field: 'scheduled_for', label: 'Scheduled for', from: null, to: input.scheduledFor },
+      {
+        field: 'assigned_collector_id', label: 'Assigned to',
+        from: null, to: input.assignedCollectorName,
+      },
       {
         field: 'amount_due', label: input.isDownPayment ? 'Amount due (down payment)' : 'Amount due',
         from: null, to: peso(input.amountDue),

@@ -67,16 +67,17 @@ export const VISIT_COLUMNS = `
 // minutes the new code can be live against the old schema.
 //
 // `designated_payment_method` (migration 143 — the admin's "pays at Counter")
-// joins for the same reason.
+// joins for the same reason, as does `assigned_collector_id` (migration 144 —
+// the collector a store is listed for).
 export const ADDITIONAL_COLUMNS = `
   is_additional, additional_received_at, additional_seen_at,
-  client_lat, client_lng, designated_payment_method
+  client_lat, client_lng, designated_payment_method, assigned_collector_id
 `
 
-/** True when a select failed only because 068's/114's/143's columns aren't there yet. */
+/** True when a select failed only because 068's/114's/143's/144's columns aren't there yet. */
 function isMissingAdditionalColumn(error: { message?: string } | null): boolean {
   return !!error?.message
-    && /is_additional|additional_received_at|additional_seen_at|client_lat|client_lng|designated_payment_method/.test(error.message)
+    && /is_additional|additional_received_at|additional_seen_at|client_lat|client_lng|designated_payment_method|assigned_collector_id/.test(error.message)
 }
 
 // The installments behind a partial store (migration 070). Fetched in one pass
@@ -203,6 +204,8 @@ function normalizeVisit(
     additional_seen_at: (row.additional_seen_at as string | null) ?? null,
     // Absent under the pre-143 fallback select — null reads as "collector's choice".
     designated_payment_method: (row.designated_payment_method as PaymentMethod | null) ?? null,
+    // Absent under the pre-144 fallback select — reads as unassigned.
+    assigned_collector_id: (row.assigned_collector_id as string | null) ?? null,
     amount_due: num(row.amount_due) ?? 0,
     amount_collected: num(row.amount_collected),
     gps_lat: num(row.gps_lat),
@@ -248,6 +251,10 @@ export interface NewCollectionVisit {
   designatedPaymentMethod: PaymentMethod | null
   /** `amountDue` is a typed down payment, not the store's balance. Audit label only. */
   isDownPayment: boolean
+  /** The collector this store is listed for (migration 144). */
+  assignedCollectorId: string
+  /** Their name, for the audit entry — the log is read by people without the schema. */
+  assignedCollectorName: string
 }
 
 interface UseCollectionVisitsResult {
@@ -261,6 +268,9 @@ interface UseCollectionVisitsResult {
   removeVisit: (id: string) => Promise<string | null>
   cancelClaim: (id: string) => Promise<string | null>
   setDesignatedMethod: (id: string, method: PaymentMethod | null) => Promise<string | null>
+  assignCollector: (
+    id: string, collector: Pick<Profile, 'id' | 'full_name'>, previousName: string | null,
+  ) => Promise<string | null>
 }
 
 /**
@@ -407,8 +417,8 @@ export function useCollectionVisits(
         ...(draft.designatedPaymentMethod
           ? { designated_payment_method: draft.designatedPaymentMethod }
           : {}),
-        // Everything the collector fills in stays null: the store belongs to
-        // nobody until someone actually works it.
+        assigned_collector_id: draft.assignedCollectorId,
+        // Everything the collector fills in stays null until they work it.
       })
         .select('id')
         .single()
@@ -430,6 +440,10 @@ export function useCollectionVisits(
             from: null, to: peso(draft.amountDue),
           },
           { field: 'area', label: 'Area', from: null, to: draft.area },
+          {
+            field: 'assigned_collector_id', label: 'Assigned to',
+            from: null, to: draft.assignedCollectorName,
+          },
           ...(draft.designatedPaymentMethod
             ? [{
                 field: 'designated_payment_method', label: 'Payment method (set by office)',
@@ -564,9 +578,48 @@ export function useCollectionVisits(
     [load, visits]
   )
 
+  /**
+   * (Re)assign a listing to a collector (migration 144). Meant for a store still
+   * pending — the detail dialog only offers it then — so a store listed before
+   * 144 can be given an owner, or moved when someone is off sick.
+   *
+   * An existing claim is left alone: if the old assignee is already on their
+   * way, releasing it is a separate, deliberate act (`cancelClaim`).
+   */
+  const assignCollector = useCallback(
+    async (
+      id: string, collector: Pick<Profile, 'id' | 'full_name'>, previousName: string | null,
+    ): Promise<string | null> => {
+      const supabase = createClient()
+      const target = visits.find(v => v.id === id)
+
+      const { error: updateError } = await supabase
+        .from('collection_visits')
+        .update({ assigned_collector_id: collector.id })
+        .eq('id', id)
+
+      if (updateError) return updateError.message
+
+      void recordAuditLog({
+        action: 'collection_visit.collector_assigned',
+        entityTable: 'collection_visits',
+        entityId: id,
+        entityLabel: target?.client_name ?? null,
+        summary: `Assigned ${target?.client_name ?? 'a store'} to ${collector.full_name}`,
+        changes: singleChange(
+          'assigned_collector_id', 'Assigned to', previousName, collector.full_name,
+        ),
+      })
+
+      await load()
+      return null
+    },
+    [load, visits]
+  )
+
   return {
     visits, loading, error, refresh, reload: load, createVisit, removeVisit, cancelClaim,
-    setDesignatedMethod,
+    setDesignatedMethod, assignCollector,
   }
 }
 

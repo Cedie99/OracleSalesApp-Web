@@ -14,7 +14,8 @@ import {
   PAYMENT_METHOD_TONE, TONE_CLASS, TONE_TEXT, paymentMethodLabel,
   VISIT_STATUS_LABEL, VISIT_STATUS_TONE,
 } from '@/lib/status-styles'
-import type { CollectionVisit, PaymentMethod } from '@/types'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import type { CollectionVisit, PaymentMethod, Profile } from '@/types'
 import { StoreLocationPanel } from '@/components/maps/store-location-panel'
 import { AlertTriangle, Banknote, Camera, Check, Clock, Lock, MapPin, UserCog, Wallet, Zap } from 'lucide-react'
 import { format } from 'date-fns'
@@ -29,6 +30,15 @@ interface VisitDetailDialogProps {
    * error message, or null. Only offered while nobody has recorded a method.
    */
   onSetDesignatedMethod: (id: string, method: PaymentMethod | null) => Promise<string | null>
+  /** Who a store can be (re)assigned to — the collector profiles. */
+  collectors: Profile[]
+  /**
+   * (Re)assigns the store to a collector (migration 144). Returns an error
+   * message, or null. Only offered while the store is still pending.
+   */
+  onAssignCollector: (
+    id: string, collector: Pick<Profile, 'id' | 'full_name'>, previousName: string | null,
+  ) => Promise<string | null>
 }
 
 /**
@@ -36,7 +46,7 @@ interface VisitDetailDialogProps {
  * picked it up brought back — including whether both required captures arrived.
  */
 export function VisitDetailDialog({
-  visit, onOpenChange, listedByName, onSetDesignatedMethod,
+  visit, onOpenChange, listedByName, onSetDesignatedMethod, collectors, onAssignCollector,
 }: VisitDetailDialogProps) {
   const [photo, setPhoto] = useState<LightboxPhoto | null>(null)
 
@@ -53,6 +63,8 @@ export function VisitDetailDialog({
               listedByName={listedByName}
               onOpenPhoto={setPhoto}
               onSetDesignatedMethod={onSetDesignatedMethod}
+              collectors={collectors}
+              onAssignCollector={onAssignCollector}
             />
           )}
         </DialogContent>
@@ -65,12 +77,14 @@ export function VisitDetailDialog({
 }
 
 function VisitDetail({
-  visit, listedByName, onOpenPhoto, onSetDesignatedMethod,
+  visit, listedByName, onOpenPhoto, onSetDesignatedMethod, collectors, onAssignCollector,
 }: {
   visit: CollectionVisit
   listedByName: string | null
   onOpenPhoto: (photo: LightboxPhoto) => void
   onSetDesignatedMethod: VisitDetailDialogProps['onSetDesignatedMethod']
+  collectors: Profile[]
+  onAssignCollector: VisitDetailDialogProps['onAssignCollector']
 }) {
   const proofs = visitProofs(visit)
   const ack = additionalAckState(visit)
@@ -190,6 +204,7 @@ function VisitDetail({
                 <span className="text-muted-foreground">Amount due</span>
                 <span className="tabular-nums font-medium">{peso(visit.amount_due)}</span>
               </div>
+              <AssignedCollectorRow visit={visit} collectors={collectors} onAssign={onAssignCollector} />
               <DesignatedMethodRow visit={visit} onSet={onSetDesignatedMethod} />
             </div>
 
@@ -356,6 +371,71 @@ function VisitDetail({
           </div>
         </div>
       </div>
+    </>
+  )
+}
+
+/**
+ * Who this listing is for (migration 144) — the only collector whose app shows
+ * it. Editable while the store is still pending, so a store listed before 144
+ * can be given an owner and a sick collector's stores can be moved. Once the
+ * store has been worked, the assignment is history and reads only.
+ */
+function AssignedCollectorRow({
+  visit, collectors, onAssign,
+}: {
+  visit: CollectionVisit
+  collectors: Profile[]
+  onAssign: VisitDetailDialogProps['onAssignCollector']
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const assigned = collectors.find(c => c.id === visit.assigned_collector_id)
+  const editable = visit.status === 'pending'
+
+  async function assign(id: string | null) {
+    const collector = collectors.find(c => c.id === id)
+    if (!collector || collector.id === visit.assigned_collector_id) return
+    setBusy(true)
+    setError('')
+    const message = await onAssign(visit.id, collector, assigned?.full_name ?? null)
+    setBusy(false)
+    if (message) setError(message)
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-muted-foreground">Assigned to</span>
+        {editable ? (
+          <Select value={visit.assigned_collector_id ?? ''} onValueChange={assign} disabled={busy}>
+            <SelectTrigger size="sm" className="h-7 w-44 text-xs">
+              <SelectValue placeholder="Unassigned">
+                {(value: string) => collectors.find(c => c.id === value)?.full_name ?? 'Unassigned'}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {collectors.map(c => (
+                <SelectItem key={c.id} value={c.id}>{c.full_name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <span className="font-medium">{assigned?.full_name ?? '—'}</span>
+        )}
+      </div>
+      {editable && !visit.assigned_collector_id && (
+        <p className={`text-[11px] leading-relaxed ${TONE_TEXT.amber}`}>
+          No collector&apos;s app shows this store until it is assigned.
+        </p>
+      )}
+      {editable && visit.claimed_by && visit.claimed_by !== visit.assigned_collector_id && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          {visit.claimed_by_name ?? 'Another collector'} is still on their way to it — release the
+          claim if they should not go.
+        </p>
+      )}
+      {error && <p className="text-[11px] text-destructive">{error}</p>}
     </>
   )
 }

@@ -454,6 +454,7 @@ const collectionVisitSeed: Omit<
   'client' | 'collector' | 'client_name' | 'area'
   | 'claimed_by' | 'claimed_at' | 'claimed_by_name' | 'customer_signature_url'
   | 'is_additional' | 'additional_received_at' | 'additional_seen_at' | 'designated_payment_method'
+  | 'assigned_collector_id'
   // Denormalized default pin (migration 114) is derived from the client's office
   // pin in the map below, not hand-authored per seed row.
   | 'client_lat' | 'client_lng'
@@ -613,6 +614,8 @@ export const mockCollectionVisits: CollectionVisit[] = collectionVisitSeed.map(v
     additional_received_at: null,
     additional_seen_at: null,
     designated_payment_method: null,
+    // Whoever worked it stands in for the assignee; a pending seed row has none.
+    assigned_collector_id: v.collector_id,
     ...claimFor(v.id),
     client,
     collector: staffById(v.collector_id),
