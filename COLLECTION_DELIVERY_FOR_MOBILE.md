@@ -578,3 +578,39 @@ That is also the semantically right value: the store was worked and nothing was 
 `delivery_receipt` arriving from mobile ahead of web would have **hard-crashed the Collection dashboard** — a `Record` keyed off web's `PaymentMethod` union, indexed with a raw database value, `undefined.count += 1`. Exactly the failure the `executive` role caused on the Users page on 2026-07-24, which §6 cites as the reason `admin_scope` became a column instead of new role values.
 
 That is now guarded rather than merely widened, in both places it occurred, plus a `paymentMethodLabel()` helper that renders an unrecognised value readably instead of blank. **This is on web, not on you** — mobile shipping a value first is normal and the two repos will always be briefly out of step. Web's job is to degrade, not explode.
+
+---
+
+## 14. Stores are now assigned to a collector — migration 144, 2026-10-28
+
+The shared-pool model (section 1, migration 043) is replaced: the owner approved
+assigning each listed store to one collector. Web now **requires** a collector on
+every new listing and can reassign any still-pending store.
+
+### 🔴 Mobile needs to change
+
+- New column `collection_visits.assigned_collector_id` (UUID, nullable, FK
+  `profiles.id`).
+- The collector's list must show **only** rows where
+  `assigned_collector_id = <my profiles.id>`. Add it to the query filter, not a
+  client-side `.filter()`, so the phone stops downloading everyone's stores.
+- Rows with `assigned_collector_id IS NULL` are shown to **nobody**. Only stores
+  listed before 144 carry a NULL; web badges them "Unassigned" so an admin can
+  assign them.
+- **Additional stores:** the SMS now goes only to the assigned collector, not
+  to every active collector.
+
+### ⚠️ Not a security boundary
+
+This is a filter in the app. RLS was deliberately left alone (owner's call):
+043's "Collectors read the list" policy still lets any collector read every row,
+and "Collectors work the list" still lets them claim any unclaimed row. Do not
+rely on the database to hide other collectors' stores.
+
+### Sequencing
+
+1. Merge 144 (additive — older phone builds ignore the column and keep showing
+   the whole list).
+2. Admins assign any pending "Unassigned" stores on the web board.
+3. Ship the mobile filter. If it ships before step 2, those stores disappear
+   from every phone.

@@ -15,7 +15,7 @@ import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
-import { useStoreCredit } from '@/lib/hooks/use-store-credit'
+import { useStoreCredit, type CreditAdjustment } from '@/lib/hooks/use-store-credit'
 import { useListableClients } from '@/lib/hooks/use-listable-clients'
 import { listableCustomers } from '@/lib/client-info'
 import { useProfiles } from '@/lib/hooks/use-profiles'
@@ -96,7 +96,7 @@ export default function CollectionPage() {
 
   const {
     visits, loading: visitsLoading, error: visitsError, createVisit, removeVisit, cancelClaim,
-    setDesignatedMethod, refresh: refreshVisits,
+    setDesignatedMethod, assignCollector, reload: reloadVisits,
   } = useCollectionVisits()
   const {
     remittances: allRemittances, error: remittancesError, setStatus: setRemittanceStatus,
@@ -104,7 +104,7 @@ export default function CollectionPage() {
   // Narrowed: only the customers a picker may offer, and only the columns the
   // picker, the dialogs and the publish-time snapshot read. The rows on this
   // board carry their own client join, so this was never what rendered it.
-  const { clients } = useListableClients()
+  const { clients, reload: reloadClients } = useListableClients()
   // The store-credit ledger (migration 115): the history behind each store's
   // running balance, and the write path the balances tool uses to set/charge/adjust it.
   /**
@@ -144,6 +144,21 @@ export default function CollectionPage() {
   const { entriesByClient: creditEntries, adjustBalance } = useStoreCredit({
     enabled: balancesOpen,
   })
+
+  /**
+   * The balances tool reads the ledger, which `adjustBalance` reloads itself —
+   * but Add store auto-fills from `clients.credit_balance` (a slow-lane cache)
+   * and the detail dialog from the board's client join. Re-read both, or a
+   * balance just set reads as "no amount due" until the page is reloaded.
+   */
+  const handleAdjust = useCallback(
+    async (input: CreditAdjustment): Promise<string | null> => {
+      const message = await adjustBalance(input)
+      if (!message) void Promise.all([reloadClients(), reloadVisits()])
+      return message
+    },
+    [adjustBalance, reloadClients, reloadVisits]
+  )
   const [addDefaults, setAddDefaults] = useState<{ scheduledFor?: string } | undefined>(undefined)
   // Bumped on every opening so the dialog remounts with fresh fields — see the
   // note on AddStoreDialog about why this isn't an effect.
@@ -154,6 +169,13 @@ export default function CollectionPage() {
 
   const router = useRouter()
   const collectors = useMemo(() => byRole(['collector']), [byRole])
+  // Only an active collector can be handed new stores; names still resolve for
+  // everyone, so a store assigned before someone left keeps its name on the board.
+  const activeCollectors = useMemo(() => collectors.filter(c => c.is_active), [collectors])
+  const collectorNames = useMemo(
+    () => new Map(collectors.map(c => [c.id, c.full_name])),
+    [collectors]
+  )
 
   /**
    * Opens on ALL dates. A published list does not stop mattering at midnight —
@@ -411,6 +433,8 @@ export default function CollectionPage() {
         }
         resolved.push({ draft, client })
       }
+      // One collector per batch — see AddStoreDialog.
+      const assigneeName = collectorNames.get(drafts[0]?.assignedCollectorId ?? '') ?? 'the collector'
 
       let listed = 0
       let anyAdditional = false
@@ -426,8 +450,9 @@ export default function CollectionPage() {
       for (const { draft, client } of resolved) {
         // An "additional" store fires an SMS, so it can't go through the
         // client-side insert (the BusyBee key is server-only). It routes through
-        // a server action that lists the row AND texts every active collector;
-        // the hook doesn't see that write, so reload after it lands.
+        // a server action that lists the row AND texts the assigned collector.
+        // Neither path reloads per store: the board is re-read once, below,
+        // whether the batch finished or stopped part-way.
         if (draft.isAdditional) {
           const result = await listAdditionalStore({
             clientId: draft.clientId,
@@ -438,9 +463,11 @@ export default function CollectionPage() {
             listedBy: profile?.id ?? null,
             designatedPaymentMethod: draft.designatedPaymentMethod,
             isDownPayment: draft.isDownPayment,
+            assignedCollectorId: draft.assignedCollectorId,
+            assignedCollectorName: assigneeName,
           })
           if (result.error) {
-            await refreshVisits()
+            await reloadVisits()
             const message = stoppedAt(result.error)
             setActionError(message)
             return message
@@ -451,8 +478,7 @@ export default function CollectionPage() {
           fanout.sent += result.sms.sent
           fanout.failed += result.sms.failed
         } else {
-          // Everything the collector fills in is left to the database defaults —
-          // the store belongs to nobody until someone actually works it.
+          // Everything the collector fills in is left to the database defaults.
           const message = await createVisit({
             clientId: draft.clientId,
             clientName: client.company_name,
@@ -462,8 +488,11 @@ export default function CollectionPage() {
             listedBy: profile?.id ?? null,
             designatedPaymentMethod: draft.designatedPaymentMethod,
             isDownPayment: draft.isDownPayment,
-          })
+            assignedCollectorId: draft.assignedCollectorId,
+            assignedCollectorName: assigneeName,
+          }, { reload: false })
           if (message) {
+            await reloadVisits()
             const wrapped = stoppedAt(message)
             setActionError(wrapped)
             return wrapped
@@ -473,32 +502,32 @@ export default function CollectionPage() {
       }
 
       setActionError('')
-      if (anyAdditional) await refreshVisits()
+      await reloadVisits()
 
       const count = `${listed} store${listed === 1 ? '' : 's'}`
 
       if (!anyAdditional) {
-        toast.success(`${count} added to the list`)
+        toast.success(`${count} added to ${assigneeName}'s list`)
         return null
       }
 
       const { configured, recipients, sent, failed } = fanout
       if (!configured) {
-        toast.success(`${count} added as additional`, {
+        toast.success(`${count} added as additional for ${assigneeName}`, {
           description: 'SMS isn’t configured yet — the stores are listed and badged, but no texts were sent.',
         })
       } else if (recipients === 0) {
-        toast.success(`${count} added as additional`, {
-          description: 'No active collector had a textable number.',
+        toast.success(`${count} added as additional for ${assigneeName}`, {
+          description: `${assigneeName} has no textable number, so no text was sent.`,
         })
       } else {
-        toast.success(`${count} added as additional — ${sent}/${recipients} texts sent`, {
+        toast.success(`${count} added as additional — ${sent}/${recipients} texts sent to ${assigneeName}`, {
           description: failed > 0 ? `${failed} text${failed === 1 ? '' : 's'} could not be sent.` : undefined,
         })
       }
       return null
     },
-    [createVisit, clients, profile?.id, refreshVisits]
+    [createVisit, clients, profile?.id, reloadVisits, collectorNames]
   )
 
   /** Only ever called for stores no collector has touched — see ListBoard. */
@@ -694,6 +723,7 @@ export default function CollectionPage() {
             <ListBoard
               days={days}
               focusWorkerId={collectorFilter}
+              collectorNames={collectorNames}
               onOpenVisit={setSelectedVisit}
               onAddStore={handleAddStoreToDay}
               onRemoveStore={visit => setPendingAction({ kind: 'remove', visit })}
@@ -963,6 +993,7 @@ export default function CollectionPage() {
         onOpenChange={setAddOpen}
         clients={listableClients}
         visits={visits}
+        collectors={activeCollectors}
         defaults={addDefaults}
         onAdd={handleAdd}
       />
@@ -972,7 +1003,7 @@ export default function CollectionPage() {
         onOpenChange={setBalancesOpen}
         clients={listableClients}
         entriesByClient={creditEntries}
-        onAdjust={adjustBalance}
+        onAdjust={handleAdjust}
         createdBy={profile?.id ?? null}
       />
 
@@ -1001,7 +1032,7 @@ export default function CollectionPage() {
               <span className="font-medium text-foreground">
                 {pendingAction?.visit.client?.company_name}
               </span>
-              . Releasing puts it back in the shared pool for anyone to work, and frees their one
+              . Releasing unlocks it for the collector it is assigned to, and frees their one
               claim slot — do it if they have finished for the day or the claim was a mistake.
             </>
           )
@@ -1014,6 +1045,8 @@ export default function CollectionPage() {
         visit={selectedVisit}
         onOpenChange={open => !open && setSelectedVisit(null)}
         onSetDesignatedMethod={setDesignatedMethod}
+        collectors={activeCollectors}
+        onAssignCollector={assignCollector}
         listedByName={listedByName}
       />
 
