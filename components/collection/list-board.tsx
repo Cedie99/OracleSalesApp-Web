@@ -46,13 +46,14 @@ interface ListBoardProps {
    * Collector to bring forward, or 'all'. A FOCUS, not a filter: rows belonging
    * to anyone else are dimmed rather than removed.
    *
-   * The distinction is the whole reason this board can honour the collector
-   * selection at all. Filtering the rows out would take every PENDING store with
-   * them — a pending store has no `collector_id` by constraint, because the day's
-   * list is a shared pool nobody owns until they work it. Dimming keeps the pool
-   * on screen, which is what an admin opens this tab to see.
+   * A pending store has no `collector_id` by constraint, so its owner is its
+   * assignee (migration 144) instead. Dimming rather than filtering keeps the
+   * day's totals honest and the whole list on screen, which is what an admin
+   * opens this tab to see.
    */
   focusWorkerId: string
+  /** Collector names by profile id, for each pending store's assignee (migration 144). */
+  collectorNames: Map<string, string>
   onOpenVisit: (visit: CollectionVisit) => void
   onAddStore: (day: CollectionDay) => void
   onRemoveStore: (visit: CollectionVisit) => void
@@ -70,7 +71,7 @@ interface ListBoardProps {
  * shared pool and no store belongs to anyone until it is worked.
  */
 export function ListBoard({
-  days, focusWorkerId, onOpenVisit, onAddStore, onRemoveStore, onCancelClaim,
+  days, focusWorkerId, collectorNames, onOpenVisit, onAddStore, onRemoveStore, onCancelClaim,
 }: ListBoardProps) {
   // Assigned across every visible day, not per card, so one collector keeps one
   // colour throughout the board — and the same colour the trip map gives them.
@@ -195,18 +196,25 @@ export function ListBoard({
               <div className="flex-1 min-h-0 max-h-80 overflow-y-auto divide-y divide-border rounded-xl border border-border">
                 {day.stores.map(store => {
                   const number = day.numbers.get(store.id)
+                  // Whoever worked it, else whoever it is assigned to (144).
+                  const owner = number?.workerId ?? store.assigned_collector_id
                   return (
                     <StoreRow
                       key={store.id}
                       store={store}
+                      assigneeName={
+                        store.assigned_collector_id
+                          ? collectorNames.get(store.assigned_collector_id) ?? null
+                          : null
+                      }
                       color={number ? colors.get(number.workerId) : undefined}
                       // Dimmed only when someone ELSE owns the row. An unowned
-                      // pending store (no number) stays at full strength — it is
-                      // still up for grabs by the collector being focused.
+                      // store (listed before 144 and never worked) stays at full
+                      // strength — it still needs someone to assign it.
                       dimmed={
                         focusWorkerId !== 'all'
-                        && number != null
-                        && number.workerId !== focusWorkerId
+                        && owner != null
+                        && owner !== focusWorkerId
                       }
                       onOpen={() => onOpenVisit(store)}
                       onRemove={() => onRemoveStore(store)}
@@ -244,9 +252,11 @@ export function ListBoard({
 }
 
 function StoreRow({
-  store, color, dimmed = false, onOpen, onRemove, onCancelClaim,
+  store, assigneeName, color, dimmed = false, onOpen, onRemove, onCancelClaim,
 }: {
   store: CollectionVisit
+  /** The assigned collector's name, or null when unassigned/unknown. */
+  assigneeName: string | null
   /** Owned by a collector other than the one being focused. */
   dimmed?: boolean
   /** The claim holder's colour, for the avatar on the claim line. */
@@ -301,10 +311,20 @@ function StoreRow({
               whether its notice has reached the field yet. */}
           <AdditionalBadge visit={store} />
           <DesignatedMethodBadge visit={store} />
-          {store.collector && (
+          {store.collector ? (
             <span className="text-[11px] text-muted-foreground truncate">
               {store.collector.full_name}
             </span>
+          ) : store.status === 'pending' && (
+            // Still to be worked, so name who it is for — or flag that no
+            // collector's app shows it yet (migration 144).
+            store.assigned_collector_id ? (
+              <span className="text-[11px] text-muted-foreground truncate">
+                For {assigneeName ?? 'a collector'}
+              </span>
+            ) : (
+              <span className={`text-[11px] font-medium ${TONE_TEXT.amber}`}>Unassigned</span>
+            )
           )}
         </div>
 

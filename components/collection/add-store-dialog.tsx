@@ -10,7 +10,8 @@ import {
 import { CLIENT_SEARCH_LIMIT, clientWhere, recentClientIds, searchClients } from '@/lib/client-search'
 import { peso, toCentavo } from '@/lib/money'
 import { EMPTY_PESO, PesoInput, pesoValueAmount, type PesoValue } from '@/components/collection/peso-input'
-import type { Client, CollectionVisit, PaymentMethod } from '@/types'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import type { Client, CollectionVisit, PaymentMethod, Profile } from '@/types'
 import { format } from 'date-fns'
 import { Check, HandCoins, Lock, Search, X } from 'lucide-react'
 
@@ -40,6 +41,11 @@ export interface AddStoreDraft {
    * only labels the audit entry, so the history says where the figure came from.
    */
   isDownPayment: boolean
+  /**
+   * The collector the batch is listed for (migration 144) — the only one whose
+   * app will show these stores. Set once per batch, like the day.
+   */
+  assignedCollectorId: string
 }
 
 interface AddStoreDialogProps {
@@ -48,6 +54,8 @@ interface AddStoreDialogProps {
   clients: Client[]
   /** Existing rows, used to catch a store being listed twice for one day. */
   visits: CollectionVisit[]
+  /** Who the batch can be assigned to — the collector profiles. */
+  collectors: Profile[]
   /** Pre-selected day when opened from a specific list's "Add store". */
   defaults?: { scheduledFor?: string }
   /**
@@ -95,21 +103,21 @@ const RECENT_LIMIT = 8
  *
  * This is the Collection Admin's core action, and the only place a collection
  * record comes into existence — the collector's app is mobile-only and has no
- * "add a store to the list" path. Note what is deliberately absent: there is no
- * collector picker. The list is a shared pool that any collector works down, so
- * naming one here would invent a routing model the product doesn't have.
+ * "add a store to the list" path.
  *
- * That settles the July 3 meeting's OQ-4 ("who assigns collection routes/stores
- * to collectors?"): nobody does. Confirmed by Adrian 2026-07-27 — the admin
- * lists the stores, the mobile collector picks them up. Do not add a collector
- * field to this form.
+ * Every store is assigned to a collector here (migration 144), and only that
+ * collector's app shows it. This replaces the shared-pool model of the July 3
+ * meeting's OQ-4 / Adrian's 2026-07-27 "nobody assigns" — the owner approved
+ * assignment on 2026-10-28. A store with no assignee is hidden from every
+ * phone, which is why the picker is required rather than optional.
  *
  * It publishes a BATCH because that is the shape of the job: a day's list is
  * many stores, and the earlier one-store-per-dialog version made the admin
  * reopen the form and re-pick the same day for each one. Search once, tick the
- * stores; each one's amount due comes from its balance, not the keyboard. The day
- * and the "additional" flag are set once and apply to everything in the batch,
- * since they describe the publish rather than any one store.
+ * stores; each one's amount due comes from its balance, not the keyboard. The
+ * day, the collector and the "additional" flag are set once and apply to
+ * everything in the batch, since they describe the publish rather than any one
+ * store — a second collector's stores are a second batch.
  *
  * Picking is a search, not a scroll. At ~1,500 customers an alphabetical
  * dropdown is unusable, so results are ranked and capped by `searchClients` and
@@ -129,9 +137,10 @@ const RECENT_LIMIT = 8
  * per opening with a `key` rather than having an effect reset the fields.
  */
 export function AddStoreDialog({
-  open, onOpenChange, clients, visits, defaults, onAdd,
+  open, onOpenChange, clients, visits, collectors, defaults, onAdd,
 }: AddStoreDialogProps) {
   const [scheduledFor, setScheduledFor] = useState(defaults?.scheduledFor ?? today)
+  const [collectorId, setCollectorId] = useState('')
   const [picked, setPicked] = useState<PickedStore[]>([])
   const [isAdditional, setIsAdditional] = useState(false)
   const [query, setQuery] = useState('')
@@ -219,6 +228,7 @@ export function AddStoreDialog({
     if (scheduledFor < today()) {
       return setError('That collection day has already passed. Pick today or a later day.')
     }
+    if (!collectorId) return setError('Pick the collector these stores are for.')
 
     const drafts: AddStoreDraft[] = []
     for (const p of picked) {
@@ -242,6 +252,7 @@ export function AddStoreDialog({
         clientId: p.clientId, scheduledFor, amountDue: amount, isAdditional,
         designatedPaymentMethod: p.counter ? 'counter' : null,
         isDownPayment: p.downPayment,
+        assignedCollectorId: collectorId,
       })
     }
 
@@ -337,13 +348,31 @@ export function AddStoreDialog({
                 className="w-44"
               />
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="add-collector">Collector</Label>
+              <Select value={collectorId} onValueChange={v => { setCollectorId(v ?? ''); setError('') }}>
+                <SelectTrigger id="add-collector" className="w-52">
+                  <SelectValue placeholder="Assign to…">
+                    {(value: string) => collectors.find(c => c.id === value)?.full_name ?? 'Assign to…'}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {collectors.map(c => (
+                    <SelectItem key={c.id} value={c.id}>{c.full_name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <p className="min-w-0 flex-1 pb-2 text-[11px] leading-relaxed text-muted-foreground">
               {scheduledFor && scheduledFor < today() ? (
                 <span className="text-destructive">
                   That day has already passed. Pick today or a later day.
                 </span>
               ) : (
-                <>Everything picked here goes onto this one day&apos;s list.</>
+                <>
+                  Everything picked here goes onto this day&apos;s list, and only this collector&apos;s
+                  app will show it.
+                </>
               )}
             </p>
           </div>
@@ -584,11 +613,11 @@ export function AddStoreDialog({
                 <span className="space-y-0.5">
                   <span className="block text-sm font-medium text-foreground">
                     Mark {picked.length > 1 ? `all ${picked.length}` : 'as'} additional — notify
-                    collectors
+                    the collector
                   </span>
                   <span className="block text-[11px] leading-relaxed text-muted-foreground">
-                    For stores the collectors need to know about now, after the day&apos;s list is
-                    already out. Every active collector gets a text
+                    For stores the collector needs to know about now, after the day&apos;s list is
+                    already out. The assigned collector gets a text
                     {picked.length > 1 ? ' per store' : ''} and the store jumps to the top of
                     their app.
                   </span>
@@ -604,9 +633,8 @@ export function AddStoreDialog({
           {/* The two product rules an admin most often asks about, parked where
               they are readable but out of the way of the work. */}
           <p className="max-w-sm self-center text-[11px] leading-relaxed text-muted-foreground">
-            Whichever collector reaches a store takes it off the list — no one is assigned. They
-            never see the amount due either; their app asks them to type what was actually handed
-            over, with no target on screen.
+            Each collector sees only the stores assigned to them. They never see the amount due;
+            their app asks them to type what was actually handed over, with no target on screen.
           </p>
           <div className="flex gap-2 self-end sm:self-center">
             <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
