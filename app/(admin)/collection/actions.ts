@@ -40,7 +40,7 @@ export interface ListAdditionalStoreInput {
   listedBy: string | null
   /** The office's "pays at Counter" lock (migration 143), or null. */
   designatedPaymentMethod: PaymentMethod | null
-  /** `amountDue` is a typed down payment, not the store's balance. Audit label only. */
+  /** A down payment the customer sizes, so `amountDue` is 0. Saved as `is_down_payment` (145). */
   isDownPayment: boolean
   /** The collector this store is listed for (migration 144) — the one who is texted. */
   assignedCollectorId: string
@@ -165,6 +165,7 @@ export async function listAdditionalStore(
       ...(input.designatedPaymentMethod
         ? { designated_payment_method: input.designatedPaymentMethod }
         : {}),
+      ...(input.isDownPayment ? { is_down_payment: true } : {}),
       assigned_collector_id: input.assignedCollectorId,
     })
     .select('id')

@@ -208,6 +208,12 @@ export interface CollectionVisit {
    */
   designated_payment_method: PaymentMethod | null
   /**
+   * Admin-set when listing (migration 145): a down payment whose size the
+   * customer decides, so `amount_due` is 0. Mobile badges it for the collector —
+   * the flag, never the amount. Per listing, like the Counter lock.
+   */
+  is_down_payment: boolean
+  /**
    * The collector this listing is for (migration 144) — chosen by the admin when
    * listing, and the only collector whose app shows the store. Null = hidden from
    * every collector; only stores listed before 144 should carry it. An
