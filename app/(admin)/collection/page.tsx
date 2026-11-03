@@ -24,6 +24,7 @@ import { AddStoreDialog, type AddStoreDraft } from '@/components/collection/add-
 import { StoreBalancesDialog } from '@/components/collection/store-balances-dialog'
 import { AdditionalBadge } from '@/components/collection/additional-badge'
 import { DesignatedMethodBadge } from '@/components/collection/designated-method-badge'
+import { DownPaymentBadge } from '@/components/collection/down-payment-badge'
 import { listAdditionalStore } from './actions'
 import { toast } from 'sonner'
 import { ListBoard } from '@/components/collection/list-board'
@@ -798,6 +799,7 @@ export default function CollectionPage() {
                               </p>
                               <AdditionalBadge visit={v} showAck={false} />
                               <DesignatedMethodBadge visit={v} />
+                              <DownPaymentBadge visit={v} />
                             </div>
                             <p className="text-xs text-muted-foreground truncate max-w-[180px]">
                               {v.client?.office_address}

@@ -68,16 +68,17 @@ export const VISIT_COLUMNS = `
 //
 // `designated_payment_method` (migration 143 — the admin's "pays at Counter")
 // joins for the same reason, as does `assigned_collector_id` (migration 144 —
-// the collector a store is listed for).
+// the collector a store is listed for), as does `is_down_payment` (migration
+// 145 — a down payment the customer sizes).
 export const ADDITIONAL_COLUMNS = `
   is_additional, additional_received_at, additional_seen_at,
-  client_lat, client_lng, designated_payment_method, assigned_collector_id
+  client_lat, client_lng, designated_payment_method, assigned_collector_id, is_down_payment
 `
 
-/** True when a select failed only because 068's/114's/143's/144's columns aren't there yet. */
+/** True when a select failed only because 068's/114's/143's/144's/145's columns aren't there yet. */
 function isMissingAdditionalColumn(error: { message?: string } | null): boolean {
   return !!error?.message
-    && /is_additional|additional_received_at|additional_seen_at|client_lat|client_lng|designated_payment_method|assigned_collector_id/.test(error.message)
+    && /is_additional|additional_received_at|additional_seen_at|client_lat|client_lng|designated_payment_method|assigned_collector_id|is_down_payment/.test(error.message)
 }
 
 // The installments behind a partial store (migration 070). Fetched in one pass
@@ -206,6 +207,8 @@ function normalizeVisit(
     designated_payment_method: (row.designated_payment_method as PaymentMethod | null) ?? null,
     // Absent under the pre-144 fallback select — reads as unassigned.
     assigned_collector_id: (row.assigned_collector_id as string | null) ?? null,
+    // Absent under the pre-145 fallback select — reads as a normal listing.
+    is_down_payment: (row.is_down_payment as boolean | undefined) ?? false,
     amount_due: num(row.amount_due) ?? 0,
     amount_collected: num(row.amount_collected),
     gps_lat: num(row.gps_lat),
@@ -249,7 +252,7 @@ export interface NewCollectionVisit {
    * or null to leave it to them. Currently only 'counter'.
    */
   designatedPaymentMethod: PaymentMethod | null
-  /** `amountDue` is a typed down payment, not the store's balance. Audit label only. */
+  /** A down payment the customer sizes, so `amountDue` is 0. Saved as `is_down_payment` (145). */
   isDownPayment: boolean
   /** The collector this store is listed for (migration 144). */
   assignedCollectorId: string
@@ -417,6 +420,8 @@ export function useCollectionVisits(
         ...(draft.designatedPaymentMethod
           ? { designated_payment_method: draft.designatedPaymentMethod }
           : {}),
+        // Likewise only when ticked, so a normal listing inserts before 145.
+        ...(draft.isDownPayment ? { is_down_payment: true } : {}),
         assigned_collector_id: draft.assignedCollectorId,
         // Everything the collector fills in stays null until they work it.
       })
