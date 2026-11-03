@@ -11,6 +11,7 @@ import {
 import { StatusDot } from '@/components/status-dot'
 import { AdditionalBadge } from '@/components/collection/additional-badge'
 import { DesignatedMethodBadge } from '@/components/collection/designated-method-badge'
+import { DownPaymentBadge } from '@/components/collection/down-payment-badge'
 import { boardWorkerIds } from '@/lib/board-numbering'
 import { dayProgress, hasMissingProof, type CollectionDay } from '@/lib/collection'
 import { peso } from '@/lib/money'
@@ -311,6 +312,7 @@ function StoreRow({
               whether its notice has reached the field yet. */}
           <AdditionalBadge visit={store} />
           <DesignatedMethodBadge visit={store} />
+          <DownPaymentBadge visit={store} />
           {store.collector ? (
             <span className="text-[11px] text-muted-foreground truncate">
               {store.collector.full_name}
