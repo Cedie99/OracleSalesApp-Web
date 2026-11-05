@@ -15,7 +15,7 @@ import { usePagination } from '@/lib/hooks/use-pagination'
 import { useDateRangeFilter } from '@/lib/hooks/use-date-range-filter'
 import { useCurrentProfile } from '@/lib/hooks/use-current-profile'
 import { useCollectionVisits, useRemittances } from '@/lib/hooks/use-collection'
-import { useStoreCredit, type CreditAdjustment } from '@/lib/hooks/use-store-credit'
+import { useStoreCredit, type CreditAdjustment, type WithholdingChange } from '@/lib/hooks/use-store-credit'
 import { useListableClients } from '@/lib/hooks/use-listable-clients'
 import { listableCustomers } from '@/lib/client-info'
 import { useProfiles } from '@/lib/hooks/use-profiles'
@@ -36,10 +36,10 @@ import {
 } from '@/components/needs-attention'
 import { isNotWorked, isStaleClaim, staleClaimCount } from '@/lib/claims'
 import {
-  buildDays, collectionTrips, hasMissingProof, remittanceVariance,
+  buildDays, collectionTrips, hasMissingProof, remittanceVariance, settledAmount,
   type CollectionDay,
 } from '@/lib/collection'
-import { peso, pesoDelta } from '@/lib/money'
+import { peso, pesoDelta, toCentavo } from '@/lib/money'
 import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE, paymentMethodLabel,
   REMITTANCE_DESTINATION_LABEL, REMITTANCE_STATUS_LABEL, REMITTANCE_STATUS_TONE,
@@ -105,7 +105,7 @@ export default function CollectionPage() {
   // Narrowed: only the customers a picker may offer, and only the columns the
   // picker, the dialogs and the publish-time snapshot read. The rows on this
   // board carry their own client join, so this was never what rendered it.
-  const { clients, reload: reloadClients } = useListableClients()
+  const { clients, patchClient } = useListableClients()
   // The store-credit ledger (migration 115): the history behind each store's
   // running balance, and the write path the balances tool uses to set/charge/adjust it.
   /**
@@ -142,23 +142,43 @@ export default function CollectionPage() {
   // The ledger behind each store's running balance is read only by the balances
   // tool, so it loads when that dialog is opened rather than on every visit to
   // the board. `adjustBalance` is a write and works either way.
-  const { entriesByClient: creditEntries, adjustBalance } = useStoreCredit({
+  const { entriesByClient: creditEntries, adjustBalance, setWithholdsTax } = useStoreCredit({
     enabled: balancesOpen,
   })
+
+  // Re-reading every listable store takes seconds (paged past 1,000 rows), so
+  // the saved tick is written straight into the tab-wide cache — the balances
+  // tool, Add store and the detail dialog all show it at once, with no refresh.
+  const handleSetWithholding = useCallback(
+    async (input: WithholdingChange): Promise<string | null> => {
+      const message = await setWithholdsTax(input)
+      if (!message) void patchClient(input.clientId, c => ({ ...c, withholds_tax: input.enabled }))
+      return message
+    },
+    [setWithholdsTax, patchClient]
+  )
 
   /**
    * The balances tool reads the ledger, which `adjustBalance` reloads itself —
    * but Add store auto-fills from `clients.credit_balance` (a slow-lane cache)
    * and the detail dialog from the board's client join. Re-read both, or a
    * balance just set reads as "no amount due" until the page is reloaded.
+   * The movement is applied to the cached store at once (patchClient), so Add
+   * store shows the new balance immediately; the fresh re-read then confirms it.
    */
   const handleAdjust = useCallback(
     async (input: CreditAdjustment): Promise<string | null> => {
       const message = await adjustBalance(input)
-      if (!message) void Promise.all([reloadClients(), reloadVisits()])
+      if (!message) {
+        void patchClient(input.clientId, c => ({
+          ...c,
+          credit_balance: toCentavo((c.credit_balance ?? 0) + input.amount),
+        }))
+        void reloadVisits()
+      }
       return message
     },
-    [adjustBalance, reloadClients, reloadVisits]
+    [adjustBalance, patchClient, reloadVisits]
   )
   const [addDefaults, setAddDefaults] = useState<{ scheduledFor?: string } | undefined>(undefined)
   // Bumped on every opening so the dialog remounts with fresh fields — see the
@@ -784,7 +804,9 @@ export default function CollectionPage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {visitsPage.pageItems.map(v => {
-                      const short = v.amount_collected !== null && v.amount_collected < v.amount_due
+                      // Cash + EWT withheld (146), so a withholding store isn't flagged short.
+                      const settled = settledAmount(v)
+                      const short = settled !== null && settled < v.amount_due - (v.withholding_tax > 0 ? 0.01 : 0)
                       const proofGap = hasMissingProof(v)
                       return (
                         <tr
@@ -829,6 +851,11 @@ export default function CollectionPage() {
                           </td>
                           <td className={`px-4 py-3 text-right tabular-nums font-medium ${short ? TONE_TEXT.amber : ''}`}>
                             {v.amount_collected === null ? '—' : peso(v.amount_collected)}
+                            {v.withholding_tax > 0 && (
+                              <span className="block text-[11px] font-normal text-muted-foreground">
+                                + {peso(v.withholding_tax)} EWT
+                              </span>
+                            )}
                           </td>
                           <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
                             {v.visited_at ? format(new Date(v.visited_at), 'MMM d, h:mm a') : '—'}
@@ -1006,6 +1033,7 @@ export default function CollectionPage() {
         clients={listableClients}
         entriesByClient={creditEntries}
         onAdjust={handleAdjust}
+        onSetWithholding={handleSetWithholding}
         createdBy={profile?.id ?? null}
       />
 
@@ -1050,6 +1078,10 @@ export default function CollectionPage() {
         collectors={activeCollectors}
         onAssignCollector={assignCollector}
         listedByName={listedByName}
+        withholdsTax={
+          !!selectedVisit
+          && !!listableClients.find(c => c.id === selectedVisit.client_id)?.withholds_tax
+        }
       />
 
       {/* Opened from the remittance cards. The detail dialog carries its own,

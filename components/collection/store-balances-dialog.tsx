@@ -11,10 +11,11 @@ import { CLIENT_SEARCH_LIMIT, clientWhere, searchClients } from '@/lib/client-se
 import { peso, pesoDelta, toCentavo } from '@/lib/money'
 import { EMPTY_PESO, PesoInput, pesoValueAmount, type PesoValue } from '@/components/collection/peso-input'
 import { StorePaymentCalendar } from '@/components/collection/store-payment-calendar'
-import type { CreditAdjustment } from '@/lib/hooks/use-store-credit'
+import { ewtBreakdown } from '@/lib/collection'
+import type { CreditAdjustment, WithholdingChange } from '@/lib/hooks/use-store-credit'
 import type { Client, ClientCreditEntry } from '@/types'
 import { format } from 'date-fns'
-import { Search, Wallet } from 'lucide-react'
+import { Check, Search, Wallet } from 'lucide-react'
 
 /**
  * The Collection admin's store-credit tool (migration 117).
@@ -41,6 +42,8 @@ interface StoreBalancesDialogProps {
   entriesByClient: Map<string, ClientCreditEntry[]>
   /** Records one signed-delta entry. Returns an error message, or null on success. */
   onAdjust: (input: CreditAdjustment) => Promise<string | null>
+  /** Turns the store's 1% EWT on/off (migration 146). Error message, or null. */
+  onSetWithholding: (input: WithholdingChange) => Promise<string | null>
   /** The signed-in admin, stamped onto the entry's `created_by`. */
   createdBy: string | null
 }
@@ -58,6 +61,7 @@ const ENTRY_LABEL: Record<ClientCreditEntry['entry_type'], string> = {
   adjustment: 'Adjustment',
   charge: 'Charge',
   collection: 'Collected',
+  withholding: 'EWT withheld',
 }
 
 /**
@@ -74,8 +78,10 @@ function balanceFor(client: Client, entries: ClientCreditEntry[] | undefined): n
 }
 
 export function StoreBalancesDialog({
-  open, onOpenChange, clients, entriesByClient, onAdjust, createdBy,
+  open, onOpenChange, clients, entriesByClient, onAdjust, onSetWithholding, createdBy,
 }: StoreBalancesDialogProps) {
+  const [withholdingBusy, setWithholdingBusy] = useState(false)
+  const [withholdingError, setWithholdingError] = useState('')
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // Which face of the right pane: maintain the balance, or read the payment calendar.
@@ -108,6 +114,19 @@ export function StoreBalancesDialog({
     setSign(-1)
     setNote('')
     setError('')
+    setWithholdingError('')
+  }
+
+  async function toggleWithholding() {
+    if (!selected) return
+    setWithholdingBusy(true)
+    const message = await onSetWithholding({
+      clientId: selected.id,
+      clientName: selected.company_name,
+      enabled: !selected.withholds_tax,
+    })
+    setWithholdingBusy(false)
+    setWithholdingError(message ?? '')
   }
 
   /** The signed delta and entry type this form would write, or an error string. */
@@ -232,6 +251,53 @@ export function StoreBalancesDialog({
                     <span className="text-xl font-semibold tabular-nums text-foreground">{peso(balance)}</span>
                     <span className="text-[11px] text-muted-foreground">owed</span>
                   </div>
+                  {/* Per store, set once (146): a withholding agent pays 111/112
+                      in cash and the 1% EWT settles the rest. Applies to payments
+                      from now on; past ones keep the treatment they were paid with. */}
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={!!selected.withholds_tax}
+                    disabled={withholdingBusy}
+                    onClick={toggleWithholding}
+                    className="mt-2 flex w-full items-center gap-2 rounded-md text-left text-[11px] disabled:opacity-60"
+                  >
+                    <span
+                      className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
+                        selected.withholds_tax
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-input'
+                      }`}
+                    >
+                      {selected.withholds_tax && <Check className="h-2.5 w-2.5" />}
+                    </span>
+                    <span className="font-medium text-foreground">Withholds 1% EWT</span>
+                    {!selected.withholds_tax && (
+                      <span className="truncate text-muted-foreground/80">
+                        · customer deducts tax before paying?
+                      </span>
+                    )}
+                  </button>
+                  {/* The calculated split of the current balance, so the admin
+                      sees what the collector should come back with. */}
+                  {selected.withholds_tax && balance > 0 && (() => {
+                    const { withheld, cash } = ewtBreakdown(balance)
+                    return (
+                      <div className="mt-1.5 space-y-0.5 pl-5 text-[11px] tabular-nums">
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>1% EWT ({peso(balance)} ÷ 1.12 × 1%)</span>
+                          <span>−{peso(withheld)}</span>
+                        </div>
+                        <div className="flex justify-between font-medium text-foreground">
+                          <span>Cash to collect</span>
+                          <span>{peso(cash)}</span>
+                        </div>
+                      </div>
+                    )
+                  })()}
+                  {withholdingError && (
+                    <p className="mt-1 text-[11px] text-destructive">{withholdingError}</p>
+                  )}
                 </div>
 
                 {/* Manage the balance, or read the payment calendar. */}

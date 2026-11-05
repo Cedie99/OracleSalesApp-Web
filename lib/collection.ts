@@ -10,7 +10,7 @@
  */
 import type { AdditionalAckState, CollectionVisit, PaymentMethod, Remittance } from '@/types'
 import { numberStopsByWorker, type WorkerStopNumber } from '@/lib/board-numbering'
-import { peso } from '@/lib/money'
+import { peso, toCentavo } from '@/lib/money'
 import { paymentMethodLabel } from '@/lib/status-styles'
 import { stopAddress, stopLocality } from '@/lib/client-info'
 import { groupByWorkerDay, tripColor, workerColors, type Trip, type TripStop } from '@/lib/trips'
@@ -121,7 +121,25 @@ export function hasMissingProof(visit: CollectionVisit): boolean {
  * of delivery's `remainingCod`.
  */
 export function remainingBalance(visit: CollectionVisit): number {
-  return visit.amount_due - (visit.amount_collected ?? 0)
+  // EWT the customer withheld (146) settles the due as surely as the cash does.
+  return visit.amount_due - (visit.amount_collected ?? 0) - visit.withholding_tax
+}
+
+/**
+ * What a withholding store (146) hands over against a gross amount: 1% of the
+ * VAT-exclusive figure is withheld (gross ÷ 1.12 × 1% = gross ÷ 112) and the
+ * rest is cash. ₱112,000 → ₱1,000 withheld, ₱111,000 cash. The database derives
+ * the same figure from the cash side (cash ÷ 111), so the two agree.
+ */
+export function ewtBreakdown(gross: number): { withheld: number; cash: number } {
+  const withheld = toCentavo(gross / 112)
+  return { withheld, cash: toCentavo(gross - withheld) }
+}
+
+/** Cash + EWT withheld (146): how much of the due a visit's payments settled. */
+export function settledAmount(visit: CollectionVisit): number | null {
+  if (visit.amount_collected === null) return null
+  return visit.amount_collected + visit.withholding_tax
 }
 
 /**

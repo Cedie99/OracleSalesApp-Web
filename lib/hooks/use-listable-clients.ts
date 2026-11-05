@@ -1,5 +1,7 @@
 'use client'
 
+import { useCallback } from 'react'
+
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh, SLOW_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { useCachedResource } from '@/lib/hooks/use-cached-resource'
@@ -37,36 +39,54 @@ import type { Client } from '@/types'
  * nothing. Do not hand these rows to something expecting a whole client.
  */
 
-const LISTABLE_COLUMNS = `
+const BASE_LISTABLE_COLUMNS = `
   id, company_name, customer_type, status, credit_balance,
   office_address, address_line1, address_line2, landmark, city, province
 `
+// `withholds_tax` (migration 146) on top, with a fallback to the base select:
+// PostgREST rejects the whole select on one unknown column, so naming it before
+// 146 is applied would empty the Add-store picker (see VISIT_COLUMNS' note).
+const LISTABLE_COLUMNS = `${BASE_LISTABLE_COLUMNS}, withholds_tax`
 
 const EMPTY: Client[] = []
 
 export function useListableClients({ enabled = true }: { enabled?: boolean } = {}) {
-  const { data, loading, error, reload, refresh } = useCachedResource<Client[]>(
+  const { data, loading, error, reload, refresh, mutate } = useCachedResource<Client[]>(
     'listable-clients',
     async () => {
       // Paged: PostgREST caps one response at 1,000 rows, and there are more
       // listable customers than that — a single select silently dropped every
       // name past the cap. `id` breaks company_name ties so pages never overlap.
       const supabase = createClient()
-      const rows = await fetchAllPages<Record<string, unknown>>((from, to) =>
-        supabase
-          .from('clients')
-          .select(LISTABLE_COLUMNS)
-          .eq('status', 'active')
-          .in('customer_type', ['new', 'existing'])
-          .order('company_name')
-          .order('id')
-          .range(from, to))
+      // `columns` is a runtime string, so the row type can't be inferred — cast,
+      // as use-collection's readVisits does.
+      const fetchWith = (columns: string) =>
+        fetchAllPages<Record<string, unknown>>(async (from, to) => {
+          const { data, error } = await supabase
+            .from('clients')
+            .select(columns)
+            .eq('status', 'active')
+            .in('customer_type', ['new', 'existing'])
+            .order('company_name')
+            .order('id')
+            .range(from, to)
+          return { data: data as Record<string, unknown>[] | null, error }
+        })
+
+      let rows: Record<string, unknown>[]
+      try {
+        rows = await fetchWith(LISTABLE_COLUMNS)
+      } catch (err) {
+        if (!/withholds_tax/.test(err instanceof Error ? err.message : String(err))) throw err
+        rows = await fetchWith(BASE_LISTABLE_COLUMNS)
+      }
 
       return rows.map(row => ({
         ...(row as unknown as Client),
         // PostgREST can serialise NUMERIC as a string; coerce so the Add-store
         // dialog's auto-fill does arithmetic on a number.
         credit_balance: Number((row as { credit_balance?: unknown }).credit_balance ?? 0),
+        withholds_tax: (row as { withholds_tax?: boolean }).withholds_tax ?? false,
       }))
     },
     EMPTY,
@@ -81,5 +101,18 @@ export function useListableClients({ enabled = true }: { enabled?: boolean } = {
     enabled,
   })
 
-  return { clients: data, loading, error, refresh, reload }
+  /**
+   * After a write to one store (a balance movement, the EWT tick): apply it at
+   * once, in the tab-wide cache too, then re-read with a FRESH request. A plain
+   * `reload` can join a read that started before the write — re-reading 1,000+
+   * stores takes seconds — and put the old balance back, which is why Add store
+   * used to need a page refresh to see a balance just set.
+   */
+  const patchClient = useCallback(
+    (clientId: string, update: (client: Client) => Client) =>
+      mutate(rows => rows.map(c => (c.id === clientId ? update(c) : c))),
+    [mutate]
+  )
+
+  return { clients: data, loading, error, refresh, reload, patchClient }
 }
