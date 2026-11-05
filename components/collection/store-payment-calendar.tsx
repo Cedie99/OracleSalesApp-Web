@@ -35,7 +35,8 @@ export function StorePaymentCalendar({ entries }: { entries: ClientCreditEntry[]
   // Only collections — this view answers "what did the store pay", never "what
   // did the admin charge it".
   const collections = useMemo(
-    () => entries.filter(e => e.entry_type === 'collection'),
+    // EWT withheld (146) settles the store's balance just as the cash does.
+    () => entries.filter(e => e.entry_type === 'collection' || e.entry_type === 'withholding'),
     [entries]
   )
 
@@ -70,7 +71,7 @@ export function StorePaymentCalendar({ entries }: { entries: ClientCreditEntry[]
   // reference for the month totals.
   const amountDue = useMemo(
     () => entries
-      .filter(e => e.entry_type !== 'collection')
+      .filter(e => e.entry_type !== 'collection' && e.entry_type !== 'withholding')
       .reduce((sum, e) => sum + e.amount, 0),
     [entries]
   )

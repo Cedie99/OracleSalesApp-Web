@@ -121,7 +121,14 @@ export function hasMissingProof(visit: CollectionVisit): boolean {
  * of delivery's `remainingCod`.
  */
 export function remainingBalance(visit: CollectionVisit): number {
-  return visit.amount_due - (visit.amount_collected ?? 0)
+  // EWT the customer withheld (146) settles the due as surely as the cash does.
+  return visit.amount_due - (visit.amount_collected ?? 0) - visit.withholding_tax
+}
+
+/** Cash + EWT withheld (146): how much of the due a visit's payments settled. */
+export function settledAmount(visit: CollectionVisit): number | null {
+  if (visit.amount_collected === null) return null
+  return visit.amount_collected + visit.withholding_tax
 }
 
 /**

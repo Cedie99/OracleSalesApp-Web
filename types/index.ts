@@ -129,7 +129,7 @@ export type RemittanceStatus = 'submitted' | 'reconciled' | 'variance'
  * written by a trigger so the field can never move the balance itself. See
  * `ClientCreditEntry`.
  */
-export type CreditEntryType = 'adjustment' | 'charge' | 'collection'
+export type CreditEntryType = 'adjustment' | 'charge' | 'collection' | 'withholding'
 
 /**
  * One candidate location for a client — "Location 1", "Location 2"… (migration
@@ -213,6 +213,12 @@ export interface CollectionVisit {
    * the flag, never the amount. Per listing, like the Counter lock.
    */
   is_down_payment: boolean
+  /**
+   * EWT the customer withheld across this visit's payments (migration 146) — 0
+   * unless the store `withholds_tax`. `amount_collected` stays the CASH received
+   * (what is remitted); the visit settles on cash + this. Derived server-side.
+   */
+  withholding_tax: number
   /**
    * The collector this listing is for (migration 144) — chosen by the admin when
    * listing, and the only collector whose app shows the store. Null = hidden from
@@ -832,6 +838,12 @@ export interface Client {
    * like every other NUMERIC (PostgREST can hand it back as a string).
    */
   credit_balance?: number
+  /**
+   * The store withholds 1% EWT on the VAT-exclusive amount (migration 146), so a
+   * collector receives 111/112 of what a payment settles. Set once per store by
+   * a Collection admin. Optional: only the listable-clients read selects it.
+   */
+  withholds_tax?: boolean
   /** ⚠️ NOT IN THE DATABASE — replaced by the binary progress bar. See lib/client-progress.ts. */
   rating?: number
   lost_at: string | null

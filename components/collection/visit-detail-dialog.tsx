@@ -8,7 +8,7 @@ import {
   PhotoLightbox, ProofTile, RemittanceProofThumb, captionFor, type LightboxPhoto,
 } from '@/components/photo-lightbox'
 import { additionalAckState, visitProofs } from '@/lib/collection'
-import { peso, pesoDelta } from '@/lib/money'
+import { peso, pesoDelta, toCentavo } from '@/lib/money'
 import {
   ADDITIONAL_ACK_LABEL, ADDITIONAL_ACK_TONE,
   PAYMENT_METHOD_TONE, TONE_CLASS, TONE_TEXT, paymentMethodLabel,
@@ -97,7 +97,12 @@ function VisitDetail({
     : []
   const shortfall =
     visit.status === 'collected' && visit.amount_collected !== null
-      ? visit.amount_collected - visit.amount_due
+      // EWT withheld (146) counts toward the due; the 1-centavo rounding gap
+      // between the customer's figure and ours isn't a shortfall.
+      ? (() => {
+          const gap = toCentavo(visit.amount_collected + visit.withholding_tax - visit.amount_due)
+          return visit.withholding_tax > 0 && Math.abs(gap) <= 0.01 ? 0 : gap
+        })()
       : 0
   // The store's cross-day running balance (117). Positive = still owed, negative
   // = the store is in credit (overpaid), zero = settled. Distinct from this
@@ -227,6 +232,20 @@ function VisitDetail({
                   {visit.amount_collected === null ? '—' : peso(visit.amount_collected)}
                 </span>
               </div>
+              {/* The customer withheld 1% EWT (146) and remits it to the BIR;
+                  it settles the due without passing through the collector. */}
+              {visit.withholding_tax > 0 && (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">1% EWT withheld</span>
+                    <span className="tabular-nums font-medium">{peso(visit.withholding_tax)}</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Settled {peso((visit.amount_collected ?? 0) + visit.withholding_tax)} — collect
+                    the customer&apos;s BIR Form 2307 for the withheld amount.
+                  </p>
+                </>
+              )}
               {/* No per-visit "balance still owed" here: a partial closes for the
                   day, and what the store still owes is the running store balance
                   shown up top — repeating it against this one visit's due would

@@ -508,7 +508,16 @@ export function AddStoreDialog({
                                   Customer decides
                                 </span>
                               ) : due > 0 ? (
-                                <span className="text-foreground">{peso(due)}</span>
+                                <span className="text-foreground">
+                                  {peso(due)}
+                                  {/* A withholding store (146) hands over 111/112
+                                      of the due in cash; the EWT settles the rest. */}
+                                  {client?.withholds_tax && (
+                                    <span className="block text-[10px] text-muted-foreground">
+                                      1% EWT · cash {peso(toCentavo((due * 111) / 112))}
+                                    </span>
+                                  )}
+                                </span>
                               ) : (
                                 <span className="text-[11px] text-destructive">No due set</span>
                               )}
