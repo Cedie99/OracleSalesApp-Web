@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dialog'
 import { CLIENT_SEARCH_LIMIT, clientWhere, recentClientIds, searchClients } from '@/lib/client-search'
 import { peso, toCentavo } from '@/lib/money'
+import { ewtBreakdown } from '@/lib/collection'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { Client, CollectionVisit, PaymentMethod, Profile } from '@/types'
 import { format } from 'date-fns'
@@ -303,6 +304,13 @@ export function AddStoreDialog({
               </span>
             )}
           </span>
+          {/* A withholding store (146): the gross above, its split below, so the
+              admin sees the cash to expect before ticking it. */}
+          {client.withholds_tax && due > 0 && (
+            <span className="block text-right text-[10px] tabular-nums text-muted-foreground">
+              EWT −{peso(ewtBreakdown(due).withheld)} · cash {peso(ewtBreakdown(due).cash)}
+            </span>
+          )}
         </span>
       </button>
     )
@@ -514,7 +522,7 @@ export function AddStoreDialog({
                                       of the due in cash; the EWT settles the rest. */}
                                   {client?.withholds_tax && (
                                     <span className="block text-[10px] text-muted-foreground">
-                                      1% EWT · cash {peso(toCentavo((due * 111) / 112))}
+                                      EWT −{peso(ewtBreakdown(due).withheld)} · cash {peso(ewtBreakdown(due).cash)}
                                     </span>
                                   )}
                                 </span>

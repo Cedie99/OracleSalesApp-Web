@@ -11,6 +11,7 @@ import { CLIENT_SEARCH_LIMIT, clientWhere, searchClients } from '@/lib/client-se
 import { peso, pesoDelta, toCentavo } from '@/lib/money'
 import { EMPTY_PESO, PesoInput, pesoValueAmount, type PesoValue } from '@/components/collection/peso-input'
 import { StorePaymentCalendar } from '@/components/collection/store-payment-calendar'
+import { ewtBreakdown } from '@/lib/collection'
 import type { CreditAdjustment, WithholdingChange } from '@/lib/hooks/use-store-credit'
 import type { Client, ClientCreditEntry } from '@/types'
 import { format } from 'date-fns'
@@ -271,12 +272,29 @@ export function StoreBalancesDialog({
                       {selected.withholds_tax && <Check className="h-2.5 w-2.5" />}
                     </span>
                     <span className="font-medium text-foreground">Withholds 1% EWT</span>
-                    <span className="truncate text-muted-foreground/80">
-                      {selected.withholds_tax
-                        ? '· pays net of tax, settles in full'
-                        : '· customer deducts tax before paying?'}
-                    </span>
+                    {!selected.withholds_tax && (
+                      <span className="truncate text-muted-foreground/80">
+                        · customer deducts tax before paying?
+                      </span>
+                    )}
                   </button>
+                  {/* The calculated split of the current balance, so the admin
+                      sees what the collector should come back with. */}
+                  {selected.withholds_tax && balance > 0 && (() => {
+                    const { withheld, cash } = ewtBreakdown(balance)
+                    return (
+                      <div className="mt-1.5 space-y-0.5 pl-5 text-[11px] tabular-nums">
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>1% EWT ({peso(balance)} ÷ 1.12 × 1%)</span>
+                          <span>−{peso(withheld)}</span>
+                        </div>
+                        <div className="flex justify-between font-medium text-foreground">
+                          <span>Cash to collect</span>
+                          <span>{peso(cash)}</span>
+                        </div>
+                      </div>
+                    )
+                  })()}
                   {withholdingError && (
                     <p className="mt-1 text-[11px] text-destructive">{withholdingError}</p>
                   )}

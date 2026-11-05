@@ -7,7 +7,7 @@ import { PendingNote } from '@/components/pending-note'
 import {
   PhotoLightbox, ProofTile, RemittanceProofThumb, captionFor, type LightboxPhoto,
 } from '@/components/photo-lightbox'
-import { additionalAckState, visitProofs } from '@/lib/collection'
+import { additionalAckState, ewtBreakdown, visitProofs } from '@/lib/collection'
 import { peso, pesoDelta, toCentavo } from '@/lib/money'
 import {
   ADDITIONAL_ACK_LABEL, ADDITIONAL_ACK_TONE,
@@ -39,6 +39,11 @@ interface VisitDetailDialogProps {
   onAssignCollector: (
     id: string, collector: Pick<Profile, 'id' | 'full_name'>, previousName: string | null,
   ) => Promise<string | null>
+  /**
+   * The store withholds 1% EWT (146), resolved by the caller from the listable
+   * clients — the visit's own client join doesn't carry the flag.
+   */
+  withholdsTax: boolean
 }
 
 /**
@@ -47,6 +52,7 @@ interface VisitDetailDialogProps {
  */
 export function VisitDetailDialog({
   visit, onOpenChange, listedByName, onSetDesignatedMethod, collectors, onAssignCollector,
+  withholdsTax,
 }: VisitDetailDialogProps) {
   const [photo, setPhoto] = useState<LightboxPhoto | null>(null)
 
@@ -65,6 +71,7 @@ export function VisitDetailDialog({
               onSetDesignatedMethod={onSetDesignatedMethod}
               collectors={collectors}
               onAssignCollector={onAssignCollector}
+              withholdsTax={withholdsTax}
             />
           )}
         </DialogContent>
@@ -78,7 +85,9 @@ export function VisitDetailDialog({
 
 function VisitDetail({
   visit, listedByName, onOpenPhoto, onSetDesignatedMethod, collectors, onAssignCollector,
+  withholdsTax,
 }: {
+  withholdsTax: boolean
   visit: CollectionVisit
   listedByName: string | null
   onOpenPhoto: (photo: LightboxPhoto) => void
@@ -209,6 +218,24 @@ function VisitDetail({
                 <span className="text-muted-foreground">Amount due</span>
                 <span className="tabular-nums font-medium">{peso(visit.amount_due)}</span>
               </div>
+              {/* A withholding store (146): the gross due above, the split the
+                  collector should come back with below. Also shown once a payment
+                  carried EWT, even if the store has since been unticked. */}
+              {(withholdsTax || visit.withholding_tax > 0) && visit.amount_due > 0 && (() => {
+                const { withheld, cash } = ewtBreakdown(visit.amount_due)
+                return (
+                  <>
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>1% EWT ({peso(visit.amount_due)} ÷ 1.12 × 1%)</span>
+                      <span className="tabular-nums">−{peso(withheld)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Cash to collect</span>
+                      <span className="tabular-nums font-medium">{peso(cash)}</span>
+                    </div>
+                  </>
+                )
+              })()}
               <AssignedCollectorRow visit={visit} collectors={collectors} onAssign={onAssignCollector} />
               <DesignatedMethodRow visit={visit} onSet={onSetDesignatedMethod} />
             </div>

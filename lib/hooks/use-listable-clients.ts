@@ -1,5 +1,7 @@
 'use client'
 
+import { useCallback } from 'react'
+
 import { createClient } from '@/lib/supabase/client'
 import { useAutoRefresh, SLOW_INTERVAL_MS } from '@/lib/hooks/use-auto-refresh'
 import { useCachedResource } from '@/lib/hooks/use-cached-resource'
@@ -49,7 +51,7 @@ const LISTABLE_COLUMNS = `${BASE_LISTABLE_COLUMNS}, withholds_tax`
 const EMPTY: Client[] = []
 
 export function useListableClients({ enabled = true }: { enabled?: boolean } = {}) {
-  const { data, loading, error, reload, refresh } = useCachedResource<Client[]>(
+  const { data, loading, error, reload, refresh, mutate } = useCachedResource<Client[]>(
     'listable-clients',
     async () => {
       // Paged: PostgREST caps one response at 1,000 rows, and there are more
@@ -99,5 +101,18 @@ export function useListableClients({ enabled = true }: { enabled?: boolean } = {
     enabled,
   })
 
-  return { clients: data, loading, error, refresh, reload }
+  /**
+   * After a write to one store (a balance movement, the EWT tick): apply it at
+   * once, in the tab-wide cache too, then re-read with a FRESH request. A plain
+   * `reload` can join a read that started before the write — re-reading 1,000+
+   * stores takes seconds — and put the old balance back, which is why Add store
+   * used to need a page refresh to see a balance just set.
+   */
+  const patchClient = useCallback(
+    (clientId: string, update: (client: Client) => Client) =>
+      mutate(rows => rows.map(c => (c.id === clientId ? update(c) : c))),
+    [mutate]
+  )
+
+  return { clients: data, loading, error, refresh, reload, patchClient }
 }
