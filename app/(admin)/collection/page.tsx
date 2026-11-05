@@ -39,7 +39,7 @@ import {
   buildDays, collectionTrips, hasMissingProof, remittanceVariance, settledAmount,
   type CollectionDay,
 } from '@/lib/collection'
-import { peso, pesoDelta } from '@/lib/money'
+import { peso, pesoDelta, toCentavo } from '@/lib/money'
 import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABEL, PAYMENT_METHOD_TONE, paymentMethodLabel,
   REMITTANCE_DESTINATION_LABEL, REMITTANCE_STATUS_LABEL, REMITTANCE_STATUS_TONE,
@@ -105,7 +105,7 @@ export default function CollectionPage() {
   // Narrowed: only the customers a picker may offer, and only the columns the
   // picker, the dialogs and the publish-time snapshot read. The rows on this
   // board carry their own client join, so this was never what rendered it.
-  const { clients, reload: reloadClients } = useListableClients()
+  const { clients, patchClient } = useListableClients()
   // The store-credit ledger (migration 115): the history behind each store's
   // running balance, and the write path the balances tool uses to set/charge/adjust it.
   /**
@@ -146,14 +146,16 @@ export default function CollectionPage() {
     enabled: balancesOpen,
   })
 
-  // The tick rides on the listable-clients cache, so re-read it after a change.
+  // Re-reading every listable store takes seconds (paged past 1,000 rows), so
+  // the saved tick is written straight into the tab-wide cache — the balances
+  // tool, Add store and the detail dialog all show it at once, with no refresh.
   const handleSetWithholding = useCallback(
     async (input: WithholdingChange): Promise<string | null> => {
       const message = await setWithholdsTax(input)
-      if (!message) void reloadClients()
+      if (!message) void patchClient(input.clientId, c => ({ ...c, withholds_tax: input.enabled }))
       return message
     },
-    [setWithholdsTax, reloadClients]
+    [setWithholdsTax, patchClient]
   )
 
   /**
@@ -161,14 +163,22 @@ export default function CollectionPage() {
    * but Add store auto-fills from `clients.credit_balance` (a slow-lane cache)
    * and the detail dialog from the board's client join. Re-read both, or a
    * balance just set reads as "no amount due" until the page is reloaded.
+   * The movement is applied to the cached store at once (patchClient), so Add
+   * store shows the new balance immediately; the fresh re-read then confirms it.
    */
   const handleAdjust = useCallback(
     async (input: CreditAdjustment): Promise<string | null> => {
       const message = await adjustBalance(input)
-      if (!message) void Promise.all([reloadClients(), reloadVisits()])
+      if (!message) {
+        void patchClient(input.clientId, c => ({
+          ...c,
+          credit_balance: toCentavo((c.credit_balance ?? 0) + input.amount),
+        }))
+        void reloadVisits()
+      }
       return message
     },
-    [adjustBalance, reloadClients, reloadVisits]
+    [adjustBalance, patchClient, reloadVisits]
   )
   const [addDefaults, setAddDefaults] = useState<{ scheduledFor?: string } | undefined>(undefined)
   // Bumped on every opening so the dialog remounts with fresh fields — see the
@@ -1068,6 +1078,10 @@ export default function CollectionPage() {
         collectors={activeCollectors}
         onAssignCollector={assignCollector}
         listedByName={listedByName}
+        withholdsTax={
+          !!selectedVisit
+          && !!listableClients.find(c => c.id === selectedVisit.client_id)?.withholds_tax
+        }
       />
 
       {/* Opened from the remittance cards. The detail dialog carries its own,

@@ -48,6 +48,8 @@ interface Entry {
 
 const cache = new Map<string, Entry>()
 const inflight = new Map<string, Promise<unknown>>()
+/** The most recently started read per key — see `readThrough`. */
+const latest = new Map<string, Promise<unknown>>()
 
 /**
  * A cache hit older than this still renders instantly, but is revalidated
@@ -71,6 +73,7 @@ export function evictCachedResource(key: string) {
 export function clearResourceCache() {
   cache.clear()
   inflight.clear()
+  latest.clear()
 }
 
 /**
@@ -78,20 +81,25 @@ export function clearResourceCache() {
  * second one. The result is cached on success; a failure caches nothing, so the
  * next caller retries instead of inheriting an error.
  */
-async function readThrough<T>(key: string, load: () => Promise<T>): Promise<T> {
-  const existing = inflight.get(key)
+async function readThrough<T>(key: string, load: () => Promise<T>, fresh = false): Promise<T> {
+  // `fresh`: after a write, a read already in flight started BEFORE it and
+  // would hand back (and cache) the pre-write rows — start a new one instead.
+  const existing = fresh ? undefined : inflight.get(key)
   if (existing) return existing as Promise<T>
 
-  const promise = load()
+  const promise: Promise<T> = load()
     .then(value => {
-      cache.set(key, { value, at: Date.now() })
+      // Only the newest read for a key may write the cache: a superseded one
+      // (started before a write) landing late must not put old rows back.
+      if (latest.get(key) === promise) cache.set(key, { value, at: Date.now() })
       return value
     })
     .finally(() => {
-      inflight.delete(key)
+      if (inflight.get(key) === promise) inflight.delete(key)
     })
 
   inflight.set(key, promise)
+  latest.set(key, promise)
   return promise
 }
 
@@ -104,6 +112,12 @@ export interface CachedResource<T> {
   reload: () => Promise<void>
   /** Re-read and raise the spinner. For explicit user gestures only. */
   refresh: () => Promise<void>
+  /**
+   * After a write: apply `update` to the cached value and what is on screen at
+   * once, then re-read with a fresh request (never joining one that started
+   * before the write). The cache is shared tab-wide, so every mount sees it.
+   */
+  mutate: (update: (current: T) => T) => Promise<void>
 }
 
 /**
@@ -135,12 +149,14 @@ export function useCachedResource<T>(
   })
 
   const run = useCallback(
-    async (withSpinner: boolean) => {
+    async (withSpinner: boolean, fresh = false) => {
       if (withSpinner) setLoading(true)
       try {
-        const value = await readThrough(key, () => loadRef.current())
+        const value = await readThrough(key, () => loadRef.current(), fresh)
         setError('')
-        setData(value)
+        // Prefer the cache: if this read was superseded, it holds newer rows.
+        const hit = cache.get(key) as { value: T } | undefined
+        setData(hit ? hit.value : value)
       } catch (loadError) {
         // The last good value stays on screen. An error banner beside real data
         // is more useful than an empty table that looks like an empty database.
@@ -153,6 +169,16 @@ export function useCachedResource<T>(
 
   const reload = useCallback(() => run(false), [run])
   const refresh = useCallback(() => run(true), [run])
+
+  const mutate = useCallback(
+    async (update: (current: T) => T) => {
+      const hit = cache.get(key) as { value: T; at: number } | undefined
+      if (hit) cache.set(key, { value: update(hit.value), at: hit.at })
+      setData(current => update(current))
+      await run(false, true)
+    },
+    [key, run],
+  )
 
   useEffect(() => {
     const hit = cache.get(key) as { value: T; at: number } | undefined
@@ -171,5 +197,5 @@ export function useCachedResource<T>(
     void reload()
   }, [key, reload])
 
-  return { data, loading, error, reload, refresh }
+  return { data, loading, error, reload, refresh, mutate }
 }
