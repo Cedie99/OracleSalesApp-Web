@@ -72,13 +72,14 @@ export const VISIT_COLUMNS = `
 // 145 — a down payment the customer sizes).
 export const ADDITIONAL_COLUMNS = `
   is_additional, additional_received_at, additional_seen_at,
-  client_lat, client_lng, designated_payment_method, assigned_collector_id, is_down_payment
+  client_lat, client_lng, designated_payment_method, assigned_collector_id, is_down_payment,
+  withholding_tax
 `
 
-/** True when a select failed only because 068's/114's/143's/144's/145's columns aren't there yet. */
+/** True when a select failed only because 068's/114's/143's/144's/145's/146's columns aren't there yet. */
 function isMissingAdditionalColumn(error: { message?: string } | null): boolean {
   return !!error?.message
-    && /is_additional|additional_received_at|additional_seen_at|client_lat|client_lng|designated_payment_method|assigned_collector_id|is_down_payment/.test(error.message)
+    && /is_additional|additional_received_at|additional_seen_at|client_lat|client_lng|designated_payment_method|assigned_collector_id|is_down_payment|withholding_tax/.test(error.message)
 }
 
 // The installments behind a partial store (migration 070). Fetched in one pass
@@ -211,6 +212,8 @@ function normalizeVisit(
     is_down_payment: (row.is_down_payment as boolean | undefined) ?? false,
     amount_due: num(row.amount_due) ?? 0,
     amount_collected: num(row.amount_collected),
+    // Absent under the pre-146 fallback select — no tax withheld.
+    withholding_tax: num(row.withholding_tax) ?? 0,
     gps_lat: num(row.gps_lat),
     gps_lng: num(row.gps_lng),
     // Absent while the pre-114 fallback select is in play; null then reads as

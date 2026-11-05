@@ -52,7 +52,7 @@ export interface CreditAdjustment {
   /** Store name, for the audit summary — the log is read by people without the schema. */
   clientName: string
   /** Admin-entered movement only: an opening/correcting `adjustment` or a `charge`. */
-  entryType: Exclude<CreditEntryType, 'collection'>
+  entryType: Exclude<CreditEntryType, 'collection' | 'withholding'>
   /** Signed delta in PHP. Positive raises the balance, negative lowers it. Never 0. */
   amount: number
   note: string | null
@@ -68,6 +68,15 @@ interface UseStoreCreditResult {
   refresh: () => Promise<void>
   /** Records one signed-delta entry. Returns an error message, or null on success. */
   adjustBalance: (input: CreditAdjustment) => Promise<string | null>
+  /** Turns a store's 1% EWT on or off (migration 146). Error message, or null. */
+  setWithholdsTax: (input: WithholdingChange) => Promise<string | null>
+}
+
+/** What the balances tool hands in to flip a store's withholding tax. */
+export interface WithholdingChange {
+  clientId: string
+  clientName: string
+  enabled: boolean
 }
 
 /**
@@ -168,5 +177,31 @@ export function useStoreCredit(
     [load]
   )
 
-  return { entriesByClient, loading, error, refresh, adjustBalance }
+  // Through a definer RPC: Collection admins have no UPDATE on `clients`. Only
+  // future payments pick the change up — each payment snapshots the flag (146).
+  const setWithholdsTax = useCallback(
+    async (input: WithholdingChange): Promise<string | null> => {
+      const supabase = createClient()
+      const { error: rpcError } = await supabase.rpc('set_client_withholds_tax', {
+        p_client_id: input.clientId,
+        p_enabled: input.enabled,
+      })
+      if (rpcError) return rpcError.message
+
+      void recordAuditLog({
+        action: 'client_credit.withholding_set',
+        entityTable: 'clients',
+        entityId: input.clientId,
+        entityLabel: input.clientName,
+        summary: input.enabled
+          ? `Marked ${input.clientName} as withholding 1% EWT`
+          : `Stopped withholding 1% EWT for ${input.clientName}`,
+        metadata: { withholds_tax: input.enabled },
+      })
+      return null
+    },
+    []
+  )
+
+  return { entriesByClient, loading, error, refresh, adjustBalance, setWithholdsTax }
 }

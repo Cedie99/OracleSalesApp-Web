@@ -41,6 +41,7 @@ export const AUDIT_ACTIONS = {
   'collection_visit.collector_assigned': { label: 'Assigned store to collector', module: 'collection' },
   'remittance.status_changed': { label: 'Reconciled remittance', module: 'collection' },
   'client_credit.adjusted': { label: 'Adjusted store credit balance', module: 'collection' },
+  'client_credit.withholding_set': { label: 'Changed store withholding tax', module: 'collection' },
 
   // --- Delivery ------------------------------------------------------------
   'purchase_order.listed': { label: 'Listed purchase order', module: 'delivery' },

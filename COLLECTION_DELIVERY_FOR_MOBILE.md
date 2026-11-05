@@ -614,3 +614,30 @@ rely on the database to hide other collectors' stores.
 2. Admins assign any pending "Unassigned" stores on the web board.
 3. Ship the mobile filter. If it ships before step 2, those stores disappear
    from every phone.
+
+---
+
+## 15. Stores that withhold 1% EWT — migration 146, 2026-11-05
+
+Some customers are withholding agents. They pay 111/112 of the invoice in cash
+and send 1% of the VAT-exclusive amount to the BIR (Form 2307). Example: a
+₱112,000 due is paid as ₱111,000 cash with ₱1,000 withheld. Before 146 that
+left the visit stuck at `partial` and ₱1,000 on the store's balance.
+
+### 🟢 No mobile change required
+
+- **Keep recording the cash actually received** in `collection_payments.amount`.
+  Do not gross it up.
+- The database derives `collection_payments.withheld_tax` (= amount ÷ 111) from
+  the store's `clients.withholds_tax` flag. It **overwrites** any value the phone
+  sends, so don't send one.
+- `collection_visits.withholding_tax` is the visit's total withheld.
+  `amount_collected` stays cash. The visit now becomes `collected` when
+  cash + withheld ≥ `amount_due`.
+- Remittance is unaffected: it reconciles cash against cash.
+
+### Optional
+
+It could help to remind the collector to pick up the customer's Form 2307 for
+these stores. The phone can't read `clients`, so that would need the flag
+denormalized onto the visit when the store is listed. Ask web if you want it.
