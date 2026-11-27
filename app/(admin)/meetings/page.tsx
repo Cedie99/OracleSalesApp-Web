@@ -781,9 +781,19 @@ function MeetingsPageContent() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-3 gap-x-0 sm:[&>*:nth-child(odd)]:pr-6 sm:[&>*:nth-child(even)]:pl-6 sm:[&>*:nth-child(even)]:border-l sm:[&>*:nth-child(even)]:border-border">
                 <DetailLine icon={User} label="Submitted by" value={submittedBy} />
                 <DetailLine
+                  icon={CalendarCheck}
+                  label="Meeting date"
+                  value={format(new Date(selected.meeting_date), 'MMM d, yyyy · h:mm a')}
+                />
+                <DetailLine
                   icon={Clock}
-                  label="Time"
-                  value={format(new Date(selected.meeting_date), 'h:mm a')}
+                  label="Start time"
+                  value={selected.start_captured_at ? format(new Date(selected.start_captured_at), 'h:mm a') : 'Not captured'}
+                />
+                <DetailLine
+                  icon={Clock}
+                  label="End time"
+                  value={selected.end_captured_at ? format(new Date(selected.end_captured_at), 'h:mm a') : 'Not captured'}
                 />
                 <DetailLine icon={Navigation} label="Duration" value={duration ?? 'Not captured'} />
                 <DetailLine icon={MapPin} label="Distance start → end" value={drift ?? 'Not captured'} />
